@@ -89,8 +89,17 @@
   </section>
 
   <section id="sec-layers">
-    <h2>LAYERS</h2>
-    <div class="sec-body"><div id="layers-list"></div></div>
+    <h2>LAYERS &amp; DISPLAY</h2>
+    <div class="sec-body">
+      <div id="layers-list"></div>
+      <div class="row" title="model magnification: 0 = strict true scale">
+        <label>model mag ×</label>
+        <input id="mag" type="range" min="0" max="3" step="0.1" value="1">
+        <span class="val" id="mag-val">1.0</span>
+      </div>
+      <div class="subhead">CIVILIAN PRESENCE</div>
+      <div id="zone-legend"></div>
+    </div>
   </section>
 
   <section id="sec-metrics">
@@ -114,10 +123,18 @@
     </div>
   </section>
 
+  <section id="sec-engage">
+    <h2>ENGAGEMENTS</h2>
+    <div class="sec-body">
+      <div id="engage-empty">no shots fired yet</div>
+      <div id="engage-body"></div>
+    </div>
+  </section>
+
   <section id="sec-inspect">
     <h2>ENTITY INSPECTOR</h2>
     <div class="sec-body">
-      <div id="inspect-empty">click a UAV, track, turret or ghost</div>
+      <div id="inspect-empty">click a UAV, track, turret, debris or ghost</div>
       <div id="inspect-body"></div>
     </div>
   </section>

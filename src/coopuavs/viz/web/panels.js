@@ -2,8 +2,8 @@
 // authorisation queue (HMI-AUT-001/002), entity inspector (HMI-MAP-004),
 // event & decision log, eval metrics (HMI-EVAL-005), layer toggles, modal.
 import {
-  CLASSES, CLS_CSS, CLS_SHORT, ZONE_CSS, argmaxClass, clamp, dist3, esc,
-  fmtNum, fmtPct,
+  CLASSES, CLS_CSS, CLS_SHORT, ZONE_CSS, ZONE_LEGEND, argmaxClass, clamp,
+  dist3, esc, fmtEngagement, fmtNum, fmtPct,
 } from './util.js';
 
 const $ = (id) => document.getElementById(id);
@@ -15,8 +15,16 @@ const LAYERS = [
   { key: 'ghosts', label: 'ghost threats (eval)' },
   { key: 'trails', label: 'vector trails' },
   { key: 'labels', label: 'labels' },
-  { key: 'grid', label: 'risk-zone raster' },
+  { key: 'grid', label: 'civilian-presence raster' },
+  { key: 'zoneborders', label: 'zone borders' },
+  { key: 'rooftints', label: 'zone roof tints' },
+  { key: 'debris', label: 'falling debris' },
+  { key: 'tracers', label: 'weapon tracers' },
 ];
+
+// Outcome kinds folded into the ENGAGEMENTS table (HMI-EVAL-006).
+const SHOT_KINDS = new Set(
+  ['kill', 'miss', 'debris_neutralized', 'fire_blocked_los', 'fire_no_target']);
 
 export class Panels {
   /**
@@ -30,9 +38,14 @@ export class Panels {
     this.logEntries = 0;
     this._spdDrag = false;
     this._lastMetricsRender = 0;
+    this._lastEngageRender = 0;
     this._toastTimer = null;
+    // client-side engagement tally (works live, replay and mock); the
+    // /eval metrics override it when present (HMI-EVAL-006)
+    this.engage = new Map();   // shooter -> {weapon, shots, hits, kills, debris_kills}
     this._buildExecForm();
     this._buildLayers();
+    this._buildLegend();
     this._wire();
     $('mode-pill').textContent = this.mode.toUpperCase();
     if (this.mode === 'mock') $('ops-pill').style.display = 'none';
@@ -126,6 +139,19 @@ export class Panels {
     });
 
     $('summary-close').addEventListener('click', () => $('summary-modal').classList.remove('open'));
+
+    // --- model magnification (HMI-MAP-007)
+    $('mag').addEventListener('input', () => {
+      const v = +$('mag').value;
+      $('mag-val').textContent = v.toFixed(1);
+      this.setMag?.(v);
+    });
+
+    // --- engagements table: click a row to focus the shooter
+    $('engage-body').addEventListener('click', (e) => {
+      const tr = e.target.closest('tr.focusable');
+      if (tr) this.focus({ uav_id: tr.dataset.shooter });
+    });
   }
 
   _sliderSpeed() {  // slider 0..100 -> 0.1..10 (log scale)
@@ -220,6 +246,12 @@ export class Panels {
     });
   }
 
+  _buildLegend() {
+    $('zone-legend').innerHTML = ['SAFE', 'DANGEROUS', 'CRITICAL'].map((z) => `
+      <div class="lg-row"><span class="sw" style="background:${ZONE_CSS[z]}"></span>
+        <span><b style="color:${ZONE_CSS[z]}">${z}</b> — ${ZONE_LEGEND[z]}</span></div>`).join('');
+  }
+
   setEval(on) {
     $('eval-badge').style.display = on ? 'inline-block' : 'none';
     $('metrics-offline').style.display = on ? 'none' : 'block';
@@ -247,6 +279,8 @@ export class Panels {
     $('run-seed').textContent = d?.seed ?? '—';
     $('exec-seed-echo').textContent = d?.seed ?? '—';
     this.showExecError(null);
+    this.engage.clear();
+    this.renderEngagements(true);
     this.renderAuth();
     this.addDecision({ t: 0, actor: 'c2', kind: 'run', text: `run "${d?.name ?? '?'}" started — seed ${d?.seed}` });
   }
@@ -352,16 +386,36 @@ export class Panels {
       const u = (f.uavs || []).find((x) => x.id === sel.id);
       if (!u) { body.innerHTML = `<div class="row"><label>${esc(sel.id)}</label><span>no data</span></div>`; return; }
       const spd = Math.hypot(...(u.vel || [0, 0, 0]));
+      const isSentinel = u.kind === 'sentinel';
       html = `
-        <div class="subhead">INTERCEPTOR ${esc(u.id)}</div>
+        <div class="subhead">${isSentinel ? 'SENTINEL' : 'INTERCEPTOR'} ${esc(u.id)}</div>
         <div class="row"><label>mode</label><span class="val">${esc(u.mode)}</span></div>
         <div class="row"><label>battery</label><span class="val">${fmtPct(u.battery)}</span></div>
-        <div class="row"><label>ammo</label><span class="val">${u.ammo ?? '—'}</span></div>
-        <div class="row"><label>task</label><span class="val">${u.task_id != null ? 'track #' + u.task_id : '—'}</span></div>
+        ${isSentinel
+    ? '<div class="row"><label>payload</label><span class="val">EO/IR + RF (unarmed)</span></div>'
+    : `<div class="row"><label>weapon</label><span class="val">${esc(u.effector ?? '—')}</span></div>
+        <div class="row"><label>ammo</label><span class="val">${u.ammo ?? '—'}</span></div>`}
+        <div class="row"><label>task</label><span class="val">${u.task_id != null ? 'task #' + u.task_id : '—'}</span></div>
         <div class="row"><label>link</label><span class="val">${fmtPct(u.link)}</span></div>
         <div class="row"><label>speed</label><span class="val">${spd.toFixed(0)} m/s</span></div>
         <div class="row"><label>alt</label><span class="val">${(u.pos?.[2] ?? 0).toFixed(0)} m</span></div>
         <button id="btn-rtb" class="deny" style="width:100%;margin-top:6px">⏎ RETURN TO BASE</button>`;
+    } else if (sel.kind === 'debris') {
+      const d = (f.debris || []).find((x) => x.id === sel.id);
+      if (!d) { body.innerHTML = '<div class="row"><label>debris</label><span>landed or neutralized</span></div>'; return; }
+      html = `
+        <div class="subhead">FALLING DEBRIS ${esc(d.id)}</div>
+        <div class="row"><label>impact zone</label>
+          <span class="val" style="color:${ZONE_CSS[d.zone] || '#fff'}">${esc(d.zone)}</span></div>
+        <div class="row"><label>time to impact</label><span class="val">${fmtNum(d.t_impact, 1)} s</span></div>
+        <div class="row"><label>impact at</label><span class="val">${Array.isArray(d.impact)
+    ? `${d.impact[0].toFixed(0)}, ${d.impact[1].toFixed(0)}` : '—'}</span></div>
+        <div class="row"><label>alt</label><span class="val">${(d.pos?.[2] ?? 0).toFixed(0)} m</span></div>`;
+    } else if (sel.kind === 'station') {
+      const st = (f.stations || []).find((x) => x.id === sel.id);
+      html = `
+        <div class="subhead">CHARGING STATION ${esc(sel.id)}</div>
+        <div class="row"><label>occupied pads</label><span class="val">${st?.occupied ?? 0}</span></div>`;
     } else if (sel.kind === 'track') {
       const t = (f.tracks || []).find((x) => x.id === sel.id);
       if (!t) { body.innerHTML = `<div class="row"><label>track #${sel.id}</label><span>dropped</span></div>`; return; }
@@ -422,14 +476,66 @@ export class Panels {
 
   // ====================================================== log (HMI-MAP-004)
   addEvent(ev) {
+    this._tallyEngagement(ev);
+    // engagement events render human-readably (HMI-EVAL-006):
+    // "hawk-3 → owa-1 [projectile] HIT (pk 0.62)"
+    const pretty = fmtEngagement(ev);
     const extra = Object.entries(ev)
-      .filter(([k]) => !['t', 'kind'].includes(k))
+      .filter(([k]) => !['t', 'kind', 'pos'].includes(k))
       .map(([k, v]) => `${k}=${v}`).join(' ');
     this._addLog({
       cat: 'events', cls: ev.kind,
-      text: `${String(ev.kind || '?').toUpperCase()} ${extra}`,
+      text: pretty ?? `${String(ev.kind || '?').toUpperCase()} ${extra}`,
       t: ev.t, track_id: ev.track_id ?? ev.track ?? null, uav_id: ev.uav_id ?? null,
     });
+  }
+
+  _tallyEngagement(ev) {
+    if (!SHOT_KINDS.has(ev.kind) || !ev.uav_id) return;
+    let row = this.engage.get(ev.uav_id);
+    if (!row) {
+      row = { weapon: ev.effector || '?', shots: 0, hits: 0, kills: 0, debris_kills: 0 };
+      this.engage.set(ev.uav_id, row);
+    }
+    if (ev.effector) row.weapon = ev.effector;
+    row.shots++;
+    if (ev.kind === 'kill') { row.hits++; row.kills++; }
+    else if (ev.kind === 'debris_neutralized') { row.hits++; row.debris_kills++; }
+    this.renderEngagements();
+  }
+
+  renderEngagements(force = false) {
+    const now = performance.now();
+    if (!force && now - this._lastEngageRender < 400) return;
+    this._lastEngageRender = now;
+    $('engage-empty').style.display = this.engage.size ? 'none' : 'block';
+    if (!this.engage.size) { $('engage-body').innerHTML = ''; return; }
+    const rows = [...this.engage.entries()]
+      .sort((a, b) => (b[1].kills + b[1].debris_kills) - (a[1].kills + a[1].debris_kills)
+        || b[1].shots - a[1].shots)
+      .map(([id, r]) => `
+        <tr class="focusable" data-shooter="${esc(id)}">
+          <td>${esc(id)}</td><td>${esc(r.weapon)}</td>
+          <td>${r.shots}</td><td>${r.hits}</td>
+          <td>${r.kills}${r.debris_kills ? `+${r.debris_kills}d` : ''}</td>
+        </tr>`).join('');
+    $('engage-body').innerHTML = `
+      <table>
+        <tr><th>shooter</th><th>weapon</th><th>shots</th><th>hits</th><th>kills</th></tr>
+        ${rows}
+      </table>`;
+  }
+
+  // authoritative per-shooter summary from the /eval metrics, when present
+  applyEngagementMetrics(eng) {
+    if (!eng?.by_shooter) return;
+    for (const [id, r] of Object.entries(eng.by_shooter)) {
+      this.engage.set(id, {
+        weapon: r.weapon || '?', shots: r.shots || 0, hits: r.hits || 0,
+        kills: r.kills || 0, debris_kills: r.debris_kills || 0,
+      });
+    }
+    this.renderEngagements();
   }
   addDecision(dc) {
     this._addLog({
@@ -463,6 +569,7 @@ export class Panels {
     if (now - this._lastMetricsRender < 500) return;
     this._lastMetricsRender = now;
     $('metrics-body').innerHTML = this._metricsHtml(m);
+    this.applyEngagementMetrics(m.engagements);
   }
 
   _metricsHtml(m) {
@@ -487,6 +594,8 @@ export class Panels {
       <div class="row"><label>wrecks</label><span class="val">${zoneRow(col.wrecks_by_zone)}</span></div>
       <div class="row"><label>strays</label><span class="val">${zoneRow(col.strays_by_zone)}</span></div>
       <div class="row"><label>debris cost</label><span class="val">${col.debris_cost ?? 0}</span></div>
+      <div class="row"><label>debris intercepts</label><span class="val">${col.debris_intercepts ?? 0}</span></div>
+      <div class="row"><label>saved cost</label><span class="val">${col.debris_saved_cost ?? 0}</span></div>
       <div class="subhead">AUTHORISATION</div>
       <div class="row"><label>req / ok / deny / exp</label>
         <span class="val">${au.requests ?? 0} / ${au.approved ?? 0} / ${au.denied ?? 0} / ${au.expired ?? 0}</span></div>

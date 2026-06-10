@@ -30,6 +30,13 @@ from ..sim.physics import GRAVITY
 from .debris_objects import FallingDebris
 from .world import World
 
+def _pos3(p) -> list[float]:
+    """Engagement events carry the adjudicated target position so the
+    display can draw shooter-to-target tracers without a track lookup
+    (HMI-MAP-008)."""
+    return [round(float(p[0]), 1), round(float(p[1]), 1), round(float(p[2]), 1)]
+
+
 # Effective lethal radius of one HE/frag round against a small airframe, m.
 TURRET_LETHAL_RADIUS = 2.0
 # Fraction of target speed treated as unpredictable lateral motion over TOF.
@@ -77,7 +84,7 @@ class EngagementAdjudicator(Node):
                 # munition cannot reach the target; no Pk roll.
                 self.world.log_event(
                     "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
-                    effector=uav.effector.type.value,
+                    effector=uav.effector.type.value, pos=_pos3(target.position),
                 )
                 self._result_pub.publish(result)
                 return
@@ -91,7 +98,7 @@ class EngagementAdjudicator(Node):
                 self.world.log_event(
                     "miss", uav_id=msg.uav_id, enemy_id=target.id,
                     effector=uav.effector.type.value, pk=round(pk_true, 3),
-                    target_kind="track",
+                    target_kind="track", pos=_pos3(target.position),
                 )
         else:
             self.world.log_event("fire_no_target", uav_id=msg.uav_id,
@@ -118,7 +125,7 @@ class EngagementAdjudicator(Node):
             # but the rounds were fired and still land somewhere.
             self.world.log_event(
                 "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
-                effector=msg.effector.value,
+                effector=msg.effector.value, pos=_pos3(target.position),
             )
             self._stray_rounds(turret, msg.predicted_intercept, n_rounds)
             self._result_pub.publish(result)
@@ -143,7 +150,7 @@ class EngagementAdjudicator(Node):
                 self.world.log_event(
                     "miss", uav_id=msg.uav_id, enemy_id=target.id,
                     effector=msg.effector.value, pk=round(p_burst, 3),
-                    target_kind="track",
+                    target_kind="track", pos=_pos3(target.position),
                 )
                 stray_rounds = n_rounds
         else:
@@ -218,6 +225,7 @@ class EngagementAdjudicator(Node):
             self.world.log_event(
                 "fire_blocked_los", uav_id=msg.uav_id, debris_id=deb.debris_id,
                 effector=msg.effector.value, target_kind="debris",
+                pos=_pos3(deb.position),
             )
             if turret is not None:
                 n = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
@@ -253,7 +261,7 @@ class EngagementAdjudicator(Node):
                 "debris_neutralized", uav_id=msg.uav_id,
                 debris_id=deb.debris_id, effector=msg.effector.value,
                 saved_zone=saved_zone.name, pk=round(pk, 3),
-                target_kind="debris",
+                target_kind="debris", pos=_pos3(deb.position),
             )
             stray = max(0, (msg.rounds or getattr(turret, "rounds_per_burst", 1)) - 1) \
                 if turret is not None else 0
@@ -261,7 +269,7 @@ class EngagementAdjudicator(Node):
             self.world.log_event(
                 "miss", uav_id=msg.uav_id, debris_id=deb.debris_id,
                 effector=msg.effector.value, pk=round(pk, 3),
-                target_kind="debris",
+                target_kind="debris", pos=_pos3(deb.position),
             )
             stray = (msg.rounds if msg.rounds > 0
                      else turret.rounds_per_burst) if turret is not None else 0
@@ -304,7 +312,7 @@ class EngagementAdjudicator(Node):
             threat_class=target.threat_class.value,
             effector=effector_type.value,
             debris_zone=zone.name, pk=round(pk, 3),
-            target_kind="track",
+            target_kind="track", pos=_pos3(target.position),
         )
         self.world.log_event(
             "debris_spawn", debris_id=deb.debris_id, enemy_id=target.id,

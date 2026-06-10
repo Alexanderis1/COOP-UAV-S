@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ZONE_COLORS, SENSOR_COLOR, clamp } from './util.js';
+import { City } from './city.js';
+import { makeChargingPad } from './models.js';
 
 // map ENU (x east, y north, z up) -> three (x, y=up, z=-north)
 export const W = (p) => new THREE.Vector3(p?.[0] || 0, p?.[2] || 0, -(p?.[1] || 0));
@@ -42,9 +44,11 @@ export class SceneView {
     this.scene.add(this.staticRoot, this.coverageGroup, this.ringsGroup);
 
     this.turrets = new Map();   // id -> { group, yaw, barrel, body }
+    this.stations = new Map();  // id -> ringMat (occupancy colour)
     this.pickables = [];        // meshes with userData.pick (static side: turrets)
     this.ground = null;
     this._groundMats = null;
+    this.city = null;
 
     addEventListener('resize', () => {
       this.camera.aspect = innerWidth / innerHeight;
@@ -85,6 +89,8 @@ export class SceneView {
     // wipe previous
     for (const g of [this.staticRoot, this.coverageGroup, this.ringsGroup]) g.clear();
     this.turrets.clear();
+    this.stations.clear();
+    this.city = null;
     this.pickables.length = 0;
     if (!sc || !sc.bounds) return;
 
@@ -114,15 +120,9 @@ export class SceneView {
       this.staticRoot.add(this.ground);
     }
 
-    // buildings
-    const bmat = new THREE.MeshLambertMaterial({ color: 0x39455c });
-    for (const b of sc.buildings || []) {
-      const [bx0, by0, bx1, by1] = b.rect;
-      const m = new THREE.Mesh(
-        new THREE.BoxGeometry(bx1 - bx0, b.height, by1 - by0), bmat);
-      m.position.set((bx0 + bx1) / 2, b.height / 2, -(by0 + by1) / 2);
-      this.staticRoot.add(m);
-    }
+    // city fabric: kind-textured instanced buildings, parks/water, zone
+    // roof tints and zone border outlines (HMI-MAP-007)
+    this.city = new City(this.staticRoot, sc);
 
     // protected assets
     const ageo = new THREE.CylinderGeometry(28, 28, 60, 16);
@@ -180,14 +180,29 @@ export class SceneView {
       this.turrets.set(t.id, { group, yaw, pitch, body });
     }
 
-    // UAV home pads
-    const pgeo = new THREE.CylinderGeometry(34, 34, 4, 20);
-    const pmat = new THREE.MeshLambertMaterial({ color: 0x1f6f9c, emissive: 0x0a2a3c });
-    for (const h of sc.homes || []) {
-      const pad = new THREE.Mesh(pgeo, pmat);
-      pad.position.copy(W(h.pos)); pad.position.y = 2;
-      this.staticRoot.add(pad);
-      this.staticRoot.add(makeGroundRing(W(h.pos), 46, 0x39d2ff, 0.3));
+    // charging stations (PHY-CHG-001): authoritative when present;
+    // legacy recordings fall back to abstract home pads.
+    if ((sc.stations || []).length) {
+      for (const st of sc.stations) {
+        const { group, ringMat } = makeChargingPad();
+        group.position.copy(W(st.pos));
+        // pad model is ~3 m; keep it visible at city scale
+        group.scale.setScalar(8);
+        group.userData.pick = { kind: 'station', id: st.id };
+        this.staticRoot.add(group);
+        this.staticRoot.add(makeGroundRing(
+          new THREE.Vector3(group.position.x, 0, group.position.z), 46, 0x39d2ff, 0.25));
+        this.stations.set(st.id, ringMat);
+      }
+    } else {
+      const pgeo = new THREE.CylinderGeometry(34, 34, 4, 20);
+      const pmat = new THREE.MeshLambertMaterial({ color: 0x1f6f9c, emissive: 0x0a2a3c });
+      for (const h of sc.homes || []) {
+        const pad = new THREE.Mesh(pgeo, pmat);
+        pad.position.copy(W(h.pos)); pad.position.y = 2;
+        this.staticRoot.add(pad);
+        this.staticRoot.add(makeGroundRing(W(h.pos), 46, 0x39d2ff, 0.3));
+      }
     }
 
     // camera framing
@@ -214,6 +229,15 @@ export class SceneView {
     else if (name === 'rings') this.ringsGroup.visible = on;
     else if (name === 'grid' && this.ground && this._groundMats)
       this.ground.material = on ? this._groundMats.zones : this._groundMats.plain;
+    else if (name === 'zoneborders') this.city?.setBorders(on);
+    else if (name === 'rooftints') this.city?.setRoofTints(on);
+  }
+
+  // charging-pad occupancy from frame.stations
+  updateStation(st) {
+    const ringMat = this.stations.get(st.id);
+    if (!ringMat) return;
+    ringMat.color.setHex(st.occupied > 0 ? 0xff9a3d : 0x49c97c);
   }
 
   // SRS HMI-MAP-006: lighting + fog respond to frame.env
@@ -229,6 +253,7 @@ export class SceneView {
     this.scene.fog.color.copy(bg);
     this.scene.fog.near = 9000 * (1 - f) + 220 * f;
     this.scene.fog.far = 26000 * (1 - f) + 2800 * f;
+    this.city?.applyDaylight(d);     // windows glow at night (HMI-MAP-007)
   }
 
   focus(pos3) {
