@@ -39,7 +39,8 @@ _HEIGHTS = {
 
 
 def _rect(cx: float, cy: float, hw: float, hh: float) -> list[float]:
-    return [round(cx - hw, 1), round(cy - hh, 1), round(cx + hw, 1), round(cy + hh, 1)]
+    return [round(float(cx - hw), 1), round(float(cy - hh), 1),
+            round(float(cx + hw), 1), round(float(cy + hh), 1)]
 
 
 def _building(rng, cx, cy, kind, hw=None, hh=None, name="") -> dict:
@@ -173,7 +174,7 @@ def generate(seed: int = 7) -> dict:
         "record_hz": 5.0,
         "weather": {"wind_speed": 4.0, "wind_dir_deg": 250.0, "fog": 0.1,
                     "precip": 0.0, "daylight": 0.25},
-        "comms": {"base_latency": 0.01, "jitter": 0.002, "base_loss": 0.005,
+        "comms": {"latency_s": 0.01, "jitter_s": 0.002, "base_loss": 0.005,
                   "loss_per_km": 0.002, "base_pos": [0.0, -3200.0, 0.0]},
         "occlusion": {"enabled": True},
         "environment": {

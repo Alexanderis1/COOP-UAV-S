@@ -41,9 +41,8 @@ from ..core.messages import (
     UavMode,
     UavState,
 )
-from ..core.node import Node
-from ..sim.physics import PointMass
 from . import cooperation, guidance
+from .airframe import LOW_BATTERY_RTB, UavAirframe
 from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
@@ -55,11 +54,9 @@ CLEARANCE_TIMEOUT_S = 3.0
 # An AUTHORIZED token authorises the geometry the ROE costed *now*, not a
 # shot at an arbitrary later time: stale tokens are discarded unconsumed.
 CLEARANCE_VALID_S = 3.0
-# Battery fraction below which the airframe breaks off and recovers.
-LOW_BATTERY_RTB = 0.15
 
 
-class InterceptorUav(Node):
+class InterceptorUav(UavAirframe):
     def __init__(
         self,
         uav_id: str,
@@ -73,24 +70,14 @@ class InterceptorUav(Node):
         cruise_speed: float | None = None,
         turnaround_s: float = 90.0,
     ):
-        super().__init__(uav_id, bus, rate_hz=rate_hz)
-        self.uav_id = uav_id
-        # All C2/peer traffic rides this airframe's datalink (SIM-COM-001);
-        # link_quality is the radio's own telemetry, refreshed by the comms
-        # model each step (PHY-UAV-043).
-        self.comms_endpoint = uav_id
-        self.link_quality = 1.0
-        self.home = np.asarray(home, dtype=float)
+        super().__init__(
+            uav_id, bus, home,
+            max_speed=max_speed, max_accel=max_accel, rate_hz=rate_hz,
+            battery_minutes=battery_minutes, cruise_speed=cruise_speed,
+            turnaround_s=turnaround_s,
+        )
         self.effector = effector
-        self.body = PointMass(self.home.copy(), max_speed=max_speed, max_accel=max_accel)
-        self.max_speed = max_speed
-        self.cruise_speed = cruise_speed if cruise_speed is not None else 0.6 * max_speed
-        self.turnaround_s = turnaround_s
-        self.mode = UavMode.IDLE
-        self.battery = 1.0
-        self._drain_per_s = 1.0 / (battery_minutes * 60.0)
         self._ammo_capacity = effector.ammo
-        self._rearm_until: float | None = None
 
         self._task: EngagementTask | None = None
         self._role: str = "none"               # "shooter" | "support"
@@ -113,16 +100,6 @@ class InterceptorUav(Node):
         self.create_subscription("uav/state", self._on_peer_state)
         self.create_subscription("engagement/clearance", self._on_clearance)
         self.create_subscription("uav/command", self._on_command)
-
-    # -- physical accessors (used by the sim adjudicator) ---------------------
-
-    @property
-    def position(self) -> np.ndarray:
-        return self.body.position
-
-    @property
-    def velocity(self) -> np.ndarray:
-        return self.body.velocity
 
     # -- subscriptions -----------------------------------------------------------
 
@@ -223,15 +200,6 @@ class InterceptorUav(Node):
         self.body.step(period)
         self.battery = max(0.0, self.battery - self._drain_rate() * period)
         self._publish_state(t)
-
-    def _drain_rate(self) -> float:
-        """Airspeed-dependent battery drain (SIM-PHX-002): baseline up to
-        cruise, quadratic penalty in the dash regime."""
-        speed = float(np.linalg.norm(self.body.velocity))
-        factor = 1.0
-        if speed > self.cruise_speed:
-            factor += 2.0 * ((speed - self.cruise_speed) / max(self.cruise_speed, 1.0)) ** 2
-        return self._drain_per_s * factor
 
     # -- behaviours -------------------------------------------------------------------
 
@@ -386,14 +354,6 @@ class InterceptorUav(Node):
             return peer.max_speed
         return self.max_speed
 
-    def _fly_to(self, waypoint: np.ndarray) -> None:
-        self.body.command_velocity(
-            guidance.goto_velocity(self.body.position, waypoint, self.max_speed)
-        )
-
-    def _at(self, point: np.ndarray, radius: float = 25.0) -> bool:
-        return bool(np.linalg.norm(self.body.position - point) < radius)
-
     def _publish_state(self, t: float) -> None:
         self._state_pub.publish(
             UavState(
@@ -407,5 +367,7 @@ class InterceptorUav(Node):
                 task_id=self._task.task_id if self._task else None,
                 link=self.link_quality,
                 max_speed=self.max_speed,
+                kind="interceptor",
+                effector=self.effector.type.value,
             )
         )

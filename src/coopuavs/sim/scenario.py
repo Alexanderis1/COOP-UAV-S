@@ -31,9 +31,11 @@ from ..c2.roe import RoeConfig
 from ..core.comms import CommsModel
 from ..core.messages import ThreatClass
 from ..interceptors.effectors import EFFECTOR_FACTORIES
+from ..interceptors.sentinel import SentinelUav
 from ..interceptors.uav import InterceptorUav
 from ..perception.fusion import FusionNode
 from ..sensors.acoustic import AcousticSensor
+from ..sensors.base import mounted
 from ..sensors.eo_ir import EoIrSensor
 from ..sensors.radar import Radar
 from ..sensors.rf import RfSensor
@@ -74,6 +76,7 @@ class Scenario:
     world: World
     recorder: Recorder
     uavs: dict[str, InterceptorUav] = field(default_factory=dict)
+    sentinels: dict[str, SentinelUav] = field(default_factory=dict)
     turrets: dict[str, GroundTurret] = field(default_factory=dict)
     eval_tracker: EvalTracker | None = None
     orchestrator: Orchestrator | None = None
@@ -111,12 +114,35 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         uavs[uav.uav_id] = uav
         world.friendlies[uav.uav_id] = uav
 
+    # Unarmed sentinel patrol UAVs (PHY-SNT-*): airframes plus their
+    # mounted EO/IR + RF payloads feeding the common detections stream.
+    sentinels: dict[str, SentinelUav] = {}
+    for s in cfg.get("sentinels", []):
+        s = dict(s)
+        sent = SentinelUav(
+            uav_id=s.pop("id"),
+            bus=world.bus,
+            home=_resolve_home(s, env),
+            orbit=s.pop("orbit"),
+            **s,
+        )
+        sentinels[sent.uav_id] = sent
+        world.friendlies[sent.uav_id] = sent
+
     # Simulated network layer (SIM-COM-001/002): every C2<->UAV and UAV<->UAV
     # topic rides it. The default config is a near-perfect link, preserving
     # the v0.1 verified baseline; scenarios may degrade it (`comms:` block).
     comms = CommsModel(world, **dict(cfg.get("comms") or {}))
     for uav in uavs.values():
         comms.register_endpoint(uav.uav_id, uav)
+    for sent in sentinels.values():
+        comms.register_endpoint(sent.uav_id, sent)
+
+    for sent in sentinels.values():
+        world.add_node(mounted(EoIrSensor)(
+            f"eo-{sent.uav_id}", world, sent, max_range=3000.0, full_id_range=1000.0))
+        world.add_node(mounted(RfSensor)(
+            f"rf-{sent.uav_id}", world, sent, max_range=8000.0))
 
     for s in cfg.get("sensors", []):
         s = dict(s)
@@ -170,6 +196,8 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     for uav in uavs.values():
         world.add_node(uav)
+    for sent in sentinels.values():
+        world.add_node(sent)
     world.add_node(EngagementAdjudicator(world, uavs, turrets))
 
     tracker = EvalTracker(world)
@@ -216,6 +244,7 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         world=world,
         recorder=recorder,
         uavs=uavs,
+        sentinels=sentinels,
         turrets=turrets,
         eval_tracker=tracker,
         orchestrator=orchestrator,

@@ -73,3 +73,24 @@ class Sensor(Node):
 
     def _header(self, t: float) -> Header:
         return Header(stamp=t, frame_id="map")
+
+
+def mounted(sensor_cls: type[Sensor]) -> type[Sensor]:
+    """A sensor class variant that rides a friendly airframe: the sensor
+    position tracks the platform every scan (the
+    :class:`~coopuavs.sensors.seeker.OnboardSeeker` pattern, reused for
+    sentinel payloads, PHY-SNT-001). Occlusion and weather coupling apply
+    unchanged — an airborne look simply starts from the platform."""
+
+    class MountedSensor(sensor_cls):
+        def __init__(self, name, world, uav, **kwargs):
+            super().__init__(name, world, uav.body.position, **kwargs)
+            self._platform = uav
+
+        def update(self, t: float, dt: float) -> None:
+            self.position = self._platform.body.position
+            super().update(t, dt)
+
+    MountedSensor.__name__ = f"Mounted{sensor_cls.__name__}"
+    MountedSensor.__qualname__ = MountedSensor.__name__
+    return MountedSensor

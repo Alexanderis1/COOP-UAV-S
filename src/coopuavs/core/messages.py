@@ -87,6 +87,7 @@ class UavMode(str, Enum):
     HERDING = "herding"           # cooperative role: push target, don't shoot
     BLOCKING = "blocking"         # cooperative role: deny an escape direction
     ENGAGE = "engage"
+    PATROL = "patrol"             # sentinel: flying the surveillance orbit
     RTB = "rtb"
     REARM = "rearm"               # at home pad: recharge + rearm turnaround
 
@@ -311,6 +312,8 @@ class UavState:
     task_id: int | None = None
     link: float = 1.0                   # 0..1 datalink quality (PHY-UAV-043)
     max_speed: float = 0.0              # platform capability, m/s (0 = unknown)
+    kind: str = "interceptor"           # "interceptor" | "sentinel" (PHY-SNT)
+    effector: str = ""                  # effector type value; "" = unarmed
 
 
 @dataclass
