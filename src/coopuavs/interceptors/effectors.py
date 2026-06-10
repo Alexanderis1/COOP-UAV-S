@@ -35,6 +35,21 @@ class Effector:
     def in_envelope(self, rel_pos: np.ndarray, own_vel: np.ndarray, target_vel: np.ndarray) -> bool:
         return self.p_kill(rel_pos, own_vel, target_vel) > 0.0
 
+    def quality_window(self, rel_pos: np.ndarray, own_vel: np.ndarray) -> bool:
+        """Whether the geometry sits in the *high-quality* part of the
+        envelope — near optimal range, near boresight. Fire control gates
+        clearance requests on this so shots cluster near pk_max instead of
+        being spent at the degraded envelope edge (PHY-GCS-007 rationale)."""
+        rng = float(np.linalg.norm(rel_pos))
+        if rng > 1.25 * self.optimal_range or rng < 1.0:
+            return False
+        own_speed = float(np.linalg.norm(own_vel))
+        if own_speed < 1e-6:
+            return False
+        cos_off = float(own_vel @ rel_pos) / (own_speed * rng)
+        off_axis = np.degrees(np.arccos(np.clip(cos_off, -1.0, 1.0)))
+        return off_axis <= 0.5 * self.max_off_axis_deg
+
     def p_kill(self, rel_pos: np.ndarray, own_vel: np.ndarray, target_vel: np.ndarray) -> float:
         rng = float(np.linalg.norm(rel_pos))
         if rng > self.max_range or rng < 1.0:

@@ -33,7 +33,11 @@ from .world import World
 # Effective lethal radius of one HE/frag round against a small airframe, m.
 TURRET_LETHAL_RADIUS = 2.0
 # Fraction of target speed treated as unpredictable lateral motion over TOF.
-TURRET_EVASION_FACTOR = 0.3
+# 0.15 models lead-corrected fire control against largely ballistic cruise
+# profiles (v0.3 hit-rate review: at 0.3 the evasion term dominated sigma
+# beyond ~400 m and turrets sprayed hopeless 2-5% bursts — pure stray-round
+# pollution; the residual 15% covers weave and estimate error).
+TURRET_EVASION_FACTOR = 0.15
 
 
 class EngagementAdjudicator(Node):
@@ -79,14 +83,20 @@ class EngagementAdjudicator(Node):
                 return
             rel = target.position - uav.position
             pk_true = uav.effector.p_kill(rel, uav.velocity, target.velocity)
+            result.pk = pk_true
+            result.effector = uav.effector.type
             if self.world.rng.random() < pk_true:
                 self._register_kill(result, target, uav.effector.type, msg.uav_id, pk_true)
             else:
                 self.world.log_event(
-                    "miss", uav_id=msg.uav_id, enemy_id=target.id, pk=round(pk_true, 3)
+                    "miss", uav_id=msg.uav_id, enemy_id=target.id,
+                    effector=uav.effector.type.value, pk=round(pk_true, 3),
+                    target_kind="track",
                 )
         else:
-            self.world.log_event("fire_no_target", uav_id=msg.uav_id)
+            self.world.log_event("fire_no_target", uav_id=msg.uav_id,
+                                 effector=uav.effector.type.value,
+                                 target_kind="track")
 
         self._result_pub.publish(result)
 
@@ -124,16 +134,22 @@ class EngagementAdjudicator(Node):
                 + (TURRET_EVASION_FACTOR * float(np.linalg.norm(target.velocity)) * tof) ** 2
             p_round = 1.0 - float(np.exp(-(TURRET_LETHAL_RADIUS**2) / (2.0 * sigma2 + 1e-9)))
             p_burst = 1.0 - (1.0 - p_round) ** n_rounds
+            result.pk = p_burst
+            result.effector = msg.effector
             if self.world.rng.random() < p_burst:
                 self._register_kill(result, target, msg.effector, msg.uav_id, p_burst)
                 stray_rounds = max(0, n_rounds - 1)   # the killing round stops
             else:
                 self.world.log_event(
-                    "miss", uav_id=msg.uav_id, enemy_id=target.id, pk=round(p_burst, 3)
+                    "miss", uav_id=msg.uav_id, enemy_id=target.id,
+                    effector=msg.effector.value, pk=round(p_burst, 3),
+                    target_kind="track",
                 )
                 stray_rounds = n_rounds
         else:
-            self.world.log_event("fire_no_target", uav_id=msg.uav_id)
+            self.world.log_event("fire_no_target", uav_id=msg.uav_id,
+                                 effector=msg.effector.value,
+                                 target_kind="track")
             stray_rounds = n_rounds
 
         self._stray_rounds(turret, msg.predicted_intercept, stray_rounds)

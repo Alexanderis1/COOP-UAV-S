@@ -110,6 +110,40 @@ class EvalTracker(Node):
             if "latency" in ev
         ]
 
+        # Engagement attribution (SIM-GT-004): who shot what with which
+        # weapon, per shooter and per weapon class. Turret shots report the
+        # projectile effector; the weapon row distinguishes them by the
+        # shooter being a turret.
+        by_shooter: dict[str, dict] = {}
+        by_weapon: dict[str, dict] = {}
+        for ev in events:
+            if ev["kind"] not in SHOT_EVENT_KINDS or "uav_id" not in ev:
+                continue
+            shooter = ev["uav_id"]
+            weapon = ("turret_gun" if shooter in self.world.turrets
+                      else ev.get("effector", "unknown"))
+            for row in (
+                by_shooter.setdefault(shooter, {
+                    "weapon": weapon, "shots": 0, "hits": 0, "kills": 0,
+                    "debris_kills": 0, "_pks": []}),
+                by_weapon.setdefault(weapon, {
+                    "shots": 0, "hits": 0, "kills": 0,
+                    "debris_kills": 0, "_pks": []}),
+            ):
+                row["shots"] += 1
+                if ev["kind"] == "kill":
+                    row["hits"] += 1
+                    row["kills"] += 1
+                elif ev["kind"] == "debris_neutralized":
+                    row["hits"] += 1
+                    row["debris_kills"] += 1
+                if "pk" in ev:
+                    row["_pks"].append(ev["pk"])
+        for table in (by_shooter, by_weapon):
+            for row in table.values():
+                pks = row.pop("_pks")
+                row["mean_pk"] = round(float(np.mean(pks)), 3) if pks else None
+
         return {
             "detection": {
                 "acquired": sum(e.acquired for e in enemies),
@@ -144,6 +178,10 @@ class EvalTracker(Node):
                 "mean_latency": (
                     round(float(np.mean(auth_latencies)), 2) if auth_latencies else None
                 ),
+            },
+            "engagements": {
+                "by_shooter": by_shooter,
+                "by_weapon": by_weapon,
             },
         }
 

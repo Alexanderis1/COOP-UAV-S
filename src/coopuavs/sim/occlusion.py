@@ -78,6 +78,12 @@ class OcclusionGrid:
             if t_int is None:
                 continue
             t_enter, t_exit = t_int
+            if t_enter <= 1e-9 and p0[2] <= height:
+                # The ray starts inside this footprint below the roof: the
+                # emitter is *mounted on* the structure (rooftop sensor,
+                # turret at its host building) — the host does not occlude
+                # its own instrument.
+                continue
             z_enter = p0[2] + t_enter * (p1[2] - p0[2])
             z_exit = p0[2] + t_exit * (p1[2] - p0[2])
             if min(z_enter, z_exit) <= height:

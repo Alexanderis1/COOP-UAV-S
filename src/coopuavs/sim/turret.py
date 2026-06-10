@@ -66,13 +66,20 @@ class GroundTurret(Node):
         muzzle_velocity: float = 850.0,   # m/s
         dispersion_mrad: float = 3.0,     # 1-sigma per axis
         decoy_threshold: float = 0.7,     # don't spend rounds on likely decoys
-        min_pk: float = 0.03,             # don't spray at hopeless geometry
+        min_pk: float = 0.12,             # don't spray at hopeless geometry
+        # (v0.3 hit-rate review: at 0.03 turrets opened fire at ranges where
+        # a burst had a 2-5% chance and every miss landed 5 stray rounds on
+        # the city; holding to ~0.12 concentrates fire inside ~600 m where
+        # bursts actually connect and strays drop proportionally.)
         settle_deg: float = 2.0,
         clearance_window: float = 3.0,    # s an AUTHORIZED token stays valid
         rate_hz: float = 10.0,
     ):
         super().__init__(turret_id, world.bus, rate_hz=rate_hz)
         self.turret_id = turret_id
+        # Static survey geometry only (firing-arc masking, SIM-EFF-004) —
+        # the turret still never reads ground-truth enemy state.
+        self._occlusion = world.occlusion
         self.position = np.asarray(position, dtype=float)
         self.slew_az_dps = slew_az_dps
         self.slew_el_dps = slew_el_dps
@@ -240,9 +247,19 @@ class GroundTurret(Node):
                 continue
             if trk.p_decoy >= self.decoy_threshold:
                 continue
+            if trk.time_since_update > TRACK_FRESH_S:
+                # Coasted estimate: the airframe behind it is unconfirmed
+                # (often already dead or crashed) — a burst at it is a
+                # guaranteed fire_no_target plus five strays on the city.
+                continue
             pos = trk.position + trk.velocity * max(0.0, t - trk.header.stamp)
             dist = float(np.linalg.norm(pos - self.position))
             if dist > self.max_range:
+                continue
+            if not self._occlusion.clear(self.position, pos):
+                # Firing-arc masking (SIM-EFF-004): the static building
+                # geometry is survey data a real fire-control computer has;
+                # a lay through a rooftop only wastes the magazine.
                 continue
             # Ammunition discipline: hold fire until the burst has a real
             # chance — dispersion x range x target speed says when.

@@ -47,7 +47,14 @@ from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
 MIN_PK_TO_REQUEST = 0.25   # don't waste ammo on envelope-edge shots
-MIN_PK_TO_RELEASE = 0.15   # abort if geometry collapsed while clearing
+MIN_PK_TO_RELEASE = 0.30   # abort if geometry collapsed while clearing
+# Inside this multiple of effector range, guidance switches from PIP lead
+# pursuit to terminal pure pursuit so own velocity aligns with the sight
+# line — the off-axis Pk gate measures exactly that angle.
+TERMINAL_RANGE_FACTOR = 1.5
+# No release on a track nobody has measured for this long: a coasted
+# prediction is how rounds end up adjudicated as fire_no_target.
+STALE_TRACK_FIRE_S = 2.0
 # A clearance token lost in transit must not deadlock the interlock
 # (SIM-COM-003): if no answer arrives within this window, re-request.
 CLEARANCE_TIMEOUT_S = 3.0
@@ -208,14 +215,26 @@ class InterceptorUav(UavAirframe):
         # Fire control runs on the track extrapolated to now — a 0.2 s stale
         # track is an 11 m error against an OWA, comparable to the envelope.
         tgt_pos = track.position + track.velocity * max(0.0, t - track.header.stamp)
-        v_cmd = guidance.pursuit_velocity(
-            self.body.position, tgt_pos, track.velocity, self.max_speed
-        )
+        rel = tgt_pos - self.body.position
+        if float(np.linalg.norm(rel)) <= TERMINAL_RANGE_FACTOR * self.effector.max_range:
+            # Endgame: align own velocity with the sight line (fills the
+            # off-axis envelope) instead of flying at the lead point.
+            v_cmd = guidance.terminal_pursuit_velocity(
+                self.body.position, tgt_pos, track.velocity, self.max_speed
+            )
+        else:
+            v_cmd = guidance.pursuit_velocity(
+                self.body.position, tgt_pos, track.velocity, self.max_speed
+            )
         self.body.command_velocity(v_cmd)
 
-        rel = tgt_pos - self.body.position
         pk = self.effector.p_kill(rel, self.body.velocity, track.velocity)
         if pk < MIN_PK_TO_REQUEST or t < max(self._next_fire_ok, self._hold_until):
+            return
+        if track.time_since_update > STALE_TRACK_FIRE_S:
+            # Coasted estimate: keep pursuing, but a munition released at a
+            # prediction nobody has confirmed for seconds is a wasted round
+            # (the onboard seeker refreshes the track through the endgame).
             return
 
         self.mode = UavMode.ENGAGE
@@ -234,6 +253,12 @@ class InterceptorUav(UavAirframe):
                 self._hold_until = t + 1.5   # geometry unsafe — re-ask shortly
             else:  # DENIED — C2 will re-task us; stop asking for this track
                 self._task = None
+            return
+        if not self.effector.quality_window(rel, self.body.velocity):
+            # In envelope but not in the high-quality core: another beat of
+            # closure buys more Pk than this shot is worth — don't request
+            # release from degraded geometry. (Tokens already in hand were
+            # consumed or discarded above; this only delays new requests.)
             return
         if self._await_clearance and t >= self._await_until:
             # Request or token lost in transit (SIM-COM-003): the interlock
@@ -274,7 +299,9 @@ class InterceptorUav(UavAirframe):
                 uav_id=self.uav_id,
                 track_id=track.track_id,
                 effector=self.effector.type,
-                predicted_intercept=track.position.copy(),
+                # The munition flies at the geometry the Pk was just costed
+                # on — the extrapolated fix, not the stale track position.
+                predicted_intercept=tgt_pos.copy(),
                 p_kill=pk,
                 target_kind=self._task.target_kind,
                 debris_id=self._task.debris_id,

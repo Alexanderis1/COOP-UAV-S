@@ -149,7 +149,7 @@ def test_payload_accessors_match_icd_shapes():
     truth = ctl.truth()
     assert set(truth) == {"t", "enemies", "metrics"}
     assert set(truth["metrics"]) == {"detection", "attrition", "economics",
-                                     "collateral", "auth"}
+                                     "collateral", "auth", "engagements"}
 
     ctl.stop()
     assert ctl.status == "done"

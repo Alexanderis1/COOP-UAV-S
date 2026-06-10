@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.messages import EngagementTask, Header, ThreatAssessment, Track, UavState
+from ..interceptors.effectors import EFFECTOR_FACTORIES
 from ..interceptors.guidance import intercept_time
 from ..risk.zones import RiskMap
 
@@ -34,6 +35,17 @@ DECOY_IGNORE_THRESHOLD = 0.85   # p_decoy above which a track gets no shooter
 MAX_SUPPORT_PER_TASK = 2
 INCUMBENT_DISCOUNT = 0.7        # hysteresis: re-assignment must beat this margin
 CORRIDOR_LEAD_S = 30.0          # blockers are scored against t+30 s corridor
+
+# Effector capability table for Pk-aware shooter choice (PHY-GCS-007),
+# derived from the same factories fire control uses so they cannot drift:
+# effector type value -> (pk_max, max_closing_speed).
+EFFECTOR_CAPS = {
+    name: (f().pk_max, f().max_closing_speed)
+    for name, f in EFFECTOR_FACTORIES.items()
+}
+# A shooter whose envelope tops out below the track's speed (with margin)
+# can only roll zero-Pk shots — it is not an eligible shooter.
+CLOSING_MARGIN = 0.8
 
 
 def allocate(
@@ -90,7 +102,8 @@ def allocate(
             if not candidates:
                 continue
 
-        shooter_id, t_int = _best_shooter(trk, a, candidates, uav_speeds, incumbents)
+        shooter_id, t_int = _best_shooter(trk, a, candidates, uav_speeds,
+                                          incumbents, uav_effectors)
         shooter_speed = uav_speeds.get(shooter_id, 30.0)
         del available[shooter_id]
 
@@ -142,21 +155,41 @@ def _best_shooter(
     available: dict[str, UavState],
     uav_speeds: dict[str, float],
     incumbents: dict[int, str],
+    uav_effectors: dict[str, str] | None = None,
 ) -> tuple[str, float | None]:
-    """Lowest effective intercept time among available UAVs.
+    """Lowest Pk-weighted effective intercept time among available UAVs
+    (PHY-GCS-007).
 
-    Uncatchable pairings cost the corridor flight time instead, so when
-    nobody can catch the target the UAV best placed on the future corridor
-    still takes the (blocking) shot."""
+    Eligibility first: a platform whose effector cannot tolerate the
+    track's closing speed (net gun vs a 55 m/s OWA) would only ever roll
+    zero-Pk shots — it is excluded while any envelope-feasible candidate
+    exists. Cost = intercept time / Pk proxy, so a slightly slower
+    projectile carrier beats a marginally faster shooter with a degraded
+    envelope. Uncatchable pairings cost the corridor flight time instead,
+    so when nobody can catch the target the UAV best placed on the future
+    corridor still takes the (blocking) shot."""
+    uav_effectors = uav_effectors or {}
+    eligible = {
+        uid: u for uid, u in available.items()
+        if trk.speed <= CLOSING_MARGIN
+        * EFFECTOR_CAPS.get(uav_effectors.get(uid, "projectile"),
+                            (0.65, 250.0))[1]
+    }
+    # All-ineligible (saturation corner): someone must still block/herd.
+    pool = eligible or available
     lead_point = trk.position + trk.velocity * CORRIDOR_LEAD_S
     best_id, best_cost, best_t_int = None, np.inf, None
-    for uav_id, u in available.items():
+    for uav_id, u in pool.items():
         speed = uav_speeds.get(uav_id, 30.0)
         t_int = intercept_time(trk.position - u.position, trk.velocity, speed)
         if t_int is not None:
             cost = t_int
         else:
             cost = 300.0 + float(np.linalg.norm(lead_point - u.position)) / max(speed, 1.0)
+        pk_max, max_closing = EFFECTOR_CAPS.get(
+            uav_effectors.get(uav_id, "projectile"), (0.65, 250.0))
+        pk_proxy = pk_max * (1.0 - 0.4 * min(trk.speed / max_closing, 1.0))
+        cost /= max(pk_proxy, 0.1)
         if incumbents.get(trk.track_id) == uav_id:
             cost *= INCUMBENT_DISCOUNT
         if cost < best_cost:

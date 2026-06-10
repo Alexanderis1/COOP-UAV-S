@@ -57,6 +57,30 @@ def pursuit_velocity(
     return direction / n * own_speed
 
 
+def terminal_pursuit_velocity(
+    own_pos: np.ndarray, target_pos: np.ndarray, target_vel: np.ndarray, own_speed: float
+) -> np.ndarray:
+    """Terminal-phase pure pursuit: steer at the target itself, not the PIP.
+
+    The effector's off-axis gate measures the angle between *own velocity*
+    and the target line of sight — flying at the lead point keeps that
+    angle large through the endgame and hard-zeroes Pk exactly when the
+    shot should happen. Inside effector range, pointing the velocity
+    vector down the sight line (with a small kinematic lead so a crossing
+    target doesn't outwalk the closure) is what fills the envelope.
+    """
+    rel = target_pos - own_pos
+    rng = float(np.linalg.norm(rel))
+    if rng < 1e-6:
+        return np.zeros(3)
+    lead_t = 0.2 * rng / max(own_speed, 1.0)
+    direction = rel + target_vel * lead_t
+    n = float(np.linalg.norm(direction))
+    if n < 1e-6:
+        return np.zeros(3)
+    return direction / n * own_speed
+
+
 def goto_velocity(own_pos: np.ndarray, waypoint: np.ndarray, speed: float, arrive_radius: float = 20.0) -> np.ndarray:
     direction = waypoint - own_pos
     dist = float(np.linalg.norm(direction))
