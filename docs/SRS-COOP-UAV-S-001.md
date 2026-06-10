@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SRS-COOP-UAV-S-001 |
-| Version | 0.2 — OI-001 Resolved: Class A+ Cooperative Engagement Strategy |
+| Version | 0.3 — Threat maneuverability classification; UAV battery orchestration |
 | Status | DRAFT |
 | Date | 2026-06-10 |
 | Classification | RESTRICTED |
@@ -22,6 +22,7 @@
 |---|---|---|---|
 | 0.1 | 2026-06-10 | Requirements Engineering | Initial draft — elicited from stakeholder and derived from hackathon baseline (`claude/uav-swarm-interception-hackathon-f0vqi0`) |
 | 0.2 | 2026-06-10 | Requirements Engineering | OI-001 resolved: Class A+ engagement strategy defined as two-mode cooperative approach (relay interception primary; herding to anti-air gun kill zone secondary). Added SRS-COOP-007 through SRS-COOP-013, SRS-C2-011, SRS-IF-006/007, SRS-SAF-010/011. Updated threat table, traceability matrix, and OI list. |
+| 0.3 | 2026-06-10 | Requirements Engineering | Stakeholder correction: threat trajectory adaptation attribute added; herding strategy restricted to maneuvering threats only (Class B/C); fixed-route threats (Class A/A+) use route-ambush gun coordination instead. Battery orchestration requirements added: charging stations, minimum deployment threshold, autonomous RTB/charge/redeploy cycle. Added SRS-CLS-009–012, SRS-C2-012, SRS-COOP-014–016, SRS-UAV-014–021, SRS-SIM-012–014. |
 
 ---
 
@@ -104,6 +105,10 @@ The COOP-UAV-S system provides layered, multi-domain detection, classification, 
 | TTI | Time To Impact |
 | VTOL | Vertical Take-Off and Landing |
 | WTA | Weapon-Target Assignment |
+| FIXED-ROUTE | Threat trajectory adaptation class: follows a pre-programmed GPS/INS route; does NOT respond to interceptor positioning or threats. Cannot be herded or lured. |
+| MANEUVERING | Threat trajectory adaptation class: AI or human-guided; can actively respond to interceptor positioning by adjusting route. Herding strategies are applicable. |
+| Route-Ambush | Gun engagement coordination strategy for FIXED-ROUTE threats: gun crew is positioned at the safest available point ON the threat's predicted route (no trajectory deflection expected). |
+| Herding | Engagement shaping strategy for MANEUVERING threats: interceptors create threat corridors that exploit the threat's evasion capability to channel it toward a designated kill zone. |
 
 ### 1.4 Applicable and Reference Documents
 
@@ -172,13 +177,13 @@ The system design is informed by the Ukrainian theatre of operations (2022–202
 
 The system shall address the following threat classes. All four classes are mandatory in-scope engagement targets.
 
-| Class ID | Name | Representative Platform | Speed | Altitude AGL | Mass | Warhead | Notes |
-|---|---|---|---|---|---|---|---|
-| A | Strategic OWA | Shahed-136 / Geran-2 | 50–65 m/s | 50 m – 5,000 m (adaptive) | ~200 kg | Yes, 50–90 kg | Saturation swarm; decoy mixing; terminal dive |
-| A+ | Jet OWA | Geran-3 / Shahed-238 | 95–110 m/s | 2,000–5,000 m | ~200 kg | Yes | High-speed; direct pursuit impossible for VTOL fleet. Engagement via cooperative relay interception or herding to anti-air gun kill zone. See SRS-COOP-007 to SRS-COOP-013. |
-| B | Tactical FPV | Quadcopter kamikaze | 30–40 m/s | 0–200 m | 1–5 kg | Yes | Fiber-optic guided variants are RF-jam-immune; agile |
-| C | Loitering Munition | Lancet-3 | 70–90 m/s | 50–500 m | 10–15 kg | Yes, AI-guided seeker | AI-guided terminal seeker; precision strike |
-| D | RF Decoy | Gerbera-type | Matches Class A profile | Matches Class A profile | ~18 kg | No | Shares OWA radar signature; decoy fraction up to 60% of salvos |
+| Class ID | Name | Representative Platform | Speed | Altitude AGL | Mass | Warhead | Trajectory Adaptation | Notes |
+|---|---|---|---|---|---|---|---|---|
+| A | Strategic OWA | Shahed-136 / Geran-2 | 50–65 m/s | 50 m – 5,000 m (adaptive) | ~200 kg | Yes, 50–90 kg | **FIXED-ROUTE** — GPS/INS programmed waypoints; lateral weave is pre-programmed, not threat-responsive. Cannot be herded or lured. | Saturation swarm; decoy mixing; terminal dive |
+| A+ | Jet OWA | Geran-3 / Shahed-238 | 95–110 m/s | 2,000–5,000 m | ~200 kg | Yes | **FIXED-ROUTE** — same GPS-programmed route model. High speed makes relay interception geometry tight. Route-ambush is the secondary strategy. See SRS-COOP-007 to SRS-COOP-016. | High-speed; direct VTOL pursuit infeasible |
+| B | Tactical FPV | Quadcopter kamikaze | 30–40 m/s | 0–200 m | 1–5 kg | Yes | **MANEUVERING** — human-in-loop (fiber-optic) or onboard AI. Actively evades interceptors. Herding to kill zone is valid when feasible. | Fiber-optic variants are RF-jam-immune; agile; AI variants may perform evasive manoeuvres |
+| C | Loitering Munition | Lancet-3 | 70–90 m/s | 50–500 m | 10–15 kg | Yes | **MANEUVERING (terminal phase)** — AI-guided seeker adjusts approach vector in terminal phase. Pre-terminal cruise is largely fixed-route. Strategy must account for phase transition. | AI-guided terminal seeker; precision strike |
+| D | RF Decoy | Gerbera-type | Matches Class A | Matches Class A | ~18 kg | No | **FIXED-ROUTE** — mirrors Class A profile, including trajectory. | Shares OWA radar signature; decoy fraction up to 60% of salvos |
 
 **Notes on Class D (Decoys):** Class D decoys are not engagement targets and shall not consume interceptor resources. However, they cannot be positively distinguished from Class A at initial detection. The system shall implement decoy discrimination algorithms and shall not withhold engagement resources from potential Class A contacts solely on the basis of unconfirmed decoy probability.
 
@@ -337,6 +342,23 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 
 [SRS-CLS-008] If an engaged track is subsequently confirmed as a Class D decoy (post-intercept or via late sensor evidence), the interceptor shall receive a ABORT command, and the track shall be removed from the engagement queue. Any ammo expended shall be logged.
 
+### 6.3 Trajectory Adaptation Classification
+
+[SRS-CLS-009] The system shall maintain a **trajectory adaptation estimate** per confirmed track, with two possible values: `FIXED_ROUTE` and `MANEUVERING`. This estimate is distinct from and orthogonal to the threat class belief: a FIXED_ROUTE estimate means the track does not respond to UAV positioning; a MANEUVERING estimate means it does. This attribute is the primary gate for engagement strategy selection (SRS-C2-012).
+
+[SRS-CLS-010] The trajectory adaptation estimate shall be initialised from the current class belief prior:
+- Tracks with dominant Class A or A+ belief → initialise as `FIXED_ROUTE`.
+- Tracks with dominant Class B or C belief → initialise as `MANEUVERING`.
+- Tracks with ambiguous class belief → initialise as `MANEUVERING` (conservative default: assume the system can respond, avoid committing to a fixed-route strategy prematurely).
+
+[SRS-CLS-011] The trajectory adaptation estimate shall be updated continuously from observed track behaviour:
+- **Evidence for FIXED_ROUTE:** Predicted trajectory at T−N seconds matches observed position at T within TBD metres. The track does not deviate when interceptors approach within a configurable proximity threshold.
+- **Evidence for MANEUVERING:** Observed track position diverges from predicted by more than TBD metres after an interceptor approach within proximity threshold. Or: track velocity changes abruptly in a way inconsistent with pre-programmed weave profiles (Class A/D weave is sinusoidal at known frequency; a sudden aperiodic heading change is evidence of active evasion).
+
+The adaptation estimate shall be a Bayesian probability `p_maneuvering ∈ [0,1]`. A threshold (default 0.4) separates FIXED_ROUTE (below) from MANEUVERING (above). Thresholds shall be configurable.
+
+[SRS-CLS-012] The trajectory adaptation estimate shall be included in every `Track` message published by the fusion node. The C2 shall use it as a direct input to engagement strategy selection (SRS-C2-012). It shall also be displayed on the operator tactical console per track.
+
 ---
 
 ## 7. Functional Requirements — Command and Control (C2)
@@ -400,10 +422,21 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 1. Assess relay interception feasibility (SRS-COOP-007).
 2. If relay is feasible AND the expected relay-chain Pk exceeds a configurable threshold: assign relay interceptors (SRS-COOP-008).
-3. If relay is not feasible OR Pk is below threshold AND at least one kill zone is AVAILABLE: activate herding-to-kill-zone (SRS-COOP-010).
-4. If neither strategy is currently executable (no relay geometry, no available kill zone): hold all interceptors at best available monitoring positions; escalate to operator and Tier 1 C2 with THREAT UNENGAGEABLE alert; continue updating trajectory prediction for opportunity reassessment.
+3. If relay is not feasible OR Pk is below threshold: activate route-ambush gun coordination (SRS-COOP-014) — Class A/A+ are FIXED-ROUTE and cannot be herded.
+4. If neither strategy is currently executable (no relay geometry, no available gun zone on the predicted route): hold all interceptors at best available monitoring positions; escalate to operator and Tier 1 C2 with THREAT UNENGAGEABLE alert; continue updating trajectory prediction for opportunity reassessment.
 
 The operator shall be informed of the current strategy in execution for each Class A+ track on the tactical display.
+
+[SRS-C2-012] **Trajectory-adaptation-aware strategy routing (SHALL):** The C2 shall route every engagement to one of two strategy families based on the track's `p_maneuvering` value (SRS-CLS-011):
+
+| p_maneuvering | Strategy family | Eligible secondary strategies |
+|---|---|---|
+| < 0.4 (`FIXED_ROUTE`) | Relay interception primary | Route-ambush gun coordination secondary (SRS-COOP-014). **Herding is PROHIBITED** — a fixed-route threat ignores UAV corridor threats entirely; assigning UAVs to herding posts is a waste of fleet resources with zero tactical effect. |
+| ≥ 0.4 (`MANEUVERING`) | Direct pursuit or relay interception primary | Herding to kill zone secondary (SRS-COOP-010/011/012/013). Route-ambush coordination may also be used if a gun crew happens to be on the predicted approach vector. |
+
+When `p_maneuvering` is in the transition zone (0.35–0.45), the system shall default to the FIXED_ROUTE strategy family (conservative: avoids wasting UAVs on herding posts for a threat that may not respond) while continuing to update the estimate.
+
+Class C (Loitering Munition) transitions from fixed-route behaviour in cruise to maneuvering in the terminal phase. The C2 shall monitor Class C tracks for phase transition evidence and update the strategy accordingly at each TEWA cycle.
 
 ---
 
@@ -515,14 +548,55 @@ The operator shall be informed of the current strategy in execution for each Cla
 
 | Parameter | Minimum Requirement |
 |---|---|
-| Maximum speed | ≥ 45 m/s. Class A+ (95–110 m/s) is not engaged by direct pursuit; see SRS-COOP-007 to SRS-COOP-013 for the cooperative relay and herding strategy. |
+| Maximum speed | ≥ 45 m/s. Class A+ (95–110 m/s) is not engaged by direct pursuit; see SRS-COOP-007 to SRS-COOP-016 for the cooperative relay (primary) and route-ambush gun coordination (secondary) strategies. |
 | Maximum acceleration | ≥ 15 m/s² |
 | Operational endurance | ≥ 25 minutes at cruise speed |
 | Payload mass (effector + seeker) | ≥ TBD kg |
 | Operating altitude | 50 m – 5,000 m AGL |
 | Operating temperature | −25°C to +45°C |
 
-Class A+ direct-pursuit engagement is by design not required. Class A+ is addressed exclusively through cooperative relay interception and herding to anti-air gun kill zone (SRS-COOP-007 to SRS-COOP-013). OI-001 closed.
+Class A+ direct-pursuit engagement is by design not required. Class A+ (FIXED-ROUTE) is addressed through cooperative relay interception (primary) and route-ambush gun coordination (secondary). Herding is inapplicable to Class A+ because it cannot respond to UAV corridor positioning. OI-001 closed; v0.3 correction applied.
+
+### 9.6 Battery Management and Charging Station Orchestration
+
+> The interceptor UAV fleet operates from a set of charging stations distributed across the defended area. UAVs autonomously manage their own charge/deploy cycle in coordination with the C2, with the constraint that a minimum number of UAVs must remain deployed at all times during active operations.
+
+[SRS-UAV-014] **Continuous battery monitoring (SHALL):** Each interceptor UAV shall continuously measure and report its battery state of charge (SoC, expressed as a percentage 0–100%) and estimated remaining flight time in every `UavState` message. The estimation shall account for: current flight mode (hover vs. cruise vs. high-speed pursuit consume different power), current altitude, and ambient temperature (battery performance degrades below −10°C per [SRS-ENV-002]).
+
+[SRS-UAV-015] **Minimum deployment threshold (SHALL):** A configurable minimum number of interceptor UAVs (`min_deployed`) shall be maintained in airborne, operationally ready status during any active threat scenario. "Operationally ready" means: airborne AND in mode IDLE, TRANSIT, PURSUIT, ENGAGE, BLOCKING, or HERDING. UAVs in modes RTB, CHARGING, or MAINTENANCE do NOT count toward the minimum. The default `min_deployed` value and any changes shall be authorised by the Tier 2 operator. The system shall alert the operator if the deployed count falls or is predicted to fall below `min_deployed` within a configurable time horizon.
+
+[SRS-UAV-016] **Autonomous RTB request and C2 arbitration (SHALL):** When a UAV's estimated remaining flight time falls below the configurable RTB-trigger threshold (default: time required to reach nearest charging station plus a safety margin of TBD minutes), the UAV shall autonomously request permission to RTB. The C2 shall evaluate the request against the following rules:
+
+| Condition | C2 Response |
+|---|---|
+| UAV is not the assigned shooter in an active engagement AND return would not drop deployed count below `min_deployed` | Approve RTB immediately; assign nearest available charging station |
+| UAV is the assigned shooter in an active engagement AND relay/substitute shooter is available | Approve RTB; reassign engagement to substitute before UAV departs |
+| UAV is the assigned shooter AND no substitute is available AND engagement is active | Defer RTB approval for up to TBD seconds (within safe battery margin); concurrently seek substitute |
+| Battery SoC falls below emergency threshold (default 10%) | Unconditional RTB regardless of any of the above; C2 cannot override emergency RTB |
+| Return would drop deployed count below `min_deployed` AND no UAVs are currently charging | Alert operator; approve RTB anyway if SoC ≤ 15% (cannot hold UAV in air below safe margin) |
+
+[SRS-UAV-017] **Charging station assignment (SHALL):** The C2 shall maintain a real-time map of all charging stations: location (ENU), total charging capacity (number of simultaneous UAVs), current occupancy, and per-UAV estimated charge completion time. When approving a UAV RTB, the C2 shall assign it to the charging station that minimises transit time subject to: available capacity at the station when the UAV is predicted to arrive. The UAV shall fly directly to the assigned station and not divert without a new C2 assignment.
+
+[SRS-UAV-018] **Charging cycle orchestration — staggered recharge (SHALL):** The C2 shall orchestrate the fleet's charge/deploy cycle such that UAVs do not all reach low battery simultaneously, which would cause mass RTB and a catastrophic drop below `min_deployed`. The orchestration shall:
+- Track predicted RTB time for every deployed UAV based on current SoC and consumption rate.
+- Proactively send UAVs to charge before the RTB trigger is reached, if a replacement is available and doing so prevents a future deployment gap.
+- Ensure that no more than `fleet_size − min_deployed` UAVs are simultaneously absent from deployment (charging, in transit to station, or in transit from station).
+- Prefer staggered charging: send UAVs one or two at a time, not in a batch, so that charging completions are distributed over time.
+
+[SRS-UAV-019] **Emergency low-battery behaviour (SHALL — inviolable):** When a UAV's SoC falls below the emergency threshold (default 10%, configurable), the UAV shall:
+1. Immediately safe all effectors.
+2. Issue an emergency RTB declaration to the C2 (cannot be overridden).
+3. Navigate directly to the nearest charging station or, if insufficient range to reach any station, execute an emergency landing at the nearest safe ground point within range.
+
+No C2 command, mode, or engagement task shall override emergency RTB once triggered. Emergency landings outside charging stations shall be logged and the UAV shall be marked MAINTENANCE until manually recovered.
+
+[SRS-UAV-020] **Post-charge redeployment (SHALL):** When a UAV completes charging (SoC ≥ configurable deployment-ready threshold, default 90%), the charging station controller shall notify the C2. The C2 shall evaluate the current threat picture and deployed count, and either:
+- Issue a DEPLOY command assigning the UAV to a patrol area or pre-positioned relay post; OR
+- Issue a STANDBY command keeping the UAV at the station if `deployed_count ≥ min_deployed` and no immediate tasking is needed.
+
+The decision shall be re-evaluated at every TEWA planning cycle. A UAV shall not remain on standby indefinitely during an active raid; the C2 shall deploy it proactively to maintain the relay chain coverage.
+
+[SRS-UAV-021] **Charging station interface (SHALL):** Each charging station shall expose a machine-readable status interface to the C2 reporting: occupancy (UAV IDs present), per-UAV SoC, per-UAV estimated charge completion time, and station availability status (OPERATIONAL / DEGRADED / OFFLINE). The C2 shall poll or subscribe to this interface at the TEWA planning rate. Station status changes shall be reflected in the fleet management display on the operator console.
 
 ---
 
@@ -597,9 +671,13 @@ The feasibility assessment shall be completed within 20 seconds of track confirm
 
 [SRS-COOP-009] **A+ trajectory prediction (SHALL):** Class A+ trajectory prediction shall be computed in 3D, accounting for the A+'s known flight profile (high-altitude cruise with terminal dive). The predicted trajectory shall be extrapolated a minimum of 90 seconds forward to allow relay posts to be pre-positioned. The trajectory prediction shall be updated at every TEWA cycle with the latest track state.
 
-[SRS-COOP-010] **Herding to anti-air gun kill zone (SECONDARY strategy — SHALL when relay is infeasible or insufficient):** When relay interception is assessed as infeasible, OR when the relay chain has been exhausted without achieving a kill, the C2 shall activate the herding-to-kill-zone strategy:
+[SRS-COOP-010] **Herding to anti-air gun kill zone (SECONDARY strategy for MANEUVERING threats only — SHALL when relay is infeasible or insufficient AND p_maneuvering ≥ 0.4):**
 
-1. **Kill zone selection:** The C2 shall select the anti-air gun kill zone that minimises the lateral angular deviation required from the A+'s current projected trajectory, among all zones currently marked AVAILABLE (gun crew confirmed present and ready). If no kill zone is available, the system shall alert the Tier 1 Metropolitan C2 and the operator immediately.
+> **Prerequisite:** This strategy SHALL ONLY be activated for tracks classified as MANEUVERING (SRS-CLS-011). For FIXED-ROUTE threats (p_maneuvering < 0.4), herding has no effect — the threat will ignore UAV corridor positioning and maintain its programmed route regardless. Apply SRS-COOP-014 (route-ambush) for fixed-route threats instead.
+
+When relay interception is assessed as infeasible for a MANEUVERING threat, the C2 shall activate the herding-to-kill-zone strategy:
+
+1. **Kill zone selection:** The C2 shall select the anti-air gun kill zone that minimises the lateral angular deviation required from the threat's current projected trajectory, among all zones currently marked AVAILABLE (gun crew confirmed present and ready). If no kill zone is available, the system shall alert the Tier 1 Metropolitan C2 and the operator immediately.
 
 2. **Herding formation assignment:** Available interceptors shall be assigned positions that create engagement threats on all A+ approach corridors except the one leading to the selected kill zone. Interceptors in herding positions shall be placed at posts the A+ would need to fly through on alternative routes — making those routes kinematically costly or geometrically risky. The kill-zone approach corridor shall be left uncontested.
 
@@ -625,7 +703,32 @@ Multiple kill zones may be designated. The C2 shall maintain kill zone status in
 | 5 | Gun crew | Engages A+ when it enters the kill zone |
 | 6 | C2 | Updates track: marks as ENGAGED BY GUN; suspends UAV engagement tasks for this track |
 
-[SRS-COOP-013] **Strategy transition continuity (SHALL):** The system shall be capable of transitioning between relay interception and herding strategies mid-engagement if the tactical situation changes (e.g., relay feasibility is lost because the A+ changes altitude/heading; or a gun crew becomes available that was previously unavailable). Strategy transitions shall be executed within one TEWA planning cycle. During transition, at least one interceptor shall maintain visual/sensor contact with the A+ to preserve track continuity.
+[SRS-COOP-013] **Strategy transition continuity (SHALL):** The system shall be capable of transitioning between relay interception, herding, and route-ambush strategies mid-engagement if the tactical situation changes (e.g., relay feasibility is lost; a gun crew becomes available; `p_maneuvering` crosses the classification threshold mid-flight). Strategy transitions shall be executed within one TEWA planning cycle. During transition, at least one interceptor shall maintain visual/sensor contact with the threat to preserve track continuity.
+
+### 11.3 Fixed-Route Threat — Route-Ambush Gun Coordination
+
+[SRS-COOP-014] **Route-ambush coordination for FIXED-ROUTE threats (SHALL when relay is infeasible AND p_maneuvering < 0.4):**
+
+When relay interception is not achievable and the track is classified as FIXED-ROUTE, herding is prohibited (SRS-C2-012). The secondary strategy is **route-ambush**: coordinate human anti-air gun crews to engage the threat at the safest point on its own predicted trajectory. The C2 shall:
+
+1. **Ambush point selection:** Compute all points on the A+'s predicted trajectory (extrapolated ≥ 90 s ahead per SRS-COOP-009) that fall within a configurable proximity (TBD m) of a gun kill zone currently marked AVAILABLE. Select the point that minimises debris risk (nearest to SAFE ground zone, consistent with gun crew having clear field of fire and sufficient engagement lead time).
+
+2. **Lead-time validation:** Verify that the selected ambush point allows the gun crew at least TBD seconds of preparation time (tracking acquisition + traverse/elevation to target bearing) before the threat arrives. If no point satisfies the lead-time constraint, escalate to operator.
+
+3. **Gun crew alert:** Issue the TRACK ALERT to the selected gun crew with: threat class, current position and velocity, predicted ambush point coordinates, predicted time of arrival (PTA) at ambush point, and lateral position uncertainty at that point. The alert format is identical to the herding handoff (SRS-IF-006) — the gun crew interface is the same; only the strategic context differs.
+
+4. **UAV supporting tasks:** While gun crew coordination proceeds, assign available interceptors to: (a) relay posts if any partial geometry exists, and (b) close-escort positions that maintain track continuity and provide late detection updates to narrow trajectory uncertainty. Interceptors shall NOT attempt shots unless relay geometry is confirmed viable, to avoid debris over uncleared ground.
+
+[SRS-COOP-015] **Trajectory uncertainty management for route-ambush (SHALL):** The accuracy of the route-ambush strategy depends entirely on trajectory prediction fidelity. The C2 shall:
+- Report trajectory prediction confidence (expressed as a lateral spread at the ambush point, in metres) to the gun crew in the TRACK ALERT.
+- Re-issue updated TRACK ALERTs at every TEWA cycle with refined position and PTA as the threat approaches.
+- If trajectory uncertainty at the ambush point exceeds a configurable threshold, alert the gun crew and assess whether an alternate ambush point with lower uncertainty is available.
+
+[SRS-COOP-016] **Strategy transition — maneuverability classification update mid-engagement (SHALL):** If a track's `p_maneuvering` crosses the classification threshold during an active engagement (e.g., a threat initially classified FIXED-ROUTE begins exhibiting evasion behaviour), the C2 shall:
+- Immediately re-evaluate the engagement strategy using SRS-C2-012.
+- If transitioning from FIXED-ROUTE to MANEUVERING: cancel route-ambush gun coordination (issue STAND DOWN to gun crew); reassign UAVs to herding formation if feasible.
+- If transitioning from MANEUVERING to FIXED-ROUTE: cancel herding formation (herding posts are now wasted resources); switch to route-ambush coordination.
+- Log the transition event with timestamp, track ID, old and new p_maneuvering, and new strategy assigned.
 
 ---
 
@@ -842,6 +945,19 @@ This prevents uncoordinated UAV shots against a Class A+ from creating debris ov
 
 [SRS-SIM-011] The test suite shall be executed on every software commit (CI/CD). Any test regression shall block integration.
 
+[SRS-SIM-012] **Charging station and battery cycle modelling (SHALL):** The simulation platform shall model:
+- A configurable number of charging stations at defined positions, each with configurable simultaneous charging capacity and charge-time profile per UAV (SoC → time-to-full).
+- Per-UAV SoC depletion as a function of flight mode (cruise, high-speed pursuit, hover) and ambient temperature. A linear drain model is acceptable for V0 but shall be replaced by a mode-weighted model before Phase 2 (ROADMAP §1).
+- The C2 orchestration logic (SRS-UAV-015 through SRS-UAV-020) shall be fully exercised in simulation, including: RTB arbitration under active engagements, staggered recharge scheduling, and emergency low-battery RTB.
+
+[SRS-SIM-013] **Minimum deployment threshold verification (SHALL):** Every simulation run shall record the deployed UAV count at every TEWA planning tick. Post-run analysis shall verify and report: minimum deployed count reached, number of ticks below `min_deployed`, and whether any engagement was attempted with zero deployed UAVs. These metrics shall be included in the Monte-Carlo batch report.
+
+[SRS-SIM-014] **Maneuverability classification test scenarios (SHALL):** The simulation shall include dedicated scenarios exercising the trajectory adaptation classification system (SRS-CLS-009 to SRS-CLS-012):
+- A scenario with all FIXED-ROUTE threats where the system must select route-ambush coordination (never herding).
+- A scenario with MANEUVERING threats where herding is applicable.
+- A scenario with a Class C loitering munition that transitions from fixed-route cruise to maneuvering terminal phase, verifying that the strategy updates correctly at transition.
+- A scenario where a FIXED-ROUTE threat is initially misclassified as MANEUVERING and the system corrects its strategy when behavioural evidence accumulates.
+
 ---
 
 ## 18. Open Issues and TBDs
@@ -854,10 +970,10 @@ The following items are unresolved at document version 0.1 and must be resolved 
 
 1. **Primary — Cooperative relay interception:** Pre-position relay interceptors along the predicted A+ corridor using Apollonius cutoff geometry. Relay posts are valid if the interceptor can reach the post before the A+ arrives, regardless of whether the interceptor can outrun the A+. Multiple relay stages form a chain; even slow VTOL platforms can contribute if pre-positioned far enough ahead.
 
-2. **Secondary — Herding to anti-air gun kill zone:** When relay geometry is not achievable, UAVs channel the A+'s trajectory toward a pre-designated kill zone where human-operated anti-air guns can engage safely. UAVs create engagement threats on all alternative corridors while leaving the kill-zone approach uncontested.
+2. **Secondary — Route-ambush gun coordination (v0.3 correction — NOT herding):** Class A+ is FIXED-ROUTE and cannot be herded. When relay geometry is not achievable, the C2 finds the safest point on the A+'s predicted route and coordinates human anti-air gun crews to be positioned there for an ambush engagement. UAVs continue to provide track continuity and any partial relay coverage. See SRS-COOP-014 to SRS-COOP-016.
 
 **New requirements generated:**
-- SRS-COOP-007 through SRS-COOP-013 (cooperative engagement for A+)
+- SRS-COOP-007 through SRS-COOP-016 (cooperative engagement for A+ and fixed-route threats)
 - SRS-C2-011 (strategy arbitration in TEWA loop)
 - SRS-IF-006 (anti-air gun crew alert interface)
 - SRS-IF-007 (kill zone designation interface)
@@ -932,11 +1048,11 @@ The following items are unresolved at document version 0.1 and must be resolved 
 
 | Threat Class | Detection | Tracking | Classification | C2/TEWA | ROE | Interceptor | Effector | Cooperation |
 |---|---|---|---|---|---|---|---|---|
-| A — Strategic OWA | DET-001, DET-002, DET-003 | TRK-001–011 | CLS-001–008 | C2-001–010 | ROE-001–011 | UAV-001–013 | EFF-001–004 | COOP-001–006 |
-| A+ — Jet OWA | DET-001, DET-002 | TRK-001–011 | CLS-001–005 | C2-001–011 | ROE-001–011 | UAV-001–013 (no direct pursuit) | EFF-001–004, EFF-005–008, EFF-009–010, IF-006, IF-007 | COOP-007–013 (relay primary; gun kill zone secondary); SAF-010, SAF-011 |
-| B — FPV | DET-001, DET-005 (acoustic critical) | TRK-001–011 | CLS-001–005 | C2-001–010 | ROE-001–011 | UAV-001–013 | EFF-001–004 (net preferred) | COOP-001–006 |
-| C — Loitering | DET-001–007 | TRK-001–011 | CLS-001–005 | C2-001–010 | ROE-001–011 | UAV-001–013 | EFF-001–004 | COOP-001–006 |
-| D — Decoy | DET-001–007 | TRK-001–011 | CLS-001–008 | C2-003–010 | ROE-008 | No engagement | N/A | N/A |
+| A — Strategic OWA | DET-001, DET-002, DET-003 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 | EFF-001–004 | COOP-001–006; COOP-014–016 if relay fails (FIXED-ROUTE — no herding) |
+| A+ — Jet OWA | DET-001, DET-002 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 (no direct pursuit) | EFF-001–004, EFF-005–010, IF-006, IF-007 | COOP-007–016 (relay primary; route-ambush secondary; herding PROHIBITED); SAF-010, SAF-011 |
+| B — FPV | DET-001, DET-005 (acoustic critical) | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 | EFF-001–004 (net preferred) | COOP-001–006; COOP-010–013 (herding valid — MANEUVERING); SAF-010, SAF-011 |
+| C — Loitering | DET-001–007 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 | EFF-001–004 | COOP-001–006; phase-dependent: COOP-014–016 in cruise (fixed-route), COOP-010–013 in terminal (maneuvering) |
+| D — Decoy | DET-001–007 | TRK-001–011 | CLS-001–012 | C2-003–012 | ROE-008 | No engagement | N/A | N/A |
 
 ### 19.2 Safety Requirements to Draft Code Review Items
 
@@ -959,9 +1075,14 @@ The following items in the v0.1 simulation draft require correction or validatio
 | SRS-IF-006/007 (gun crew alert interface) | Not implemented | New external interface component required |
 | SRS-SAF-010 (gun engagement cone deconfliction) | Not implemented | Hard safety function — highest priority; requires gun cone geometry model and UAV evacuation command |
 | SRS-SAF-011 (herding effector inhibit) | Not implemented | Add effector inhibit flag to UAV mode FSM for herding role |
+| SRS-CLS-009–012 (trajectory adaptation classification) | Not implemented — no maneuverability attribute in current track model | Add `p_maneuvering` field to Track message; implement behavioural update logic in fusion/classification module |
+| SRS-C2-012 (strategy routing by maneuverability) | Not implemented — current draft has no routing by adaptation class | Add strategy gate in TEWA loop; prohibit herding for FIXED_ROUTE tracks |
+| SRS-COOP-014–016 (route-ambush coordination) | Not implemented | New C2 module: ambush point selection on predicted trajectory, gun crew alert integration |
+| SRS-UAV-014–021 (battery orchestration) | Partially — battery drain and RTB on low battery exist (uav.py); no C2 orchestration, no charging stations, no minimum deployment threshold | Add charging station model, C2 fleet orchestration loop, staggered recharge scheduler; extend `UavState` with estimated remaining flight time |
+| SRS-SIM-012–014 (simulation: charging, maneuverability scenarios) | Not implemented | Add charging station nodes to sim; add mode-weighted battery depletion; add trajectory adaptation test scenarios |
 
 ---
 
-*End of SRS-COOP-UAV-S-001 v0.1*
+*End of SRS-COOP-UAV-S-001 v0.3*
 
 *This document is a DRAFT. It has not been formally reviewed or approved. All requirements are subject to change following stakeholder review of the open issues listed in Section 18.*
