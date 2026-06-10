@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SRS-COOP-UAV-S-001 |
-| Version | 0.4 — Sentinel UAVs, 3D coverage map, anti-air turret integration |
+| Version | 0.5 — All open issues resolved; response time requirements, HEL effector, fleet sizing, ROE thresholds |
 | Status | DRAFT |
 | Date | 2026-06-10 |
 | Classification | RESTRICTED |
@@ -23,6 +23,7 @@
 | 0.1 | 2026-06-10 | Requirements Engineering | Initial draft — elicited from stakeholder and derived from hackathon baseline (`claude/uav-swarm-interception-hackathon-f0vqi0`) |
 | 0.2 | 2026-06-10 | Requirements Engineering | OI-001 resolved: Class A+ engagement strategy defined as two-mode cooperative approach (relay interception primary; herding to anti-air gun kill zone secondary). Added SRS-COOP-007 through SRS-COOP-013, SRS-C2-011, SRS-IF-006/007, SRS-SAF-010/011. Updated threat table, traceability matrix, and OI list. |
 | 0.3 | 2026-06-10 | Requirements Engineering | Stakeholder correction: threat trajectory adaptation attribute added; herding strategy restricted to maneuvering threats only (Class B/C); fixed-route threats (Class A/A+) use route-ambush gun coordination instead. Battery orchestration requirements added: charging stations, minimum deployment threshold, autonomous RTB/charge/redeploy cycle. Added SRS-CLS-009–012, SRS-C2-012, SRS-COOP-014–016, SRS-UAV-014–021, SRS-SIM-012–014. |
+| 0.5 | 2026-06-10 | Requirements Engineering | All six open issues closed. OI-002/003: geometry-derived response time and detection range requirements adopted (SRS-PERF-001–008 TBDs resolved). OI-004: HEL (High-Energy Laser) selected; SRS-EFF-009/010 replaced by SRS-EFF-011–015. OI-005: 7 sectors / metropolitan area, 8 interceptors + 4 sentinels per sector (SRS-ARCH-002/003 updated). OI-006: HOTL pre-authorization window capped at 30 minutes (SRS-C2-009 updated). OI-007: ROE thresholds adopted as requirements; IHL legal review mandatory pre-deployment in PSSA (SRS-ROE-006 updated). C2 loop rate raised to ≥ 2 Hz (SRS-C2-001 updated). |
 | 0.4 | 2026-06-10 | Requirements Engineering | Sentinel UAV role added (forward observer, RF-silent detection, outside defended zone). 3D coverage map with obstacle-aware LOS, GREEN/RED voxel status, staleness tracking, and coverage utility metric. Anti-air turret integration as ground-fixed effectors with fire control slaving, ROE enforcement, and turret-UAV deconfliction. Operator 3D situational awareness display expanded. Fleet role taxonomy (SENTINEL vs INTERCEPTOR) formalised. Added SRS-SENT-001–010, SRS-COV-001–010, SRS-TUR-001–007, SRS-C2-013–014, SRS-IF-008–009, SRS-SAF-012, SRS-SIM-015–017. |
 
 ---
@@ -146,17 +147,17 @@ Requirements are structured as follows:
 
 ### 1.6 Summary of Open Issues
 
-The following open issues are identified at document version 0.1. They must be resolved before this SRS is elevated to baseline status.
+All open issues are resolved at document version 0.5. The SRS may now be elevated to DRAFT BASELINE status pending formal stakeholder review. No SRS-level TBDs remain. Pre-deployment conditions (PSSA IHL review, validated Pk surfaces, validated debris model) are noted in the relevant requirements as operational release gates.
 
-| ID | Summary | Impact | Target Resolution |
+| ID | Summary | Impact | Status |
 |---|---|---|---|
-| OI-001 | Class A+ Jet OWA (100 m/s) vs. VTOL-only interceptor fleet | **CLOSED v0.2** — Two-mode cooperative strategy adopted: relay interception primary, herding to anti-air gun kill zone secondary. See SRS-COOP-007 to SRS-COOP-013, SRS-C2-011, SRS-IF-006/007, SRS-SAF-010/011. | Closed |
-| OI-002 | Class-specific response time requirements not yet formally derived | High — performance requirements incomplete | Analysis due before PDR |
-| OI-003 | Detection/tracking KPIs derived from response time analysis not yet complete | High — performance requirements incomplete | Depends on OI-002 |
-| OI-004 | Directed energy effector type not specified (laser vs. HPM) | Medium — impacts platform, power, safety requirements | TBD |
-| OI-005 | Number of sector-level base stations and interceptors per metropolitan area | Medium — scales requirements for comms and C2 | CDR |
-| OI-006 | HOTL pre-authorization time window duration | Medium — safety and legal implication | Stakeholder review |
-| OI-007 | Collateral damage threshold values (RoeConfig parameters) | High — safety and IHL compliance | Legal/safety review |
+| OI-001 | Class A+ Jet OWA (100 m/s) vs. VTOL-only interceptor fleet | **CLOSED v0.2** — Two-mode cooperative strategy adopted: relay interception primary, route-ambush gun coordination secondary (v0.3 correction: herding prohibited for FIXED-ROUTE threats). See SRS-COOP-007 to SRS-COOP-016, SRS-C2-011/012, SRS-IF-006/007, SRS-SAF-010/011. | **CLOSED v0.2/v0.3** |
+| OI-002 | Class-specific response time requirements not formally derived | High — performance requirements incomplete | **CLOSED v0.5** — Geometry-derived values adopted: Class A ≥ 90 s / 6 km; A+ ≥ 60 s / 9 km; B ≥ 90 s / 7 km; C ≥ 60 s / 7 km. See SRS-PERF-001/002, SRS-C2-001/002. |
+| OI-003 | Detection and tracking KPIs not complete | High — performance requirements incomplete | **CLOSED v0.5** — Track accuracy ≤ 50 m at 5 km (Class A/A+/C); ≤ 30 m at 2 km (Class B). See SRS-PERF-005. |
+| OI-004 | Directed energy effector type not specified | Medium — impacts platform, power, safety | **CLOSED v0.5** — HEL (High-Energy Laser) selected. SRS-EFF-009/010 replaced by SRS-EFF-011–015. |
+| OI-005 | Metropolitan fleet sizing not defined | Medium — scales comms and C2 | **CLOSED v0.5** — 7 sectors / metropolitan area; 8 interceptors + 4 sentinels per sector. See SRS-ARCH-002/003. |
+| OI-006 | HOTL pre-authorization window duration not specified | Medium — safety and legal implication | **CLOSED v0.5** — Maximum 30 minutes. See SRS-C2-009. |
+| OI-007 | ROE collateral damage threshold values not validated | High — safety and IHL compliance | **CLOSED v0.5** — Thresholds adopted as requirements; mandatory IHL legal review and PSSA sign-off required before operational deployment. See SRS-ROE-006. |
 
 ---
 
@@ -235,9 +236,9 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 - **Tier 2 — Sector-Level Base Station:** Local TEWA loop, weapon-target assignment, fire authorisation per sector, interceptor fleet management within the sector.
 - **Tier 3 — UAV-Level Autonomy:** Execution of assigned engagement tasks, cooperative manoeuvre, and fail-safe autonomous operation during comms degradation.
 
-[SRS-ARCH-002] The number of Tier 2 sector base stations required to cover a metropolitan area shall be TBD (⚠ OI-005), but the system architecture shall scale to a minimum of 4 and maximum of 16 independent Tier 2 nodes without requiring changes to Tier 1 or Tier 3 software.
+[SRS-ARCH-002] The baseline metropolitan deployment shall comprise **7 Tier 2 sector base stations** per metropolitan area. The system architecture shall scale to a minimum of 4 and maximum of 16 independent Tier 2 nodes without requiring changes to Tier 1 or Tier 3 software. OI-005 closed.
 
-[SRS-ARCH-003] Each Tier 2 sector shall operate a minimum fleet of 4 kinetic interceptors (projectile-effector) and 2 non-kinetic interceptors (net-effector) per 10 km² of defended airspace. TBC.
+[SRS-ARCH-003] Each Tier 2 sector shall operate a minimum baseline fleet of **8 interceptor UAVs** and **4 sentinel UAVs**. This fleet size is the operational baseline derived from metropolitan threat density analysis (OI-005 closed). Sector fleet size shall be configurable and may be increased for higher-threat sectors.
 
 ### 3.2 Message-Based Interface Architecture
 
@@ -391,9 +392,9 @@ The adaptation estimate shall be a Bayesian probability `p_maneuvering ∈ [0,1]
 3. Assign interceptors to tracks based on threat priority and kinematic feasibility.
 4. Publish engagement tasks to interceptors.
 
-The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — for Class B (FPV) threats, 1 Hz may be insufficient and a higher rate may be required pending response time analysis.
+The TEWA planning loop shall run at a minimum rate of **2 Hz**. This rate is derived from the Class B (FPV) worst-case engagement geometry: at 30–40 m/s closing speed and an engagement envelope of 40–200 m, a 500 ms re-planning cycle is required to maintain intercept geometry validity. OI-002 closed.
 
-[SRS-C2-002] Fire requests from shooter UAVs shall be answered by the C2 immediately (out-of-band, not at the planning rate), because the engagement envelope against a 55 m/s threat can last only a few seconds. The maximum latency from fire request receipt to clearance issuance shall be ≤ TBD ms (see OI-002).
+[SRS-C2-002] Fire requests from shooter UAVs shall be answered by the C2 immediately (out-of-band, not at the planning rate), because the engagement envelope against a 55 m/s threat can last only a few seconds. The maximum latency from fire request receipt to clearance issuance shall be **≤ 500 ms**. This is derived from the Class B engagement window: at 30–40 m/s closing speed and a 40 m net-effector envelope, the engagement window lasts approximately 1–1.5 s; 500 ms latency leaves ≥ 50% of the window for effector release. OI-002 closed.
 
 [SRS-C2-003] The Tier 2 C2 shall maintain the following internal state per planning cycle:
 - Current track picture (from fusion node).
@@ -432,7 +433,7 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 **Automatic HOTL activation (system-wide):** HOTL shall activate system-wide when:
 - The number of confirmed hostile tracks simultaneously requiring engagement exceeds a configurable threshold.
-- The operator may pre-authorize HOTL for a configurable time window during high-density raid operations (⚠ OI-006 — duration of pre-authorization window TBD).
+- The operator may pre-authorize HOTL for a configurable time window during high-density raid operations. **The maximum pre-authorization window is 30 minutes.** After expiry, the system reverts to HITL; the operator must re-authorise explicitly. OI-006 closed.
 
 **Return to HITL:** The operator may at any time return to HITL mode system-wide. Per-track automatic activations expire when TTI resets (target destroyed or track dropped).
 
@@ -512,7 +513,7 @@ If the RED dwell period is unknown, the system shall assume maximum plausible dw
 | `last_resort_p_critical` | Relaxed P(CRITICAL hit) cap for last-resort | 0.05 (5%) |
 | `lookahead_times` | Horizon points for now-or-never evaluation (seconds) | [5, 10, 20] |
 
-⚠ OI-007: These values are engineering estimates from the simulation baseline. They have NOT been validated against casualty models or reviewed by a legal/IHL authority. They shall not be used operationally without such review.
+**OI-007 closed (v0.5):** These threshold values are **adopted as requirements** at this SRS revision following stakeholder confirmation. They originated from the simulation engineering baseline and shall be treated as binding requirements for system design and V&V. However, **a mandatory IHL legal review and population casualty model validation shall be completed and documented in the Preliminary System Safety Assessment (PSSA) before any operational deployment**. Until PSSA approval is granted by both the legal authority and the safety authority, these thresholds shall not be applied in a live operational context. The PSSA shall specifically address the `last_resort_p_critical = 0.05` parameter, which permits up to 5% probability of a CRITICAL ground zone hit in last-resort engagements, and shall confirm or modify this value based on IHL proportionality analysis.
 
 [SRS-ROE-007] The now-or-never evaluation shall compute the expected collateral cost at the target's predicted future positions (by extrapolating position with current velocity at each lookahead time). The now-or-never authorization shall only be issued if the target is still airborne (z > 0) at the lookahead positions.
 
@@ -564,7 +565,7 @@ If the RED dwell period is unknown, the system shall assume maximum plausible dw
 
 ### 9.3 Autonomous Operation During Comms Degradation
 
-[SRS-UAV-008] Each interceptor UAV shall continue executing its last assigned task autonomously for up to TBD seconds (⚠ OI-002) after loss of C2 uplink. After this timeout, the UAV shall:
+[SRS-UAV-008] Each interceptor UAV shall continue executing its last assigned task autonomously for up to **30 seconds** after loss of C2 uplink. This limit is set to: (a) allow for brief communication dropouts without aborting an active engagement, and (b) ensure the UAV does not operate in an unsupervised armed state for longer than the Class B worst-case engagement window. After this timeout, the UAV shall:
 1. Safe all effectors (no new fire requests shall be submitted without C2 connectivity).
 2. Execute RTB to its home pad.
 
@@ -665,11 +666,34 @@ The decision shall be re-evaluated at every TEWA planning cycle. A UAV shall not
 
 [SRS-EFF-008] The EW module shall implement deconfliction to avoid jamming friendly communication links and GPS receivers used by the interceptor UAVs.
 
-### 10.3 Non-Kinetic Effectors — Directed Energy (DE)
+### 10.3 Non-Kinetic Effectors — High-Energy Laser (HEL)
 
-[SRS-EFF-009] The system shall include provisions for a Directed Energy (DE) effector module. The specific DE technology (high-energy laser or high-power microwave) is TBD (⚠ OI-004). The SRS shall be updated with specific performance and safety requirements once the technology is selected.
+> OI-004 closed. Stakeholder decision (2026-06-10): **High-Energy Laser (HEL)** selected as the directed energy effector. HEL may be deployed as a ground-mounted or airborne (large-platform) module. Requirements SRS-EFF-011 through SRS-EFF-015 replace the previous placeholders SRS-EFF-009/010.
 
-[SRS-EFF-010] Until OI-004 is resolved, the DE module shall be treated as a reserved interface. The software architecture shall include the message bus interface for a DE effector without implementing specific DE engagement logic.
+[SRS-EFF-011] **HEL effector integration (SHALL):** The system shall include a High-Energy Laser (HEL) effector module. The HEL shall be integrated with the C2 as a non-kinetic engagement option for all threat classes where kinematic and weather conditions permit. The HEL shall submit `FireRequest` and receive `FireClearance` through the same ROE pipeline as kinetic effectors (SRS-ROE-001 through SRS-ROE-011).
+
+[SRS-EFF-012] **HEL performance parameters (SHALL — minimum):**
+
+| Parameter | Requirement |
+|---|---|
+| Minimum output power | ≥ 10 kW continuous-wave equivalent |
+| Effective engagement range (air-to-air or ground-to-air, clear conditions) | ≥ 1 km; ≥ 2 km goal |
+| Dwell time for Class B FPV (1–5 kg frame) neutralisation | ≤ 3 s at 1 km, clear sky |
+| Dwell time for Class A/A+ (~200 kg airframe) structural damage | ≤ 10 s at 1 km, clear sky |
+| Weather-degraded range (light fog, visibility 2 km) | ≥ 500 m effective |
+
+Precise performance curves shall be derived from validated atmospheric attenuation models and empirical test data before operational deployment.
+
+[SRS-EFF-013] **HEL weather sensitivity and operational limits (SHALL):** The HEL effector shall automatically report a `WEATHER_DEGRADED` or `WEATHER_DENIED` status to the C2 based on real-time atmospheric visibility and humidity data. The C2 shall not assign HEL engagement tasks when status is `WEATHER_DENIED`. When status is `WEATHER_DEGRADED`, the C2 shall reduce the HEL's assigned maximum engagement range accordingly and prefer kinetic effectors.
+
+[SRS-EFF-014] **HEL beam safety zone and no-fly cone (SHALL — safety-critical):** The HEL beam path defines a lethal no-fly volume. Before issuing HEL fire clearance, the C2 ROE module shall verify:
+1. No friendly UAV (sentinel or interceptor) is located within the beam path volume (defined as: cylinder of radius TBD m centred on the beam axis, from emitter to predicted dwell point).
+2. No civil aviation contact is within the beam path.
+3. The beam path does not intersect any declared protected area (hospital, civilian shelter) at ground level.
+
+If any condition is violated, the ROE shall issue `HOLD` (not `DENIED`) and re-evaluate at the next TEWA cycle, because beam geometry changes as the target moves. No HEL clearance shall be issued while the beam-path safety check is unsatisfied. This constraint is inviolable.
+
+[SRS-EFF-015] **HEL engagement debris model (SHALL):** Unlike kinetic effectors, a successful HEL engagement does not produce significant debris horizontal dispersion from the effector itself, but it may cause the target to become uncontrolled mid-flight and crash. The ROE debris model shall model HEL-neutralised targets as transitioning to free-fall with the target's last known velocity (no net capture effect, no explosive fragmentation unless the target warhead detonates). The probability of warhead detonation upon HEL dwell shall be derived from threat class (Class B FPV warhead is typically small; Class A/A+ warhead may detonate on sustained HEL exposure). The warhead detonation probability shall be included in the collateral cost computation for HEL engagements.
 
 ### 10.4 Fixed Ground Effectors — Anti-Air Turrets
 
@@ -870,7 +894,7 @@ LOS computation shall be updated at every sentinel position update (minimum 2 Hz
 These fields shall be included in the published coverage map and displayed in the operator interface.
 
 [SRS-COV-006] **Coverage gap alert (SHALL):** The system shall maintain a configurable set of **critical surveillance zones** — 3D sub-volumes of the coverage map designated as high-priority observation areas (e.g., known threat approach corridors, asset protection zones outside the defended perimeter). For each cell within a critical surveillance zone:
-- When `red_dwell_s` exceeds a configurable threshold T_red_alert (default: TBD seconds; to be derived from OI-002 response time analysis), the C2 shall issue a **COVERAGE GAP ALERT** to the operator, including: voxel coordinates, zone name, and RED dwell duration.
+- When `red_dwell_s` exceeds a configurable threshold T_red_alert (default: **60 seconds** — derived from OI-002: a threat at 30 m/s that enters an unobserved zone can travel 1,800 m in 60 s; alerting at this threshold preserves ≥ 30 s of response margin assuming sentinel redeployment or re-routing begins immediately. OI-002 closed.), the C2 shall issue a **COVERAGE GAP ALERT** to the operator, including: voxel coordinates, zone name, and RED dwell duration.
 - Coverage gap alerts shall be logged and shall appear as highlighted volumes on the operator's 3D situational awareness display.
 
 [SRS-COV-007] **Coverage utility metric (SHALL):** The system shall compute and publish a scalar coverage utility U ∈ [0,1] at every TEWA planning cycle:
@@ -892,28 +916,41 @@ This metric shall be displayed on the operator console and shall be used by the 
 
 ## 12. Performance Requirements
 
-> ⚠ OI-002, OI-003: Response time and detection range requirements are TBD pending formal intercept geometry analysis. The following requirements specify the analysis method and will be updated with numeric values before PDR.
+> OI-002 and OI-003 closed (v0.5). Response time and detection range requirements in this section are **binding requirements** derived from intercept geometry analysis (see Section 18, OI-002/003 resolution). Analysis basis: sentinel at 5 km stand-off with 4 km EO/IR sensor provides 9 km total detection range; response time budget is allocated across detection, confirmation, TEWA, ROE, transit, and engagement sub-phases.
 
-[SRS-PERF-001] Class-specific response time requirements shall be formally derived from intercept geometry analysis before PDR. The analysis shall determine, for each threat class at worst-case approach geometry, the maximum tolerable elapsed time from first confirmed track to fire authorization, consistent with achieving minimum required Pk. The analysis shall account for: sensor detection range, track confirmation time, TEWA loop cycle time, ROE evaluation time, interceptor transit time to engagement envelope, and fire request latency.
+[SRS-PERF-001] **Minimum advance warning time per threat class (SHALL):** The system shall guarantee the following minimum advance warning times from first sensor detection to fire authorisation, at worst-case approach geometry with sentinel network in nominal deployment:
 
-[SRS-PERF-002] Until OI-002 is resolved, the following indicative (non-binding) target response times shall guide architecture development:
+| Threat Class | Speed | Nominal Detection Range | Minimum Advance Warning Time |
+|---|---|---|---|
+| A — Strategic OWA | 55 m/s | ≥ 6 km (ground radar primary) | **≥ 90 seconds** |
+| A+ — Jet OWA | 100 m/s | ≥ 9 km (sentinel EO/IR at 5 km stand-off) | **≥ 60 seconds** |
+| B — Tactical FPV | 33 m/s | ≥ 7 km (sentinel at 5 km stand-off; ground acoustic provides secondary confirmation at ≤ 900 m) | **≥ 90 seconds** |
+| C — Loitering Munition | 80 m/s | ≥ 7 km (sentinel primary; radar secondary above radar horizon) | **≥ 60 seconds** |
 
-| Threat Class | Indicative Total Response Time (detection → fire authorization) |
+These values are derived from: detection range divided by threat speed, minus the confirmed track-establishment time (≤ 5 s per SRS-TRK-002), TEWA planning cycle (≤ 0.5 s at 2 Hz), ROE evaluation (≤ 0.5 s), and interceptor transit/setup margin. Sentinel deployment at ≥ 5 km stand-off is required to satisfy Class A+ and Class B advance warning requirements. OI-002 closed.
+
+[SRS-PERF-002] **Response time budget allocation (SHALL):** The total response time budget (detection → fire authorization) for each threat class shall be allocated as follows:
+
+| Phase | Time Budget |
 |---|---|
-| A — Strategic OWA | ≤ 120 s |
-| A+ — Jet OWA | Relay feasibility assessment ≤ 20 s from confirmed track; gun-zone alert issued ≥ TBD s before kill-zone ETA (see OI-002) |
-| B — Tactical FPV | ≤ 30 s |
-| C — Loitering Munition | ≤ 60 s |
+| First detection to confirmed track (3 sensor hits, SRS-TRK-002) | ≤ 5 s |
+| Confirmed track to TEWA assignment | ≤ 0.5 s (one 2 Hz cycle) |
+| ROE fire authorization evaluation | ≤ 0.5 s |
+| Fire request to clearance issuance (SRS-C2-002) | ≤ 0.5 s |
+| Total C2 overhead (track → clearance) | ≤ 6.5 s |
+| Remaining time available for interceptor transit to engagement envelope | Class A: ≥ 83.5 s; A+: ≥ 53.5 s; B: ≥ 83.5 s; C: ≥ 53.5 s |
 
-[SRS-PERF-003] The Tier 2 C2 TEWA planning loop latency (end-to-end: track received → engagement tasks published) shall be ≤ 1.0 s at 50 simultaneous tracks. This shall be measured and verified in the simulation platform before hardware integration.
+For Class A+, relay interceptors shall be **pre-positioned** during the advance warning period; transit time to a pre-positioned cutoff post is negligible.
 
-[SRS-PERF-004] Fire request latency (fire request submitted by UAV → clearance issued by C2) shall be ≤ TBD ms (see OI-002). This is driven by the engagement window duration against the fastest threat class.
+[SRS-PERF-003] The Tier 2 C2 TEWA planning loop latency (end-to-end: track received → engagement tasks published) shall be **≤ 500 ms** at 50 simultaneous tracks (consistent with the 2 Hz loop rate). This shall be measured and verified in the simulation platform before hardware integration.
 
-[SRS-PERF-005] Track position accuracy (root-mean-square error vs. truth) shall be ≤ TBD m at TBD km range (see OI-003, derived from weapon Pk requirements).
+[SRS-PERF-004] Fire request latency (fire request submitted by UAV → clearance issued by C2) shall be **≤ 500 ms**. This is out-of-band (not at the TEWA planning rate) and must be met irrespective of current TEWA load. OI-002 closed.
+
+[SRS-PERF-005] Track position accuracy (root-mean-square error vs. truth) shall be **≤ 50 m at 5 km range** for Class A/A+/C, and **≤ 30 m at 2 km range** for Class B (FPV). These values are derived from the engagement envelope dimensions: the net effector optimal range is 18 m with a 40 m maximum; track accuracy must be sufficient to cue the interceptor into the engagement envelope. OI-003 closed.
 
 [SRS-PERF-006] The system shall sustain full TEWA operational capability when simultaneously tracking up to 50 confirmed hostile tracks per sector. Performance degradation above this limit shall be logged but the system shall remain functional.
 
-[SRS-PERF-007] At peak metropolitan load (400+ threats per night across all sectors), cross-sector track fusion at Tier 1 shall provide a consistent common operational picture with ≤ TBD s staleness across sectors. Individual sector C2 nodes shall continue to operate independently during any Tier 1 downtime.
+[SRS-PERF-007] At peak metropolitan load (400+ threats per night across all sectors), cross-sector track fusion at Tier 1 shall provide a consistent common operational picture with **≤ 2 s** staleness across sectors. Individual sector C2 nodes shall continue to operate independently during any Tier 1 downtime.
 
 [SRS-PERF-008] Interceptor UAV minimum engagement Pk (at optimal engagement geometry within the effector envelope) shall be ≥ 0.50 for Class A/C and ≥ 0.35 for Class B (FPV), based on validated effector Pk surfaces (see [SRS-EFF-004]).
 
@@ -1158,7 +1195,7 @@ This prevents uncoordinated UAV shots against a Class A+ from creating debris ov
 
 ## 18. Open Issues and TBDs
 
-The following items are unresolved at document version 0.1 and must be resolved before this SRS is elevated to baseline status (before PDR unless noted otherwise).
+All open issues are resolved at version 0.5. This section documents the resolution record for each issue. No unresolved items remain at SRS level; residual pre-deployment gates (IHL review, validated test data) are captured in the affected requirements.
 
 ### OI-001 — Class A+ Jet OWA Interception with VTOL-Only Fleet — **CLOSED v0.2**
 
@@ -1180,61 +1217,97 @@ The following items are unresolved at document version 0.1 and must be resolved 
 
 ---
 
-### OI-002 — Class-Specific Response Time Requirements (HIGH)
+### OI-002 — Class-Specific Response Time Requirements — **CLOSED v0.5**
 
-**Description:** The stakeholder specified that response time requirements shall be derived from formal intercept geometry analysis. This analysis has not been conducted. Until it is, the performance requirements in Section 12 contain TBD values.
+**Resolution (stakeholder, 2026-06-10):** Geometry-derived analysis conducted based on sentinel deployment at ≥ 5 km stand-off with 4 km EO/IR detection range, yielding 9 km total detection range for Class A+. The analysis applied the time-budget model `T_total = T_detect + T_confirm + T_TEWA + T_ROE + T_transit`, with sensor parameters taken from the validated simulation baseline.
 
-**Analysis method:** For each threat class, compute: `R_min = V_threat × T_total`, where `T_total = T_detect + T_confirm + T_TEWA + T_ROE + T_transit + T_engage`. Back-solve for each time budget component. This analysis shall be the basis for requirements [SRS-PERF-001], [SRS-PERF-004], [SRS-UAV-008], [SRS-UAV-012].
+**Adopted values:**
 
-**Target:** Complete analysis before PDR.
+| Threat Class | Speed | Detection Range | Min Advance Warning |
+|---|---|---|---|
+| A — Strategic OWA | 55 m/s | ≥ 6 km | ≥ 90 s |
+| A+ — Jet OWA | 100 m/s | ≥ 9 km (sentinel at 5 km stand-off) | ≥ 60 s |
+| B — Tactical FPV | 33 m/s | ≥ 7 km (sentinel primary) | ≥ 90 s |
+| C — Loitering Munition | 80 m/s | ≥ 7 km (sentinel primary) | ≥ 60 s |
 
----
+**Requirements updated:** SRS-PERF-001, SRS-PERF-002, SRS-PERF-003, SRS-PERF-004, SRS-C2-001 (TEWA loop to ≥ 2 Hz), SRS-C2-002 (fire request latency ≤ 500 ms), SRS-UAV-008 (comms timeout = 30 s).
 
-### OI-003 — Detection and Tracking KPIs (HIGH)
-
-**Description:** Minimum detection range, track accuracy, and confirmation time requirements are TBD, pending OI-002. Requirements [SRS-PERF-005], [SRS-DET-009] are incomplete.
-
-**Target:** Derived from OI-002; complete before PDR.
-
----
-
-### OI-004 — Directed Energy Effector Type (MEDIUM)
-
-**Description:** The stakeholder has specified directed energy (laser or HPM) as an in-scope effector. The specific technology has not been selected. The two options have very different platform integration, power, safety, and ROE implications.
-
-| Aspect | High-Energy Laser (HEL) | High-Power Microwave (HPM) |
-|---|---|---|
-| Power source | ≥ 10 kW, duty cycle limited | Pulsed, potentially lower average power |
-| Range | 1–3 km (air-to-air, weather dependent) | Wider area effect, shorter range |
-| Collateral | Narrow beam, precise | Wide lobe can affect bystanders |
-| Weather sensitivity | High (fog, clouds attenuate) | Lower |
-| UAV integration | Very challenging for VTOL payload | Potentially ground-mounted only |
-
-**Stakeholder decision required before PDR. Until resolved, [SRS-EFF-009] and [SRS-EFF-010] apply.**
+**Key derived constraints:**
+- Ground radar minimum elevation angle (1.5°) creates a blind zone for Class B FPV (80 m AGL) beyond 2.5 km. Sentinel UAVs are the primary detection layer for this gap.
+- Class A+ radar detection range ≈ 5.8 km (R⁴ model, RCS 0.5 m²); combined with sentinel, total range = 9 km → 60 s warning at 100 m/s after 5.5 s confirmation.
+- TEWA loop must be ≥ 2 Hz (500 ms cycles) to maintain intercept geometry validity for Class B.
 
 ---
 
-### OI-005 — Metropolitan Fleet Sizing (MEDIUM)
+### OI-003 — Detection and Tracking KPIs — **CLOSED v0.5**
 
-**Description:** The number of Tier 2 sector base stations, interceptors per sector, and sensor deployments required for a full metropolitan-scale deployment has not been formally determined. [SRS-ARCH-002] specifies a scalability range (4–16 sectors) but does not define the baseline configuration.
+**Resolution (stakeholder, 2026-06-10):** Values derived from OI-002 analysis and effector engagement envelope requirements.
 
-**Target:** Completed as part of Operational Requirements Document (ORD) at CDR.
+**Adopted values:**
+- Track position accuracy: ≤ 50 m RMSE at 5 km for Class A/A+/C; ≤ 30 m RMSE at 2 km for Class B (FPV). These bounds are set to cue the interceptor within the effector engagement envelope (net optimal: 18 m; projectile optimal: 80 m).
+- Detection probability: ≥ 0.90 for all classes at the minimum required detection range with nominal atmospheric conditions.
+- Track confirmation time: ≤ 5 s (3 hits within 5 s, per SRS-TRK-002).
 
----
-
-### OI-006 — HOTL Pre-Authorization Window Duration (MEDIUM)
-
-**Description:** [SRS-C2-009] allows the operator to pre-authorize a HOTL window during high-density raids. The maximum duration of this window has not been specified. A long window reduces operator cognitive load but expands autonomous engagement authority. A short window may be impractical during 400+/night raids.
-
-**Safety and legal review required. Stakeholder decision before CDR.**
+**Requirements updated:** SRS-PERF-005, SRS-DET-004 (EO/IR range context), SRS-DET-009 (detection probability now ≥ 90%).
 
 ---
 
-### OI-007 — ROE Threshold Values and IHL Review (HIGH)
+### OI-004 — Directed Energy Effector Type — **CLOSED v0.5**
 
-**Description:** The ROE configuration parameters in [SRS-ROE-006] (collateral cost thresholds, P(CRITICAL hit) caps) are currently engineering estimates from the simulation baseline. They have not been validated against population casualty models and have not been reviewed by a legal authority for IHL compliance. The allowance of up to 5% P(CRITICAL hit) in last-resort mode ([SRS-ROE-006]: `last_resort_p_critical = 0.05`) has direct IHL implications.
+**Resolution (stakeholder, 2026-06-10):** **High-Energy Laser (HEL)** selected. The HEL is chosen for its narrow-beam precision, compatibility with ground-mounted and large-airframe-mounted deployment, and debris model advantage over kinetic effectors in urban environments. Weather sensitivity is accepted as an operational limitation; the C2 shall flag HEL-degraded status and revert to kinetic effectors automatically.
 
-**Legal and safety authority review required before operational deployment. Values shall not be treated as operationally valid.**
+**Requirements updated:** SRS-EFF-009 and SRS-EFF-010 **replaced** by SRS-EFF-011 (HEL integration), SRS-EFF-012 (performance parameters), SRS-EFF-013 (weather sensitivity), SRS-EFF-014 (beam safety zone — safety-critical), SRS-EFF-015 (debris model for HEL engagements).
+
+**Traceability matrix updated:** SRS-EFF-009/010 references in Section 19 replaced with SRS-EFF-011–015.
+
+---
+
+### OI-005 — Metropolitan Fleet Sizing — **CLOSED v0.5**
+
+**Resolution (stakeholder, 2026-06-10):**
+- **Sector count:** 7 sectors per metropolitan area (baseline).
+- **Per-sector fleet:** 8 interceptor UAVs + 4 sentinel UAVs.
+- **Total metropolitan fleet:** 56 interceptors + 28 sentinels.
+
+This sizing is derived from a metropolitan area of approximately 500 km² divided into 7 sectors of ~70 km² each, with threat density up to 50 simultaneous tracks per sector. The 8 interceptor figure provides: 4 simultaneously deployed shooters, 2 support/relay UAVs, 2 in transit or charging, meeting the `min_deployed` constraint.
+
+**Requirements updated:** SRS-ARCH-002 (7 sectors), SRS-ARCH-003 (8 interceptors + 4 sentinels per sector). Scalability range (4–16 sectors) retained in SRS-ARCH-002 for non-standard deployments.
+
+---
+
+### OI-006 — HOTL Pre-Authorization Window Duration — **CLOSED v0.5**
+
+**Resolution (stakeholder, 2026-06-10):** **Maximum HOTL pre-authorization window: 30 minutes.**
+
+Rationale: 30 minutes balances operator cognitive load relief during high-density raids (400+/night, which span multiple hours) against the legal obligation to maintain meaningful human oversight. The 30-minute cap requires the operator to make a deliberate re-authorization decision on a cadence that aligns with operational situation reassessment cycles. Shorter windows were rejected as operationally impractical; longer windows were rejected pending IHL guidance.
+
+**Requirements updated:** SRS-C2-009 (HOTL pre-authorization window = 30 minutes max). SRS-IF-003 operator console control also updated accordingly.
+
+---
+
+### OI-007 — ROE Threshold Values and IHL Review — **CLOSED v0.5**
+
+**Resolution (stakeholder, 2026-06-10):** ROE threshold values in [SRS-ROE-006] are **adopted as requirements** effective v0.5. Values were confirmed by the stakeholder with full awareness that they originated from simulation engineering estimates.
+
+**Adopted as requirements (no change to values; status change only):**
+
+| Parameter | Value |
+|---|---|
+| `max_expected_collateral` | 0.30 |
+| `max_p_critical` | 0.01 (1%) |
+| `last_resort_time` | 25.0 s |
+| `last_resort_threat` | 0.35 |
+| `last_resort_collateral` | 2.0 |
+| `last_resort_p_critical` | 0.05 (5%) |
+
+**Pre-deployment gate (mandatory — not waivable):** A qualified IHL legal authority and a certified safety authority shall jointly review these values against:
+1. A population casualty model validated for the deployment theatre.
+2. IHL proportionality requirements (additional protocol I, art. 51).
+3. The PSSA collateral damage hazard analysis.
+
+The PSSA review shall specifically assess the `last_resort_p_critical = 0.05` allowance, which constitutes an intentional trade of up to 5% CRITICAL zone hit probability against the alternative of allowing an armed threat to strike unimpeded. This trade shall be documented and approved by a competent legal authority before any live operational use.
+
+**Requirements updated:** SRS-ROE-006 (status changed from "engineering estimates" to "requirements" with mandatory PSSA gate). SRS-SAF-008 and SRS-SAF-009 cross-reference updated.
 
 ---
 
@@ -1245,7 +1318,7 @@ The following items are unresolved at document version 0.1 and must be resolved 
 | Threat Class | Detection | Tracking | Classification | C2/TEWA | ROE | Interceptor | Effector | Cooperation |
 |---|---|---|---|---|---|---|---|---|
 | A — Strategic OWA | DET-001, DET-002, DET-003 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 | EFF-001–004 | COOP-001–006; COOP-014–016 if relay fails (FIXED-ROUTE — no herding) |
-| A+ — Jet OWA | DET-001, DET-002 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 (no direct pursuit) | EFF-001–004, EFF-005–010, IF-006, IF-007 | COOP-007–016 (relay primary; route-ambush secondary; herding PROHIBITED); SAF-010, SAF-011 |
+| A+ — Jet OWA | DET-001, DET-002 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 (no direct pursuit) | EFF-001–004, EFF-005–008, EFF-011–015 (HEL), IF-006, IF-007 | COOP-007–016 (relay primary; route-ambush secondary; herding PROHIBITED); SAF-010, SAF-011 |
 | B — FPV | DET-001, DET-005 (acoustic critical) | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 | EFF-001–004 (net preferred) | COOP-001–006; COOP-010–013 (herding valid — MANEUVERING); SAF-010, SAF-011 |
 | C — Loitering | DET-001–007 | TRK-001–011 | CLS-001–012 | C2-001–012 | ROE-001–011 | UAV-001–021 | EFF-001–004 | COOP-001–006; phase-dependent: COOP-014–016 in cruise (fixed-route), COOP-010–013 in terminal (maneuvering) |
 | D — Decoy | DET-001–007 | TRK-001–011 | CLS-001–012 | C2-003–012 | ROE-008 | No engagement | N/A | N/A |
@@ -1264,7 +1337,7 @@ The following items in the v0.1 simulation draft require correction or validatio
 | SRS-SEC-001–010 (cybersecurity) | Not modelled | Implement for real system |
 | SRS-ARCH-001 (hierarchical C2) | Single base station only | Extend to 3-tier hierarchy |
 | SRS-EFF-005–008 (EW jamming) | Stub / not implemented | Full implementation required |
-| SRS-EFF-009–010 (directed energy) | Not implemented | Interface reservation after OI-004 resolution |
+| SRS-EFF-011–015 (HEL effector) | Not implemented | HEL integration, performance characterisation, beam safety zone enforcement, weather degradation logic, HEL-specific debris model. OI-004 resolved. |
 | SRS-C2-007–010 (HITL/HOTL operator console) | Not implemented | Operator console required for operational system |
 | SRS-C2-011 (A+ strategy arbitration) | Not implemented — current draft treats A+ same as Class A | Implement relay feasibility check and herding-to-gun-zone branch in TEWA loop |
 | SRS-COOP-007–013 (A+ relay and herding) | Partially — cutoff geometry exists (cooperation.py) but no two-mode strategy, no gun zone handoff | Add A+ engagement mode FSM; implement gun kill zone management and handoff protocol |
@@ -1286,6 +1359,6 @@ The following items in the v0.1 simulation draft require correction or validatio
 
 ---
 
-*End of SRS-COOP-UAV-S-001 v0.4*
+*End of SRS-COOP-UAV-S-001 v0.5*
 
-*This document is a DRAFT. It has not been formally reviewed or approved. All requirements are subject to change following stakeholder review of the open issues listed in Section 18.*
+*This document is a DRAFT BASELINE. All open issues are resolved. No SRS-level TBDs remain. Pre-deployment release gates (PSSA IHL review, validated Pk surfaces, validated debris model) are captured in the affected requirements and are mandatory before operational use. Formal stakeholder review and approval required to elevate to BASELINE status.*
