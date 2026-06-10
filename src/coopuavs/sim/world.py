@@ -38,6 +38,10 @@ class World:
         self.debris_model = DebrisModel(self.rng)
         self.weather = weather or WeatherState(self.rng)
 
+        # Simulated network layer (SIM-COM-001); attached by the CommsModel
+        # itself when the scenario builds one. None = synchronous bus.
+        self.comms = None
+
         self.enemies: dict[str, EnemyDrone] = {}
         # Friendly truth registry (sim-side only): interceptor airframes by
         # id, used by wind displacement and reactive threat evasion.
@@ -64,6 +68,10 @@ class World:
     # -- stepping ----------------------------------------------------------------
 
     def step(self) -> None:
+        if self.comms is not None:
+            # Deliver radio traffic whose latency has elapsed (SIM-COM-001)
+            # and refresh link-quality telemetry, before any node runs.
+            self.comms.step(self.t)
         self.weather.step(self.dt)
 
         while self._spawn_queue and self._spawn_queue[0][0] <= self.t:

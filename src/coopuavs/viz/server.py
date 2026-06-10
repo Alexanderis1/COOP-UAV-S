@@ -1,27 +1,53 @@
-"""Dashboard server.
+"""ICD-RUNTIME serve layer — the long-running backend process (ICD §1).
 
-Two modes, one frontend:
+One process, three surfaces:
 
-* ``serve_replay``   — static HTTP server for ``viz/web`` plus the recording
-  JSON at ``/recording.json``; the page plays it back with a timeline.
-* ``serve_live``     — same static server, plus a websocket on ``ws_port``;
-  the simulation is stepped in (scaled) real time inside the asyncio loop
-  and every frame is broadcast to connected browsers.
+* **HTTP** — static frontend from ``viz/web`` (plus ``/recording.json``
+  in replay mode);
+* **WS ``/ops``** — operational channel: scene/frames/auth flow/run
+  lifecycle southbound, the §3 control commands northbound;
+* **WS ``/eval``** — evaluation-only channel: ground truth + live metrics
+  (SRS ICD-002). Same port as /ops, separate path.
+
+Lifecycle: idle until a ``start_run`` arrives on /ops; the request is
+turned into a scenario via :func:`~coopuavs.sim.scenario.build_parametric`
+over the preset, a :class:`~coopuavs.sim.runctl.RunController` ticks it
+from the wall clock inside the asyncio loop (~20 Hz), every recorded frame
+is broadcast on /ops and the matching truth payload on /eval, the
+orchestrator's northbound ``auth_request``/``auth_resolved`` messages are
+forwarded per ICD §2.3, and on completion the ``summary`` goes out and the
+server returns to idle, ready for the next ``start_run``.
+
+``serve_replay`` (the ``coopuavs run`` post-run dashboard) is unchanged
+from v0.1.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
 import http.server
 import json
+import random
 import threading
 from pathlib import Path
 
-from ..sim.world import World
-from .recorder import Recorder
+import yaml
+
+from ..sim import scenario as scenario_mod
+from ..sim.runctl import RunController
+from ..sim.scenario import Scenario
 
 WEB_DIR = Path(__file__).parent / "web"
+
+TICK_PERIOD_S = 0.05          # ~20 Hz controller ticking
+MAX_TICK_WALL_S = 0.25        # clamp catch-up bursts after event-loop stalls
+
+
+# ---------------------------------------------------------------------------
+# Static HTTP (frontend + replay file)
+# ---------------------------------------------------------------------------
 
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
@@ -53,63 +79,275 @@ def _start_http(port: int, recording: Path | None) -> threading.Thread:
 
 def serve_replay(recording: Path, port: int = 8000) -> None:
     _start_http(port, recording)
-    print(f"Dashboard (replay): http://localhost:{port}/")
+    print(f"Dashboard (replay): http://localhost:{port}/?replay=1")
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
         pass
 
 
-def serve_live(
-    world: World,
-    recorder: Recorder,
-    duration: float,
-    port: int = 8000,
-    ws_port: int = 8001,
-    speed: float = 1.0,
-) -> dict:
-    """Run the sim in scaled real time, streaming frames to the dashboard."""
-    try:
+# ---------------------------------------------------------------------------
+# /ops + /eval websocket backend
+# ---------------------------------------------------------------------------
+
+
+class CommandServer:
+    """The /ops + /eval websocket endpoint pair on one port (ICD §1)."""
+
+    def __init__(self, preset_cfg: dict, host: str = "0.0.0.0", ws_port: int = 8001):
+        self.preset_cfg = preset_cfg
+        self.host = host
+        self.ws_port = ws_port
+        self.ops_clients: set = set()
+        self.eval_clients: set = set()
+        self.ctl: RunController | None = None
+        self.scenario: Scenario | None = None
+        self._truth_idx = 0
+        self._northbound: list[tuple[str, dict]] = []
+        self._run_task: asyncio.Task | None = None
+        self._server = None
+
+    # -- lifecycle -------------------------------------------------------------
+
+    async def start(self) -> None:
         import websockets
-    except ImportError as e:  # pragma: no cover
-        raise SystemExit("live mode needs the 'websockets' package "
-                         "(pip install coopuavs[viz])") from e
 
-    _start_http(port, None)
-    print(f"Dashboard (live):  http://localhost:{port}/?live=1")
-    print(f"Websocket:         ws://localhost:{ws_port}/")
+        self._server = await websockets.serve(self._handler, self.host, self.ws_port)
+        self.ws_port = self._server.sockets[0].getsockname()[1]
 
-    clients: set = set()
-    scene_msg = json.dumps({"type": "scene", "data": recorder.scene()})
+    async def stop(self) -> None:
+        if self._run_task is not None:
+            self._run_task.cancel()
+            try:
+                await self._run_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._run_task = None
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
 
-    async def handler(ws):
-        clients.add(ws)
+    @property
+    def active(self) -> bool:
+        return self.ctl is not None and self.ctl.status in ("running", "paused")
+
+    # -- connection handling --------------------------------------------------------
+
+    async def _handler(self, ws) -> None:
+        path = ws.request.path.split("?")[0].rstrip("/") or "/"
+        if path == "/ops":
+            await self._serve_ops(ws)
+        elif path == "/eval":
+            await self._serve_eval(ws)
+        else:
+            await ws.close(code=4404, reason=f"unknown path {path}")
+
+    async def _serve_ops(self, ws) -> None:
+        self.ops_clients.add(ws)
         try:
-            await ws.send(scene_msg)
+            # Late joiners get the scene + current run state immediately.
+            if self.ctl is not None:
+                sc = self.scenario
+                await self._send(ws, "run_started", {
+                    "name": sc.name, "seed": sc.meta["seed"],
+                    "eval": sc.meta.get("eval", True),
+                })
+                await self._send(ws, "scene", self.ctl.scene())
+                await self._send(ws, "frame", self.ctl.frame())
+                if sc.orchestrator is not None:
+                    for payload in sc.orchestrator.pending_requests():
+                        await self._send(ws, "auth_request", payload)
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except (ValueError, TypeError):
+                    await self._error(ws, "malformed message (not JSON)")
+                    continue
+                await self._handle_control(ws, msg.get("type"), msg.get("data") or {})
+        finally:
+            self.ops_clients.discard(ws)
+
+    async def _serve_eval(self, ws) -> None:
+        """Evaluation channel (ICD-002): accepted always in this deployment;
+        the production build simply does not run this endpoint."""
+        self.eval_clients.add(ws)
+        try:
+            if self.ctl is not None:
+                await self._send(ws, "truth", self.ctl.truth())
             await ws.wait_closed()
         finally:
-            clients.discard(ws)
+            self.eval_clients.discard(ws)
 
-    async def main() -> dict:
-        async with websockets.serve(handler, "0.0.0.0", ws_port):
-            frame_period = 1.0 / recorder.rate_hz
-            steps_per_frame = max(1, int(round(frame_period / world.dt)))
-            end = world.t + duration
-            while world.t < end:
-                for _ in range(steps_per_frame):
-                    world.step()
-                frame = recorder.snapshot()
-                if clients:
-                    websockets.broadcast(
-                        clients, json.dumps({"type": "frame", "data": frame})
-                    )
-                await asyncio.sleep(frame_period / speed)
-            summary = world.summary()
-            if clients:
-                websockets.broadcast(
-                    clients, json.dumps({"type": "summary", "data": summary})
-                )
-            await asyncio.sleep(2.0)
-            return summary
+    # -- control commands (ICD §3) ------------------------------------------------------
 
-    return asyncio.run(main())
+    async def _handle_control(self, ws, msg_type: str, data: dict) -> None:
+        if msg_type == "start_run":
+            await self._start_run(ws, data)
+            return
+        ctl, orch = self.ctl, (self.scenario.orchestrator if self.scenario else None)
+        if ctl is None:
+            await self._error(ws, f"no active run (command '{msg_type}')")
+            return
+        try:
+            if msg_type == "stop_run":
+                ctl.stop()
+            elif msg_type == "pause":
+                ctl.pause()
+            elif msg_type == "resume":
+                ctl.resume()
+            elif msg_type == "set_speed":
+                ctl.set_speed(float(data["speed"]))
+            elif msg_type == "set_posture":
+                ctl.set_posture(str(data["posture"]))
+            elif msg_type == "authorize":
+                if orch is not None:
+                    orch.resolve(int(data["id"]), bool(data["approve"]))
+            elif msg_type == "uav_command":
+                uav_id, command = data.get("uav_id"), data.get("command")
+                if uav_id not in self.scenario.uavs:
+                    await self._error(ws, f"unknown uav '{uav_id}'")
+                elif command != "rtb":
+                    await self._error(ws, f"unknown uav command '{command}'")
+                elif orch is not None:
+                    orch.uav_command(uav_id, command)
+            else:
+                await self._error(ws, f"unknown command '{msg_type}'")
+        except (KeyError, TypeError, ValueError) as e:
+            await self._error(ws, f"bad '{msg_type}' command: {e}")
+
+    async def _start_run(self, ws, request: dict) -> None:
+        if self.active:
+            await self._error(ws, "a run is already active — stop it first")
+            return
+        seed = request.get("seed")
+        if seed is None:
+            seed = random.randrange(1, 2**31)   # echoed in run_started (HMI-SCN-002)
+        try:
+            sc = scenario_mod.build_parametric(request, self.preset_cfg, int(seed))
+        except (ValueError, KeyError, TypeError) as e:
+            await self._error(ws, str(e))       # structured rejection (HMI-SCN-003)
+            return
+        self.begin(sc)
+
+    def begin(self, sc: Scenario) -> None:
+        """Attach a built scenario and start ticking it (also the seam for
+        the CLI's auto-started ``run --live`` and for tests)."""
+        self.scenario = sc
+        self.ctl = RunController(sc)
+        self._truth_idx = 0
+        self._northbound = []
+        if sc.orchestrator is not None:
+            sc.orchestrator.set_northbound(
+                lambda msg_type, data: self._northbound.append((msg_type, data))
+            )
+        self._broadcast_ops("run_started", {
+            "name": sc.name, "seed": sc.meta["seed"], "eval": sc.meta.get("eval", True),
+        })
+        self._broadcast_ops("scene", self.ctl.scene())
+        self._run_task = asyncio.get_event_loop().create_task(self._run_loop())
+
+    # -- run loop ---------------------------------------------------------------------------
+
+    async def _run_loop(self) -> None:
+        loop = asyncio.get_event_loop()
+        last = loop.time()
+        try:
+            while self.ctl is not None and self.ctl.status != "done":
+                await asyncio.sleep(TICK_PERIOD_S)
+                now = loop.time()
+                wall_dt = min(now - last, MAX_TICK_WALL_S)
+                last = now
+                self._flush(self.ctl.tick(wall_dt))
+            if self.ctl is not None:
+                self._flush([])                       # trailing auth resolutions
+                self._broadcast_ops("summary", self.ctl.summary())
+        finally:
+            self.ctl = None
+            self.scenario = None
+            self._run_task = None
+
+    def _flush(self, frames: list[dict]) -> None:
+        """Broadcast new frames on /ops, matching truth payloads on /eval,
+        and queued orchestrator northbound messages (ICD §2.2/§2.3/§4)."""
+        recorder = self.ctl.recorder
+        truths = recorder.truths[self._truth_idx:]
+        self._truth_idx = len(recorder.truths)
+        for frame in frames:
+            self._broadcast_ops("frame", frame)
+        for truth in truths:
+            self._broadcast(self.eval_clients, "truth", truth)
+        northbound, self._northbound = self._northbound, []
+        for msg_type, data in northbound:
+            self._broadcast_ops(msg_type, data)
+
+    # -- transport helpers ----------------------------------------------------------------------
+
+    def _broadcast_ops(self, msg_type: str, data: dict) -> None:
+        self._broadcast(self.ops_clients, msg_type, data)
+
+    @staticmethod
+    def _broadcast(clients: set, msg_type: str, data: dict) -> None:
+        if not clients:
+            return
+        import websockets
+
+        websockets.broadcast(clients, json.dumps({"type": msg_type, "data": data}))
+
+    @staticmethod
+    async def _send(ws, msg_type: str, data: dict) -> None:
+        await ws.send(json.dumps({"type": msg_type, "data": data}))
+
+    @staticmethod
+    async def _error(ws, message: str) -> None:
+        await ws.send(json.dumps({"type": "error", "data": {"message": message}}))
+
+
+# ---------------------------------------------------------------------------
+# Blocking entry points (CLI)
+# ---------------------------------------------------------------------------
+
+
+def serve(
+    preset: str | Path,
+    port: int = 8000,
+    ws_port: int = 8001,
+    auto_start: bool = False,
+    seed: int | None = None,
+    speed: float | None = None,
+) -> None:
+    """Run the ICD-RUNTIME backend until interrupted.
+
+    ``auto_start=True`` (the ``coopuavs run --live`` path) builds the preset
+    YAML as a scenario and starts it immediately; the server then returns to
+    idle and keeps accepting ``start_run`` requests.
+    """
+    try:
+        import websockets  # noqa: F401  (fail early with a clear message)
+    except ImportError as e:  # pragma: no cover
+        raise SystemExit("serve mode needs the 'websockets' package "
+                         "(pip install coopuavs[viz])") from e
+
+    preset_cfg = yaml.safe_load(Path(preset).read_text())
+
+    async def main() -> None:
+        server = CommandServer(preset_cfg, ws_port=ws_port)
+        await server.start()
+        _start_http(port, None)
+        print(f"Console:    http://localhost:{port}/")
+        print(f"Websocket:  ws://localhost:{server.ws_port}/ops  +  /eval")
+        if auto_start:
+            sc = scenario_mod.build(copy.deepcopy(preset_cfg), seed=seed)
+            if speed is not None:
+                sc.meta["speed"] = float(speed)
+            server.begin(sc)
+            print(f"Auto-started run '{sc.name}' (seed {sc.meta['seed']}, "
+                  f"speed {sc.meta.get('speed', 1.0)}x)")
+        try:
+            await asyncio.Future()                 # run until cancelled
+        finally:
+            await server.stop()
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

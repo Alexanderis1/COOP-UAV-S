@@ -84,7 +84,7 @@ class Recorder(Node):
                     "ammo": u.ammo,
                     "battery": round(u.battery, 3),
                     "task_id": u.task_id,
-                    "link": 1.0,   # datalink quality model lands with SIM-COM
+                    "link": round(float(getattr(u, "link", 1.0)), 3),
                 }
                 for u in self._uavs.values()
             ],

@@ -19,14 +19,18 @@ class Node:
         self.bus = bus
         self.rate_hz = rate_hz
         self._next_tick = 0.0
+        # Comms endpoint this node's traffic rides on (SIM-COM-001): a UAV id
+        # for airborne nodes, None for the wired ground segment. Set *before*
+        # creating publishers/subscriptions to take effect.
+        self.comms_endpoint: str | None = None
 
     # -- middleware facade --------------------------------------------------
 
     def create_publisher(self, topic: str) -> Publisher:
-        return self.bus.create_publisher(topic)
+        return self.bus.create_publisher(topic, endpoint=self.comms_endpoint)
 
     def create_subscription(self, topic: str, callback: Callable[[Any], None]) -> None:
-        self.bus.subscribe(topic, callback)
+        self.bus.subscribe(topic, callback, endpoint=self.comms_endpoint)
 
     # -- scheduling ----------------------------------------------------------
 

@@ -198,6 +198,30 @@ class FireClearance:
 
 
 @dataclass
+class RoeEvaluation:
+    """C2 → Orchestrator: a fire request bundled with its ROE verdict.
+
+    The base station no longer clears shots itself — it evaluates the ROE
+    and forwards the result on ``c2/roe_evaluation``; the orchestration
+    agent (SRS ORC-001..006) turns it into the actual
+    ``engagement/clearance`` per the current autonomy posture.
+    """
+
+    header: Header
+    request: FireRequest
+    clearance: FireClearance
+
+
+@dataclass
+class UavCommand:
+    """Operator command to one interceptor (ICD §3 ``uav_command``)."""
+
+    header: Header
+    uav_id: str = ""
+    command: str = ""                   # currently: "rtb"
+
+
+@dataclass
 class EngagementResult:
     header: Header
     task_id: int
@@ -226,6 +250,7 @@ class UavState:
     battery: float = 1.0                # 0..1 remaining
     ammo: int = 0
     task_id: int | None = None
+    link: float = 1.0                   # 0..1 datalink quality (PHY-UAV-043)
 
 
 @dataclass

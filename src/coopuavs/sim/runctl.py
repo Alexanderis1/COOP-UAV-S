@@ -48,6 +48,17 @@ class RunController:
         self.speed = float(min(max(speed, MIN_SPEED), MAX_SPEED))
         self._sync_run_info()
 
+    def set_posture(self, posture: str) -> None:
+        """Switch the autonomy posture (ICD §3 ``set_posture``); raises
+        ``ValueError`` on an unknown posture."""
+        orch = getattr(self.scenario, "orchestrator", None)
+        if orch is not None:
+            orch.set_posture(posture)          # validates + resolves pendings
+        elif posture not in ("human_confirm", "pre_authorized", "weapons_hold"):
+            raise ValueError(f"unknown posture '{posture}'")
+        self.posture = posture
+        self._sync_run_info()
+
     def stop(self) -> None:
         if self.status != "done":
             self.status = "done"
@@ -90,9 +101,12 @@ class RunController:
     # -- payload accessors (ICD §2/§4) ------------------------------------------------
 
     def frame(self) -> dict:
-        """Latest §2.2 frame data (for late joiners)."""
+        """Latest §2.2 frame data (for late joiners), with the *current*
+        run block — status/speed/posture changes show even while paused."""
         if self.recorder.frames:
-            return self.recorder.frames[-1]
+            frame = dict(self.recorder.frames[-1])
+            frame["run"] = dict(self.recorder.run_info)
+            return frame
         return self.recorder.snapshot(consume_events=False)
 
     def scene(self) -> dict:

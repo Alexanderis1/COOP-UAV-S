@@ -6,10 +6,12 @@ Closes the TEWA loop at ``rate_hz``:
 2. score every track (:mod:`threat_evaluation`);
 3. allocate shooters + cooperative support (:mod:`assignment`) and publish
    the task set on ``engagement/tasks``;
-4. answer :class:`FireRequest` s through the probabilistic ROE on
-   ``engagement/clearance`` — every munition release in the system passes
-   through this single authority, which is where a human-on-the-loop
-   console plugs in later.
+4. evaluate every :class:`FireRequest` through the probabilistic ROE and
+   forward the request + verdict to the orchestration agent on
+   ``c2/roe_evaluation`` (:class:`RoeEvaluation`) — the **Orchestrator**
+   owns the autonomy posture and publishes the actual
+   ``engagement/clearance`` (SRS ORC-002, SYS-004). The C2 itself never
+   clears a shot.
 
 Tracks whose engagement was DENIED (decoy-grade, unsafe geometry) are
 remembered and excluded from future allocation rather than re-chased.
@@ -22,6 +24,8 @@ from ..core.messages import (
     EngagementDecision,
     EngagementResult,
     FireRequest,
+    Header,
+    RoeEvaluation,
     ThreatAssessment,
     TrackArray,
     UavState,
@@ -33,7 +37,7 @@ from . import assignment, threat_evaluation
 from .roe import RoeConfig, RulesOfEngagement
 
 TASKS_TOPIC = "engagement/tasks"
-CLEARANCE_TOPIC = "engagement/clearance"
+ROE_TOPIC = "c2/roe_evaluation"
 
 
 class BaseStation(Node):
@@ -60,7 +64,7 @@ class BaseStation(Node):
         self._t = 0.0
 
         self._tasks_pub = self.create_publisher(TASKS_TOPIC)
-        self._clearance_pub = self.create_publisher(CLEARANCE_TOPIC)
+        self._roe_pub = self.create_publisher(ROE_TOPIC)
         self.create_subscription("tracks", self._on_tracks)
         self.create_subscription("uav/state", self._on_uav_state)
         self.create_subscription("engagement/fire_request", self._on_fire_request)
@@ -93,7 +97,9 @@ class BaseStation(Node):
         )
         if clearance.decision == EngagementDecision.DENIED:
             self._denied.add(msg.track_id)
-        self._clearance_pub.publish(clearance)
+        self._roe_pub.publish(
+            RoeEvaluation(header=Header(stamp=self._t), request=msg, clearance=clearance)
+        )
 
     # -- planning loop ----------------------------------------------------------
 

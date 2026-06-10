@@ -26,7 +26,9 @@ import numpy as np
 import yaml
 
 from ..c2.base_station import BaseStation
+from ..c2.orchestrator import Orchestrator
 from ..c2.roe import RoeConfig
+from ..core.comms import CommsModel
 from ..core.messages import ThreatClass
 from ..interceptors.effectors import EFFECTOR_FACTORIES
 from ..interceptors.uav import InterceptorUav
@@ -66,6 +68,7 @@ class Scenario:
     uavs: dict[str, InterceptorUav] = field(default_factory=dict)
     turrets: dict[str, GroundTurret] = field(default_factory=dict)
     eval_tracker: EvalTracker | None = None
+    orchestrator: Orchestrator | None = None
     meta: dict = field(default_factory=dict)
 
     def run(self, **kwargs) -> dict:
@@ -99,6 +102,13 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         uavs[uav.uav_id] = uav
         world.friendlies[uav.uav_id] = uav
 
+    # Simulated network layer (SIM-COM-001/002): every C2<->UAV and UAV<->UAV
+    # topic rides it. The default config is a near-perfect link, preserving
+    # the v0.1 verified baseline; scenarios may degrade it (`comms:` block).
+    comms = CommsModel(world, **dict(cfg.get("comms") or {}))
+    for uav in uavs.values():
+        comms.register_endpoint(uav.uav_id, uav)
+
     for s in cfg.get("sensors", []):
         s = dict(s)
         cls = SENSOR_TYPES[s.pop("type")]
@@ -120,6 +130,17 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
             roe_config=roe, **bs_cfg,
         )
     )
+
+    # Orchestration agent (SRS ORC-*): holds the autonomy posture and turns
+    # the C2's ROE verdicts into clearances. It gets the world's log_event
+    # callable only — never the world itself (ORC-006).
+    orchestrator = Orchestrator(
+        world.bus,
+        posture=cfg.get("posture", "human_confirm"),
+        log_event=world.log_event,
+        **dict(cfg.get("orchestrator") or {}),
+    )
+    world.add_node(orchestrator)
 
     turrets: dict[str, GroundTurret] = {}
     for tcfg in cfg.get("turrets", []):
@@ -174,6 +195,7 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         uavs=uavs,
         turrets=turrets,
         eval_tracker=tracker,
+        orchestrator=orchestrator,
         meta={"seed": run_seed, "speed": 1.0,
               "posture": cfg.get("posture", "human_confirm"), "eval": True},
     )

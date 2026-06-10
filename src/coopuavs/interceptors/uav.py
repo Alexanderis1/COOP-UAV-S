@@ -35,6 +35,7 @@ from ..core.messages import (
     Header,
     Track,
     TrackArray,
+    UavCommand,
     UavMode,
     UavState,
 )
@@ -46,6 +47,9 @@ from .effectors import Effector
 FIRE_TOPIC = "engagement/fire"
 MIN_PK_TO_REQUEST = 0.25   # don't waste ammo on envelope-edge shots
 MIN_PK_TO_RELEASE = 0.15   # abort if geometry collapsed while clearing
+# A clearance token lost in transit must not deadlock the interlock
+# (SIM-COM-003): if no answer arrives within this window, re-request.
+CLEARANCE_TIMEOUT_S = 3.0
 
 
 class InterceptorUav(Node):
@@ -64,6 +68,11 @@ class InterceptorUav(Node):
     ):
         super().__init__(uav_id, bus, rate_hz=rate_hz)
         self.uav_id = uav_id
+        # All C2/peer traffic rides this airframe's datalink (SIM-COM-001);
+        # link_quality is the radio's own telemetry, refreshed by the comms
+        # model each step (PHY-UAV-043).
+        self.comms_endpoint = uav_id
+        self.link_quality = 1.0
         self.home = np.asarray(home, dtype=float)
         self.effector = effector
         self.body = PointMass(self.home.copy(), max_speed=max_speed, max_accel=max_accel)
@@ -82,8 +91,10 @@ class InterceptorUav(Node):
         self._peers: dict[str, UavState] = {}
         self._clearance: FireClearance | None = None
         self._await_clearance = False
+        self._await_until = 0.0
         self._next_fire_ok = 0.0
         self._hold_until = 0.0
+        self._rtb_ordered = False              # operator RTB (HMI-AUT-005)
 
         self._state_pub = self.create_publisher("uav/state")
         self._request_pub = self.create_publisher("engagement/fire_request")
@@ -92,6 +103,7 @@ class InterceptorUav(Node):
         self.create_subscription("tracks", self._on_tracks)
         self.create_subscription("uav/state", self._on_peer_state)
         self.create_subscription("engagement/clearance", self._on_clearance)
+        self.create_subscription("uav/command", self._on_command)
 
     # -- physical accessors (used by the sim adjudicator) ---------------------
 
@@ -127,6 +139,12 @@ class InterceptorUav(Node):
             self._clearance = msg
             self._await_clearance = False
 
+    def _on_command(self, msg: UavCommand) -> None:
+        if msg.uav_id != self.uav_id:
+            return
+        if msg.command == "rtb":
+            self._rtb_ordered = True
+
     # -- main loop -------------------------------------------------------------------
 
     def update(self, t: float, dt: float) -> None:
@@ -148,7 +166,16 @@ class InterceptorUav(Node):
 
         track = self._tracks.get(self._task.track_id) if self._task else None
 
-        if self.battery < 0.15 or (self.effector.ammo == 0 and self._role == "shooter"):
+        if self._rtb_ordered:
+            # Operator override (HMI-AUT-005): break off, recover, turn around.
+            if self._at(self.home):
+                self._rtb_ordered = False
+                self.mode = UavMode.REARM
+                self._rearm_until = t + self.turnaround_s
+            else:
+                self._fly_to(self.home)
+                self.mode = UavMode.RTB
+        elif self.battery < 0.15 or (self.effector.ammo == 0 and self._role == "shooter"):
             if self._at(self.home):
                 self.mode = UavMode.REARM
                 self._rearm_until = t + self.turnaround_s
@@ -205,8 +232,13 @@ class InterceptorUav(Node):
             else:  # DENIED — C2 will re-task us; stop asking for this track
                 self._task = None
             return
+        if self._await_clearance and t >= self._await_until:
+            # Request or token lost in transit (SIM-COM-003): the interlock
+            # held fire the whole time — re-request release authority.
+            self._await_clearance = False
         if not self._await_clearance:
             self._await_clearance = True
+            self._await_until = t + CLEARANCE_TIMEOUT_S
             # ROE must cost the kill where it will actually happen: the
             # extrapolated target position, not the (stale) track fix.
             self._request_pub.publish(
@@ -287,5 +319,6 @@ class InterceptorUav(Node):
                 battery=self.battery,
                 ammo=self.effector.ammo,
                 task_id=self._task.task_id if self._task else None,
+                link=self.link_quality,
             )
         )

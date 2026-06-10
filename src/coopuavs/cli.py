@@ -2,6 +2,11 @@
 
 Examples
 --------
+Start the ICD-RUNTIME backend (web console + /ops + /eval websockets);
+runs are launched from the console's scenario form::
+
+    coopuavs serve --preset scenarios/residential_raid.yaml
+
 Run headless, print the engagement summary::
 
     coopuavs run scenarios/residential_raid.yaml --headless
@@ -10,7 +15,8 @@ Run, record, and open the 3D replay dashboard::
 
     coopuavs run scenarios/residential_raid.yaml
 
-Stream the battle live to the dashboard at 4x real time::
+Serve the console with the YAML scenario auto-started at 4x real time
+(the serve layer keeps accepting new runs afterwards)::
 
     coopuavs run scenarios/residential_raid.yaml --live --speed 4
 
@@ -35,11 +41,25 @@ def main(argv: list[str] | None = None) -> None:
     run_p = sub.add_parser("run", help="run one scenario")
     run_p.add_argument("scenario", type=Path)
     run_p.add_argument("--headless", action="store_true", help="no dashboard")
-    run_p.add_argument("--live", action="store_true", help="stream live instead of replay")
+    run_p.add_argument("--live", action="store_true",
+                       help="serve the console with this scenario auto-started "
+                            "(the ICD-RUNTIME backend; replaces the v0.1 live stream)")
     run_p.add_argument("--seed", type=int, default=None)
     run_p.add_argument("--speed", type=float, default=4.0, help="live time scale")
     run_p.add_argument("--port", type=int, default=8000)
+    run_p.add_argument("--ws-port", type=int, default=8001)
     run_p.add_argument("--record", type=Path, default=None, help="recording output path")
+
+    serve_p = sub.add_parser(
+        "serve",
+        help="ICD-RUNTIME backend: web console + /ops + /eval websockets; "
+             "idle until the console launches a parametric run",
+    )
+    serve_p.add_argument("--port", type=int, default=8000, help="HTTP port (frontend)")
+    serve_p.add_argument("--ws-port", type=int, default=8001, help="websocket port (/ops, /eval)")
+    serve_p.add_argument("--preset", type=Path,
+                         default=Path("scenarios/residential_raid.yaml"),
+                         help="preset supplying map/zones/sensors/fleet/turrets/ROE")
 
     batch_p = sub.add_parser("batch", help="Monte-Carlo over seeds")
     batch_p.add_argument("scenario", type=Path)
@@ -48,20 +68,21 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "run":
         _cmd_run(args)
+    elif args.command == "serve":
+        from .viz.server import serve
+        serve(args.preset, port=args.port, ws_port=args.ws_port)
     elif args.command == "batch":
         _cmd_batch(args)
 
 
 def _cmd_run(args) -> None:
-    sc = scenario_mod.load(args.scenario, seed=args.seed)
-
     if args.live:
-        from .viz.server import serve_live
-        summary = serve_live(sc.world, sc.recorder, sc.duration,
-                             port=args.port, speed=args.speed)
-        print(json.dumps(summary, indent=2))
+        from .viz.server import serve
+        serve(args.scenario, port=args.port, ws_port=args.ws_port,
+              auto_start=True, seed=args.seed, speed=args.speed)
         return
 
+    sc = scenario_mod.load(args.scenario, seed=args.seed)
     summary = sc.run()
     print(json.dumps(summary, indent=2))
 

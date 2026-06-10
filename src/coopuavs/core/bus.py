@@ -7,6 +7,14 @@ small classes on top of ``rclpy`` — node code does not change.
 
 Delivery is synchronous and deterministic (callbacks run in subscription
 order during ``publish``), which keeps simulation runs reproducible.
+
+Comms routing (SIM-COM-001): publishers and subscriptions may carry a
+*comms endpoint* tag — the radio they sit behind (a UAV id, or ``None`` for
+the wired ground segment). When a router (the
+:class:`~coopuavs.core.comms.CommsModel`) is attached, deliveries whose
+topic and endpoints it claims are handed to it for latency/loss simulation
+instead of being invoked synchronously. Without a router the bus behaves
+exactly as in v0.1.
 """
 
 from __future__ import annotations
@@ -21,36 +29,45 @@ Callback = Callable[[Any], None]
 class Publisher:
     """Handle returned by :meth:`MessageBus.create_publisher`."""
 
-    def __init__(self, bus: "MessageBus", topic: str):
+    def __init__(self, bus: "MessageBus", topic: str, endpoint: str | None = None):
         self._bus = bus
         self.topic = topic
+        self.endpoint = endpoint
 
     def publish(self, msg: Any) -> None:
-        self._bus.publish(self.topic, msg)
+        self._bus.publish(self.topic, msg, sender=self.endpoint)
 
 
 class MessageBus:
     def __init__(self) -> None:
-        self._subs: dict[str, list[Callback]] = defaultdict(list)
+        self._subs: dict[str, list[tuple[Callback, str | None]]] = defaultdict(list)
         self._pattern_subs: list[tuple[str, Callable[[str, Any], None]]] = []
+        # Optional comms router (duck-typed: .routes(topic, sender, receiver)
+        # and .send(topic, msg, callback, sender, receiver)).
+        self.router: Any | None = None
 
-    def create_publisher(self, topic: str) -> Publisher:
-        return Publisher(self, topic)
+    def create_publisher(self, topic: str, endpoint: str | None = None) -> Publisher:
+        return Publisher(self, topic, endpoint)
 
-    def subscribe(self, topic: str, callback: Callback) -> None:
-        self._subs[topic].append(callback)
+    def subscribe(self, topic: str, callback: Callback, endpoint: str | None = None) -> None:
+        self._subs[topic].append((callback, endpoint))
 
     def subscribe_pattern(self, pattern: str, callback: Callable[[str, Any], None]) -> None:
         """Subscribe to all topics matching a glob (e.g. ``uav/*/state``).
 
         Pattern subscribers receive ``(topic, msg)`` — used by recorders and
-        the dashboard bridge, which need the whole graph.
+        the dashboard bridge, which need the whole graph. They are always
+        delivered synchronously (evaluation-side taps, not radio links).
         """
         self._pattern_subs.append((pattern, callback))
 
-    def publish(self, topic: str, msg: Any) -> None:
-        for cb in self._subs.get(topic, ()):
-            cb(msg)
+    def publish(self, topic: str, msg: Any, sender: str | None = None) -> None:
+        router = self.router
+        for cb, endpoint in self._subs.get(topic, ()):
+            if router is not None and router.routes(topic, sender, endpoint):
+                router.send(topic, msg, cb, sender, endpoint)
+            else:
+                cb(msg)
         for pattern, cb in self._pattern_subs:
             if fnmatch.fnmatch(topic, pattern):
                 cb(topic, msg)
