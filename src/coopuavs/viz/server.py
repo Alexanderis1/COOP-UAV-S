@@ -32,6 +32,7 @@ import json
 import random
 import sys
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -94,7 +95,10 @@ def serve_replay(recording: Path, port: int = 8000, host: str = "127.0.0.1") -> 
     _start_http(port, recording, host=host)
     print(f"Dashboard (replay): http://localhost:{port}/?replay=1")
     try:
-        threading.Event().wait()
+        # Not Event().wait(): an untimed wait in the main thread cannot be
+        # interrupted by Ctrl+C on Windows (bpo-35935); sleep can.
+        while True:
+            time.sleep(0.5)
     except KeyboardInterrupt:
         pass
 

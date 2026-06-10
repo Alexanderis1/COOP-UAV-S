@@ -269,6 +269,7 @@ class UavState:
     ammo: int = 0
     task_id: int | None = None
     link: float = 1.0                   # 0..1 datalink quality (PHY-UAV-043)
+    max_speed: float = 0.0              # platform capability, m/s (0 = unknown)
 
 
 @dataclass

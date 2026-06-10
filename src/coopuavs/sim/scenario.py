@@ -174,10 +174,20 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
     world.add_node(recorder)
 
     counters: dict[str, itertools.count] = {}
+    seen_ids: set[str] = set()
     for th in cfg.get("threats", []):
         tc = ThreatClass[th["class"]]
         n = counters.setdefault(tc.value, itertools.count(1))
-        drone_id = th.get("id", f"{tc.value}-{next(n)}")
+        drone_id = th.get("id")
+        if drone_id is None:
+            drone_id = f"{tc.value}-{next(n)}"
+            while drone_id in seen_ids:   # an explicit id took this slot
+                drone_id = f"{tc.value}-{next(n)}"
+        elif drone_id in seen_ids:
+            # world.enemies is keyed by id: the second airframe would
+            # silently replace the first one in flight at spawn time.
+            raise ValueError(f"duplicate threat id '{drone_id}' in scenario")
+        seen_ids.add(drone_id)
         target_name = th["target"] if isinstance(th.get("target"), str) else ""
         target = (
             assets[th["target"]].position

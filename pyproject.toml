@@ -25,6 +25,11 @@ coopuavs = "coopuavs.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The dashboard frontend ships inside the package: without this, wheel and
+# sdist installs lack viz/web and `coopuavs serve` has nothing to serve.
+"coopuavs.viz" = ["web/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

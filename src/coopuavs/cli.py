@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .sim import scenario as scenario_mod
@@ -90,6 +91,10 @@ def main(argv: list[str] | None = None) -> None:
 
 def _cmd_run(args) -> None:
     if args.live:
+        if args.record:
+            print("warning: --record is ignored with --live; the serve "
+                  "backend streams frames instead of writing a replay file",
+                  file=sys.stderr)
         from .viz.server import serve
         serve(args.scenario, port=args.port, ws_port=args.ws_port,
               auto_start=True, seed=args.seed, speed=args.speed, host=args.host)

@@ -90,6 +90,10 @@ class RunController:
             if self._finished():
                 self.status = "done"
                 self._sync_run_info()
+                # The raid can resolve between recorder ticks: flush the
+                # terminal state into this tick's frame slice so the last
+                # kill reaches the /ops stream, not only the replay file.
+                self.recorder.capture_terminal()
                 break
 
         new = self.recorder.frames[self._frames_emitted:]
