@@ -44,7 +44,10 @@ class OnboardSeeker(Sensor):
         self.position = self.uav.body.position   # seeker rides the airframe
         super().update(t, dt)
 
-    def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
+        # Optical seeker: any solid building blocks the look (the base
+        # class skips trans == 0; the default eo_ir channel applies).
         rng_m = float(np.linalg.norm(enemy.position - self.position))
         noisy = enemy.position + self.rng.normal(0.0, self.sigma, 3)
 

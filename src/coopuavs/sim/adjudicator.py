@@ -63,6 +63,15 @@ class EngagementAdjudicator(Node):
         )
 
         if target is not None:
+            if not self.world.occlusion.clear(uav.position, target.position):
+                # A building stands in the sight line (SIM-EFF-006): the
+                # munition cannot reach the target; no Pk roll.
+                self.world.log_event(
+                    "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
+                    effector=uav.effector.type.value,
+                )
+                self._result_pub.publish(result)
+                return
             rel = target.position - uav.position
             pk_true = uav.effector.p_kill(rel, uav.velocity, target.velocity)
             if self.world.rng.random() < pk_true:
@@ -87,6 +96,18 @@ class EngagementAdjudicator(Node):
         )
         target = self._nearest_enemy(msg.predicted_intercept, gate=150.0)
         n_rounds = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
+
+        if target is not None and not self.world.occlusion.clear(
+                turret.position, target.position):
+            # Masked by a building (SIM-EFF-006): the burst cannot connect,
+            # but the rounds were fired and still land somewhere.
+            self.world.log_event(
+                "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
+                effector=msg.effector.value,
+            )
+            self._stray_rounds(turret, msg.predicted_intercept, n_rounds)
+            self._result_pub.publish(result)
+            return
 
         if target is not None:
             dist = float(np.linalg.norm(target.position - turret.position))

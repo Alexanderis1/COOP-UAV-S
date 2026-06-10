@@ -20,6 +20,7 @@ from ..core.node import Node
 from ..risk.debris import DebrisModel
 from ..threats.enemy_drone import EnemyDrone
 from .environment import Environment
+from .occlusion import OcclusionGrid
 from .weather import WeatherState
 
 
@@ -41,6 +42,9 @@ class World:
         self.rng = np.random.default_rng(seed)
         self.debris_model = DebrisModel(self.rng)
         self.weather = weather or WeatherState(self.rng)
+        # Building LOS occlusion (SIM-SEN-005/SIM-EFF-006); scenarios may
+        # disable it (`occlusion: {enabled: false}` restores v0.1 sensing).
+        self.occlusion = OcclusionGrid(env.buildings, env.bounds)
 
         # Simulated network layer (SIM-COM-001); attached by the CommsModel
         # itself when the scenario builds one. None = synchronous bus.
