@@ -38,17 +38,26 @@
 | PHY-TUR-001 (turrets slaved to GCS, same interlock) | `sim/turret.py` fire-request/clearance flow identical to UAVs | high | — |
 | PHY-TUR-002 (slew/range/dispersion characterisation) | Rate-limited az/el FSM, range gate, dispersion-based per-round hit model, TOF lead | representative | Parameter values invented; thermal limits simplified. |
 | PHY-TUR-003 (fused-track fire solutions, ROE applies) | Turret targets only fused `tracks`; requests pass the same ROE + posture gate | high | — |
-| PHY-SEN-001 (radar R⁴, horizon, Doppler) | `sensors/radar.py` R⁴ Pd, radar-horizon mask, radial velocity | high | Terrain occlusion beyond horizon model not yet present. |
-| PHY-SEN-002 (RF bearing-only, signature hash) | `sensors/rf.py` anisotropic covariance bearings, shared decoy/OWA hashes | high | — |
-| PHY-SEN-003 (EO/IR towers, weather/illumination degradation) | `sensors/eo_ir.py` range-ramped ID + `weather.eo_ir_range_factor` | representative | Single-channel model of the EO-vs-IR crossover. |
-| PHY-SEN-004 (acoustic below-horizon) | `sensors/acoustic.py` + wind/precip range factor | high | — |
+| PHY-GCS-006 (debris-intercept tasking, kinetic only, red > yellow) | `c2/base_station.py` debris assessments from `debris/state`; `c2/assignment.py` kinetic-only eligibility; turret debris targeting; `c2/roe.py` `debris_mitigation` branch | high | Debris ROE auto-authorises (time-critical defensive act) — documented posture exception. |
+| PHY-GCS-007 (Pk-aware assignment) | `c2/assignment.py` envelope-feasibility filter + Pk-proxy-weighted shooter cost | high | Pk proxy uses track speed vs closing-speed envelope, not full geometry. |
+| PHY-SEN-001 (radar R⁴, horizon, Doppler) | `sensors/radar.py` R⁴ Pd, radar-horizon mask, radial velocity; building occlusion via `sim/occlusion.py` (two-way transmittance) | high | Terrain (ground elevation) occlusion still absent; buildings only. |
+| PHY-SEN-002 (RF bearing-only, signature hash) | `sensors/rf.py` anisotropic covariance bearings, shared decoy/OWA hashes; material-attenuated by `sim/occlusion.py` | high | — |
+| PHY-SEN-003 (EO/IR towers, weather/illumination degradation) | `sensors/eo_ir.py` range-ramped ID + `weather.eo_ir_range_factor`; hard-blocked by solid buildings (`sim/occlusion.py`) | representative | Single-channel model of the EO-vs-IR crossover. |
+| PHY-SEN-004 (acoustic below-horizon) | `sensors/acoustic.py` + wind/precip range factor; mild diffraction attenuation per crossed building | high | — |
+| PHY-SEN-005 (LOS masking by buildings/terrain) | `sim/occlusion.py` 2.5D ray-vs-building grid with per-material, per-channel transmittance | representative | Material transmission coefficients are plausible inventions; no terrain elevation model. |
+| PHY-SNT-001 (unarmed sentinel UAVs, EO/IR + RF payload) | `interceptors/sentinel.py` `SentinelUav` with mounted `EoIrSensor` + `RfSensor` feeding `detections` | high | — |
+| PHY-SNT-002 (patrol orbits into common picture) | Orbit controller (centre/radius/alt/speed per scenario); detections fuse identically to fixed sensors | high | — |
+| PHY-SNT-003 (sentinel endurance/turnaround) | Shared `UavAirframe` battery + RTB/REARM cycle; patrol auto-resume | high | — |
+| PHY-CHG-001 (rooftop/adjacent charging stations) | `ChargingStation` objects in `sim/environment.py`; UAV homes resolved to stations; citygen sites them on rooftops/pads | representative | Charge model is the existing turnaround timer; no power/queueing model. |
 
 ## Coverage summary
 
-- **high:** 14 — the interlock chain, middleware shape, sensing layer,
-  C2 stack, turret integration: the seams the SRS declares load-bearing.
-- **representative:** 12 — physical performance models with invented
-  parameters (flagged honestly; tuning is this stage's purpose).
+- **high:** 19 — the interlock chain, middleware shape, sensing layer,
+  C2 stack, turret integration, sentinel overwatch and debris-intercept
+  tasking: the seams the SRS declares load-bearing.
+- **representative:** 14 — physical performance models with invented
+  parameters (flagged honestly; tuning is this stage's purpose),
+  including building-material transmittance and charging-station siting.
 - **placeholder:** 5 — crypto, compute-platform split, nav-error,
   recoil, logistics: all parked behind explicit seams with ROADMAP items.
 
