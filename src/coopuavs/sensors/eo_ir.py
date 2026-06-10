@@ -42,6 +42,11 @@ class EoIrSensor(Sensor):
         self.full_id_range = full_id_range
         self.pd = pd
 
+    def weather_factor(self) -> float:
+        # Fog/precipitation attenuation and the EO-vs-IR lighting crossover;
+        # the model is documented in :mod:`coopuavs.sim.weather`.
+        return self.world.weather.eo_ir_range_factor()
+
     def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
         if self.rng.random() > self.pd:
             return None
@@ -60,9 +65,12 @@ class EoIrSensor(Sensor):
 
         # Class likelihoods: at zero quality the look is *uninformative*
         # (true and confusable class equally likely — never inverted), and
-        # ramps to near-certain identification inside full_id_range.
+        # ramps to near-certain identification inside full_id_range. Weather
+        # shrinks both ranges, so identification quality degrades too.
+        wx = self.weather_factor()
+        eff_range, eff_id = self.max_range * wx, self.full_id_range * wx
         quality = float(np.clip(
-            (self.max_range - rng_m) / (self.max_range - self.full_id_range), 0.0, 1.0
+            (eff_range - rng_m) / (eff_range - eff_id + 1e-9), 0.0, 1.0
         ))
         chance = 0.25
         p_true = chance + (0.98 - chance) * quality

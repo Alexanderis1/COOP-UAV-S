@@ -39,14 +39,23 @@ class Sensor(Node):
         self._pub = self.create_publisher(DETECTIONS_TOPIC)
 
     def update(self, t: float, dt: float) -> None:
+        max_range = self.effective_range()
         for enemy in self.world.enemies.values():
             if not enemy.alive:
                 continue
-            if np.linalg.norm(enemy.position - self.position) > self.max_range:
+            if np.linalg.norm(enemy.position - self.position) > max_range:
                 continue
             det = self.observe(enemy, t)
             if det is not None:
                 self._pub.publish(det)
+
+    def weather_factor(self) -> float:
+        """Environment-coupled range multiplier (SIM-SEN-003); 1.0 unless a
+        concrete sensor declares a sensitivity to the weather model."""
+        return 1.0
+
+    def effective_range(self) -> float:
+        return self.max_range * self.weather_factor()
 
     def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:  # pragma: no cover
         raise NotImplementedError

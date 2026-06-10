@@ -17,6 +17,16 @@ dt: 0.05
 duration: 600.0
 record_hz: 5.0
 
+# Environmental state (SIM-ENV-002/003). The reference raid is the
+# documented calm clear night — every sensor multiplier is exactly 1.0 and
+# the wind field is inactive, preserving the v0.1 verified baseline.
+weather:
+  wind_speed: 0.0       # m/s mean at 10 m reference height
+  wind_dir_deg: 270.0   # meteorological: blowing FROM the west
+  fog: 0.0
+  precip: 0.0
+  daylight: 0.0         # nocturnal raid (IR carries the EO/IR towers)
+
 environment:
   bounds: [-6000.0, -6000.0, 6000.0, 6000.0]
   cell_size: 100.0
@@ -85,6 +95,14 @@ interceptors:
   # slower net carriers — debris-friendly kills for low/slow targets
   - { id: net-1,  home: [-100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
   - { id: net-2,  home: [ 100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
+
+# Ground anti-air gun turrets (PHY-TUR): effectors of last resort slaved to
+# the fused track picture and the same clearance interlock as the UAVs.
+# One guards the substation's eastern approaches, one covers the base /
+# southern belt where stray rounds fall on SAFE open country.
+turrets:
+  - { id: turret-base,   position: [0.0, -2600.0, 5.0] }
+  - { id: turret-substn, position: [1550.0, 250.0, 5.0] }
 
 threats:
   # wave 1: strategic OWAs + decoys, NW axis

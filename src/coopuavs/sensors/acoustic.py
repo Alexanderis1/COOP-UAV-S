@@ -38,11 +38,15 @@ class AcousticSensor(Sensor):
         super().__init__(name, world, position, max_range, rate_hz)
         self.pd = pd
 
+    def weather_factor(self) -> float:
+        # Wind masking noise and rain hiss raise the detection floor.
+        return self.world.weather.acoustic_range_factor()
+
     def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
         rel = enemy.position - self.position
         rng_m = float(np.linalg.norm(rel))
-        # Audibility falls off with range.
-        if self.rng.random() > self.pd * (1.0 - rng_m / self.max_range):
+        # Audibility falls off with (weather-effective) range.
+        if self.rng.random() > self.pd * (1.0 - rng_m / self.effective_range()):
             return None
         los = rel / (rng_m + 1e-9)
 

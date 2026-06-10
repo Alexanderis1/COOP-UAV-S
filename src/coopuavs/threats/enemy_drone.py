@@ -10,6 +10,13 @@ the spawn data, which perception never sees.
 Enemy drones are *not* cooperative: each runs an independent
 waypoint-cruise-then-terminal-dive policy with optional weaving, which is
 exactly the asymmetry the friendly side exploits.
+
+Reactive evasion (SIM-THR-003): the agile classes (FPV, LOITERING) dodge
+the nearest interceptor when it closes inside ``EVASION_RANGE`` — a lateral
+break away from the pursuer's line of sight blended with the objective
+heading, plus an altitude drop toward terrain masking. This is sim-side
+logic and reads friendly truth (``world.friendlies``), which is legitimate:
+a real FPV pilot sees the interceptor out of the window.
 """
 
 from __future__ import annotations
@@ -69,6 +76,13 @@ RF_SIGNATURES: dict[ThreatClass, str] = {
     ThreatClass.DECOY: "sig-owa-a",
 }
 
+# Reactive evasion (SIM-THR-003): only the agile, man/seeker-in-the-loop
+# classes manoeuvre against interceptors.
+EVASIVE_CLASSES = {ThreatClass.FPV, ThreatClass.LOITERING}
+EVASION_RANGE = 275.0      # m — start dodging inside this
+EVASION_MIN_ALT = 30.0     # m — never dive into the ground while dodging
+EVASION_SINK_RATE = 8.0    # m/s altitude-drop component at full evasion
+
 
 class EnemyDrone:
     """One hostile platform, flying autonomously toward its target asset."""
@@ -80,16 +94,25 @@ class EnemyDrone:
         position: np.ndarray,
         target: np.ndarray,
         rng: np.random.Generator,
+        world: "object | None" = None,
+        target_name: str = "",
     ):
         self.id = drone_id
         self.threat_class = threat_class
         self.profile = THREAT_PROFILES[threat_class]
         self.rf_signature = RF_SIGNATURES[threat_class]
         self.target = np.asarray(target, dtype=float)
+        self.target_name = target_name
         self.rng = rng
+        self.world = world           # sim-side back-reference for evasion
         self.alive = True
         self.killed = False          # defeated by an interceptor
         self.reached_target = False  # leaker — defence failure
+        # Evaluation bookkeeping (SIM-GT-002/003), written by sim-side nodes.
+        self.spawn_t: float = 0.0
+        self.acquired: bool = False
+        self.acquired_t: float | None = None
+        self.track_id: int | None = None
         self._phase = rng.uniform(0.0, 2 * np.pi)
 
         p = self.profile
@@ -133,12 +156,50 @@ class EnemyDrone:
             v_z = np.clip((p.cruise_alt - self.position[2]) * 0.2, -10.0, 10.0)
             v_cmd = np.array([v_xy[0], v_xy[1], v_z])
 
+        if self.threat_class in EVASIVE_CLASSES and self.world is not None:
+            v_cmd = self._evade(v_cmd)
+
         self.body.command_velocity(v_cmd)
         self.body.step(dt)
 
         if np.linalg.norm(self.position - self.target) < 30.0 or self.position[2] <= 0.0:
             self.alive = False
             self.reached_target = True
+
+    def _evade(self, v_cmd: np.ndarray) -> np.ndarray:
+        """Blend the objective heading with a dodge against the nearest
+        interceptor: lateral break across its line of sight + altitude drop,
+        weighted up as the pursuer closes (SIM-THR-003)."""
+        nearest, dist = None, EVASION_RANGE
+        for uav in self.world.friendlies.values():
+            d = float(np.linalg.norm(uav.position - self.position))
+            if d < dist:
+                nearest, dist = uav, d
+        if nearest is None:
+            return v_cmd
+
+        w = 1.0 - dist / EVASION_RANGE          # 0 at the edge, 1 at contact
+        speed = self.profile.speed
+        los_xy = (self.position - nearest.position)[:2]
+        n = np.linalg.norm(los_xy)
+        if n < 1e-6:
+            return v_cmd
+        los_xy /= n
+        # Two lateral break directions; pick the one that best preserves the
+        # objective heading so the dodge is a weave, not a retreat.
+        perp = np.array([-los_xy[1], los_xy[0]])
+        if float(perp @ v_cmd[:2]) < 0.0:
+            perp = -perp
+        dodge_xy = 0.6 * perp + 0.4 * los_xy     # break across and away
+
+        blend = (1.0 - 0.8 * w) * (v_cmd[:2] / (np.linalg.norm(v_cmd[:2]) + 1e-9)) \
+            + 0.8 * w * dodge_xy
+        bn = np.linalg.norm(blend)
+        v_xy = blend / (bn + 1e-9) * speed
+        v_z = v_cmd[2] - w * EVASION_SINK_RATE
+        if self.position[2] < EVASION_MIN_ALT:
+            v_z = max(v_z, 0.0)
+        return np.array([v_xy[0], v_xy[1], v_z])
 
     def kill(self) -> None:
         self.alive = False

@@ -80,6 +80,7 @@ class UavMode(str, Enum):
     BLOCKING = "blocking"         # cooperative role: deny an escape direction
     ENGAGE = "engage"
     RTB = "rtb"
+    REARM = "rearm"               # at home pad: recharge + rearm turnaround
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +226,17 @@ class UavState:
     battery: float = 1.0                # 0..1 remaining
     ammo: int = 0
     task_id: int | None = None
+
+
+@dataclass
+class TurretState:
+    """Telemetry of a ground anti-air gun turret (PHY-TUR, ``turret/state``)."""
+
+    header: Header
+    turret_id: str = ""
+    position: np.ndarray = field(default_factory=_vec3)
+    az_deg: float = 0.0                 # compass bearing of the barrel
+    el_deg: float = 0.0
+    ammo: int = 0
+    state: str = "idle"                 # idle|slewing|tracking|firing|empty
+    target_track: int | None = None

@@ -37,6 +37,9 @@ class Radar(Sensor):
         self.min_elevation = np.deg2rad(min_elevation_deg)
         self.sigma_at_max_range = sigma_at_max_range
 
+    def weather_factor(self) -> float:
+        return self.world.weather.radar_range_factor()
+
     def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
         rel = enemy.position - self.position
         rng_m = float(np.linalg.norm(rel))
@@ -45,8 +48,9 @@ class Radar(Sensor):
             return None
 
         # Radar-equation-shaped Pd: SNR ~ rcs / R^4, normalised so that a
-        # reference_rcs target at half max range sees pd_max.
-        snr = (enemy.rcs / self.reference_rcs) * (0.5 * self.max_range / rng_m) ** 4
+        # reference_rcs target at half (weather-effective) max range sees
+        # pd_max. Precipitation mildly shrinks the effective range.
+        snr = (enemy.rcs / self.reference_rcs) * (0.5 * self.effective_range() / rng_m) ** 4
         pd = self.pd_max * snr / (1.0 + snr)
         if self.rng.random() > pd:
             return None

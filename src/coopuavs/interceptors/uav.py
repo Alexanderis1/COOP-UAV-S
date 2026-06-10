@@ -13,6 +13,13 @@ ENGAGE    shooter: in envelope — request clearance, fire when authorized
 BLOCKING  support: hold a cutoff post on the target's predicted corridor
 HERDING   support: flank post opposite the kill box
 RTB       ammo/battery out: return to pad
+REARM     on the pad: recharge + rearm turnaround, then back to IDLE
+
+Energy model (SIM-PHX-002): battery drain is the hover/cruise baseline up
+to ``cruise_speed`` and grows quadratically with airspeed above it (induced
++ parasitic drag of the dash regime). Arriving home in RTB starts a
+``turnaround_s`` recharge/rearm cycle that restores full battery and the
+effector magazine and returns the airframe to availability.
 """
 
 from __future__ import annotations
@@ -52,6 +59,8 @@ class InterceptorUav(Node):
         max_accel: float = 20.0,
         rate_hz: float = 10.0,
         battery_minutes: float = 25.0,
+        cruise_speed: float | None = None,
+        turnaround_s: float = 90.0,
     ):
         super().__init__(uav_id, bus, rate_hz=rate_hz)
         self.uav_id = uav_id
@@ -59,9 +68,13 @@ class InterceptorUav(Node):
         self.effector = effector
         self.body = PointMass(self.home.copy(), max_speed=max_speed, max_accel=max_accel)
         self.max_speed = max_speed
+        self.cruise_speed = cruise_speed if cruise_speed is not None else 0.6 * max_speed
+        self.turnaround_s = turnaround_s
         self.mode = UavMode.IDLE
         self.battery = 1.0
         self._drain_per_s = 1.0 / (battery_minutes * 60.0)
+        self._ammo_capacity = effector.ammo
+        self._rearm_until: float | None = None
 
         self._task: EngagementTask | None = None
         self._role: str = "none"               # "shooter" | "support"
@@ -117,11 +130,31 @@ class InterceptorUav(Node):
     # -- main loop -------------------------------------------------------------------
 
     def update(self, t: float, dt: float) -> None:
+        period = 1.0 / self.rate_hz
+
+        if self.mode == UavMode.REARM:
+            if t >= (self._rearm_until or 0.0):
+                # Turnaround complete: full battery, full magazine, available.
+                self._rearm_until = None
+                self.battery = 1.0
+                self.effector.ammo = self._ammo_capacity
+                self.mode = UavMode.IDLE
+            else:
+                # On the pad, charging — no drain, no tasking.
+                self.body.command_velocity(np.zeros(3))
+                self.body.step(period)
+                self._publish_state(t)
+                return
+
         track = self._tracks.get(self._task.track_id) if self._task else None
 
         if self.battery < 0.15 or (self.effector.ammo == 0 and self._role == "shooter"):
-            self._fly_to(self.home)
-            self.mode = UavMode.RTB
+            if self._at(self.home):
+                self.mode = UavMode.REARM
+                self._rearm_until = t + self.turnaround_s
+            else:
+                self._fly_to(self.home)
+                self.mode = UavMode.RTB
         elif track is None:
             self._fly_to(self.home)
             self.mode = UavMode.IDLE if self._at(self.home) else UavMode.TRANSIT
@@ -131,10 +164,18 @@ class InterceptorUav(Node):
             self._support_behaviour(track)
 
         # Integrate own flight at the node period (sim-side physics stand-in).
-        period = 1.0 / self.rate_hz
         self.body.step(period)
-        self.battery = max(0.0, self.battery - self._drain_per_s * period)
+        self.battery = max(0.0, self.battery - self._drain_rate() * period)
         self._publish_state(t)
+
+    def _drain_rate(self) -> float:
+        """Airspeed-dependent battery drain (SIM-PHX-002): baseline up to
+        cruise, quadratic penalty in the dash regime."""
+        speed = float(np.linalg.norm(self.body.velocity))
+        factor = 1.0
+        if speed > self.cruise_speed:
+            factor += 2.0 * ((speed - self.cruise_speed) / max(self.cruise_speed, 1.0)) ** 2
+        return self._drain_per_s * factor
 
     # -- behaviours -------------------------------------------------------------------
 

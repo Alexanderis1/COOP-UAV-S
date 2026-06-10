@@ -19,22 +19,35 @@ from ..core.node import Node
 from ..risk.debris import DebrisModel
 from ..threats.enemy_drone import EnemyDrone
 from .environment import Environment
+from .weather import WeatherState
 
 
 class World:
-    def __init__(self, env: Environment, dt: float = 0.05, seed: int = 0):
+    def __init__(
+        self,
+        env: Environment,
+        dt: float = 0.05,
+        seed: int = 0,
+        weather: WeatherState | None = None,
+    ):
         self.env = env
         self.dt = dt
         self.t = 0.0
         self.bus = MessageBus()
         self.rng = np.random.default_rng(seed)
         self.debris_model = DebrisModel(self.rng)
+        self.weather = weather or WeatherState(self.rng)
 
         self.enemies: dict[str, EnemyDrone] = {}
+        # Friendly truth registry (sim-side only): interceptor airframes by
+        # id, used by wind displacement and reactive threat evasion.
+        self.friendlies: dict[str, object] = {}
+        self.turrets: dict[str, object] = {}
         self.nodes: list[Node] = []
         self._spawn_queue: list[tuple[float, Callable[[], EnemyDrone]]] = []
         self.events: list[dict] = []
         self.wrecks: list[dict] = []
+        self.stray_impacts: list[dict] = []   # {"t", "pos", "zone", "shooter"}
 
     # -- construction ----------------------------------------------------------
 
@@ -51,16 +64,22 @@ class World:
     # -- stepping ----------------------------------------------------------------
 
     def step(self) -> None:
+        self.weather.step(self.dt)
+
         while self._spawn_queue and self._spawn_queue[0][0] <= self.t:
             _, factory = self._spawn_queue.pop(0)
             enemy = factory()
+            enemy.spawn_t = self.t
             self.enemies[enemy.id] = enemy
             self.log_event("enemy_spawn", enemy_id=enemy.id,
                            threat_class=enemy.threat_class.value)
 
+        windy = self.weather.wind_speed > 0.0 or self.weather.gust_std > 0.0
         for enemy in self.enemies.values():
             was_alive = enemy.alive
             enemy.step(self.dt, self.t)
+            if windy and enemy.alive:
+                enemy.body.position += self.weather.wind_at(enemy.position[2]) * self.dt
             if was_alive and enemy.reached_target:
                 self.log_event("leaker", enemy_id=enemy.id,
                                threat_class=enemy.threat_class.value,
@@ -68,6 +87,13 @@ class World:
 
         for node in self.nodes:
             node.maybe_update(self.t, self.dt)
+
+        if windy:
+            # Truth-side wind displacement of friendly airframes (SIM-PHX-003);
+            # the agents fight the drift through their velocity loops.
+            for uav in self.friendlies.values():
+                if uav.position[2] > 1.0:
+                    uav.body.position += self.weather.wind_at(uav.position[2]) * self.dt
 
         self.t += self.dt
 
@@ -107,6 +133,7 @@ class World:
             "leakers": len(leakers),
             "armed_leakers": len(armed_leakers),
             "wrecks_by_zone": self._wrecks_by_zone(),
+            "strays_by_zone": self._strays_by_zone(),
             "events": len(self.events),
         }
 
@@ -114,4 +141,10 @@ class World:
         out: dict[str, int] = {}
         for w in self.wrecks:
             out[w["zone"].name] = out.get(w["zone"].name, 0) + 1
+        return out
+
+    def _strays_by_zone(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for s in self.stray_impacts:
+            out[s["zone"].name] = out.get(s["zone"].name, 0) + 1
         return out
