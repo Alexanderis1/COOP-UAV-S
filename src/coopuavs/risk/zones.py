@@ -27,6 +27,44 @@ ZONE_WEIGHTS = {
     ZoneClass.CRITICAL: 25.0,
 }
 
+# Civilian-presence buffers per building kind (SIM-ENV-005), metres beyond
+# the footprint. CRITICAL = civilians certainly present, DANGEROUS =
+# possibly present, SAFE = civilian-free ground. Keys are BuildingKind
+# values (strings — this module must not import sim.environment).
+_CRITICAL_BUFFER = {"hospital": 100.0, "school": 100.0, "residential_high": 50.0}
+_DANGEROUS_BUFFER = {"residential_low": 60.0, "commercial": 40.0,
+                     "residential_high": 150.0, "hospital": 200.0,
+                     "school": 200.0}
+_SAFE_KINDS = ("park", "water", "industrial")
+
+
+def _grow(rect: tuple[float, float, float, float], m: float):
+    return (rect[0] - m, rect[1] - m, rect[2] + m, rect[3] + m)
+
+
+def derive_zones(risk_map: "RiskMap", buildings) -> None:
+    """Paint the civilian-presence raster from building kinds (SIM-ENV-005).
+
+    Precedence (later paints win): DANGEROUS halos around populated
+    buildings (streets and yards where people may be) → SAFE for
+    civilian-free ground (parks, water, restricted industrial) → CRITICAL
+    cores where civilians certainly are (hospitals, schools and dense
+    residential blocks plus their buffers). The caller provides a SAFE-
+    default map; everything not implied by a building stays green.
+    """
+    for b in buildings:
+        kind = str(getattr(b.kind, "value", b.kind))
+        if kind in _DANGEROUS_BUFFER:
+            risk_map.set_rect(_grow(b.rect, _DANGEROUS_BUFFER[kind]), ZoneClass.DANGEROUS)
+    for b in buildings:
+        kind = str(getattr(b.kind, "value", b.kind))
+        if kind in _SAFE_KINDS:
+            risk_map.set_rect(b.rect, ZoneClass.SAFE)
+    for b in buildings:
+        kind = str(getattr(b.kind, "value", b.kind))
+        if kind in _CRITICAL_BUFFER:
+            risk_map.set_rect(_grow(b.rect, _CRITICAL_BUFFER[kind]), ZoneClass.CRITICAL)
+
 
 class RiskMap:
     def __init__(

@@ -79,6 +79,14 @@ def main(argv: list[str] | None = None) -> None:
     batch_p.add_argument("scenario", type=Path)
     batch_p.add_argument("-n", "--runs", type=_positive_int, default=10)
 
+    city_p = sub.add_parser(
+        "citygen",
+        help="generate the deterministic urban scenario (SIM-ENV-006)",
+    )
+    city_p.add_argument("--seed", type=int, default=7)
+    city_p.add_argument("-o", "--output", type=Path,
+                        default=Path("scenarios/urban_raid.yaml"))
+
     args = parser.parse_args(argv)
     if args.command == "run":
         _cmd_run(args)
@@ -87,6 +95,10 @@ def main(argv: list[str] | None = None) -> None:
         serve(args.preset, port=args.port, ws_port=args.ws_port, host=args.host)
     elif args.command == "batch":
         _cmd_batch(args)
+    elif args.command == "citygen":
+        from .sim import citygen
+        path = citygen.write_yaml(citygen.generate(args.seed), args.output)
+        print(f"scenario written: {path}")
 
 
 def _cmd_run(args) -> None:

@@ -102,7 +102,7 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         uav = InterceptorUav(
             uav_id=u.pop("id"),
             bus=world.bus,
-            home=np.array(u.pop("home"), dtype=float),
+            home=_resolve_home(u, env),
             effector=EFFECTOR_FACTORIES[u.pop("effector")](),
             **u,
         )
@@ -316,6 +316,15 @@ def build_parametric(request: dict, preset_cfg: dict, seed: int) -> Scenario:
         "request": request,
     })
     return scenario
+
+
+def _resolve_home(u: dict, env: Environment) -> np.ndarray:
+    """A UAV is homed either to an explicit `home` point (legacy) or to a
+    charging station by id (`station`, PHY-CHG-001)."""
+    if "home" in u:
+        u.pop("station", None)
+        return np.array(u.pop("home"), dtype=float)
+    return env.station(u.pop("station")).position.copy()
 
 
 def _parse_class(key: str) -> ThreatClass:
