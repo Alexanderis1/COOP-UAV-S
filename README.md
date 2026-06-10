@@ -51,6 +51,7 @@ Scenarios are pure YAML — map, risk zones, sensor laydown, fleet, raid composi
 
 | Document | Contents |
 |---|---|
+| [docs/SRS.md](docs/SRS.md) | **System Requirements Specification (v0.2)** — the three-element definition: E1 physical segment (interceptor UAVs, GCS, anti-air turrets, sensor network — specification only, the fidelity reference), E2 high-fidelity simulation environment, E3 command interface + main orchestration agent; full ICD, evaluation ghost-threat overlay, scenario-launch requirements |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full system design: component graph, topic contract, layer-by-layer rationale, verified baseline behaviour |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | Deep literature survey (pursuit-evasion games, TEWA, multi-target tracking, decoy discrimination, guidance, SORA ground risk, Ukraine operational data) with verified citations, recommended algorithms, and an ordered study path |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phased evolution: IMM tracking, Apollonius containment, CBBA, MARL benchmark, intercept-point optimisation, ROS 2/Gazebo migration — plus an honest list of v0.1 limitations |

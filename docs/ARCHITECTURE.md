@@ -1,6 +1,9 @@
 # COOP-UAV-S — System Architecture
 
 > Version 0.1 — hackathon baseline. Companion documents:
+> [SRS.md](SRS.md) (System Requirements Specification v0.2 — the binding
+> three-element definition: physical segment / simulation environment /
+> command interface + orchestration agent),
 > [RESEARCH.md](RESEARCH.md) (state of the art, citations, study path) and
 > [ROADMAP.md](ROADMAP.md) (planned evolution).
 
