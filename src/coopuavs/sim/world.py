@@ -60,6 +60,18 @@ class World:
         self.events: list[dict] = []
         self.wrecks: list[dict] = []
         self.stray_impacts: list[dict] = []   # {"t", "pos", "zone", "shooter"}
+        # Live falling debris (SIM-DEB-001) and the intercepts credited to
+        # the defence (SIM-DEB-003). Each object carries a stable negative
+        # pseudo-track id for the task/clearance correlation chain.
+        self.debris: dict[str, object] = {}
+        self.debris_intercepted: list[dict] = []
+        self._debris_seq = 0
+
+    def next_debris_ref(self) -> int:
+        # Offset past small sentinels: FireClearance.track_id defaults to -1,
+        # which must never alias a real debris pseudo-track.
+        self._debris_seq += 1
+        return -(100 + self._debris_seq)
 
     # -- construction ----------------------------------------------------------
 
@@ -101,6 +113,23 @@ class World:
                                threat_class=enemy.threat_class.value,
                                warhead=enemy.profile.warhead)
 
+        # Debris falls between the enemies and the nodes: a wreck spawned by
+        # last tick's adjudication is integrated before the sensors and the
+        # C2 see this tick (SIM-DEB-001).
+        for deb in list(self.debris.values()):
+            deb.step(self.dt)
+            if deb.landed:
+                impact = deb.position
+                zone = self.env.risk_map.zone_at(impact[0], impact[1])
+                self.wrecks.append({
+                    "t": self.t, "enemy_id": deb.source_id,
+                    "pos": [float(impact[0]), float(impact[1]), 0.0],
+                    "zone": zone, "effector": deb.mechanism.value,
+                })
+                self.log_event("debris_impact", debris_id=deb.debris_id,
+                               zone=zone.name)
+                del self.debris[deb.debris_id]
+
         for node in self.nodes:
             node.maybe_update(self.t, self.dt)
 
@@ -130,6 +159,7 @@ class World:
                 and not self._spawn_queue
                 and self.enemies
                 and not any(e.alive for e in self.enemies.values())
+                and not self.debris   # let the last wrecks land or be killed
             ):
                 break
         return self.summary()
@@ -150,6 +180,7 @@ class World:
             "armed_leakers": len(armed_leakers),
             "wrecks_by_zone": self._wrecks_by_zone(),
             "strays_by_zone": self._strays_by_zone(),
+            "debris_intercepted": len(self.debris_intercepted),
             "events": len(self.events),
         }
 

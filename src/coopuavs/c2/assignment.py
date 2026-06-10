@@ -46,14 +46,23 @@ def allocate(
     denied_tracks: set[int] = frozenset(),
     incumbents: dict[int, str] | None = None,
     task_ids: dict[tuple[int, str], int] | None = None,
+    debris_info: dict[int, str] | None = None,
+    uav_effectors: dict[str, str] | None = None,
 ) -> list[EngagementTask]:
     """``task_ids`` is the caller-owned registry mapping a (track, shooter)
     pairing to its task id. A pairing keeps its id across planning cycles —
     a :class:`~coopuavs.core.messages.FireClearance` must stay correlatable
     to the engagement it was requested for, which a fresh id per cycle
-    would silently break."""
+    would silently break.
+
+    ``debris_info`` maps pseudo-track ids to debris ids: those entries are
+    debris-intercept tasks (PHY-GCS-006), eligible only for projectile
+    carriers and never given support wingmen. ``uav_effectors`` maps
+    platform id to its effector type value for that filter."""
     incumbents = incumbents or {}
     task_ids = task_ids if task_ids is not None else {}
+    debris_info = debris_info or {}
+    uav_effectors = uav_effectors or {}
     engage = [
         a for a in assessments
         if a.track_id in tracks
@@ -68,8 +77,20 @@ def allocate(
         if not available:
             break
         trk = tracks[a.track_id]
+        debris_id = debris_info.get(a.track_id)
 
-        shooter_id, t_int = _best_shooter(trk, a, available, uav_speeds, incumbents)
+        candidates = available
+        if debris_id is not None:
+            # Kinetic-destruction shooters only (PHY-GCS-006): nets cannot
+            # physically destroy a falling airframe.
+            candidates = {
+                uid: u for uid, u in available.items()
+                if uav_effectors.get(uid, "projectile") == "projectile"
+            }
+            if not candidates:
+                continue
+
+        shooter_id, t_int = _best_shooter(trk, a, candidates, uav_speeds, incumbents)
         shooter_speed = uav_speeds.get(shooter_id, 30.0)
         del available[shooter_id]
 
@@ -84,6 +105,8 @@ def allocate(
             shooter_id=shooter_id,
             desired_kill_box=np.array([kill_box_xy[0], kill_box_xy[1], 0.0]),
             priority=a.threat_score,
+            target_kind="debris" if debris_id is not None else "track",
+            debris_id=debris_id or "",
         )
 
         # Reserve blockers when the shooter cannot win alone: target faster
@@ -92,7 +115,9 @@ def allocate(
         # blocker becomes the catchable best shooter and roles rotate.
         # Budget rule: a queued track's shooter is never spent as a blocker
         # — saturating raids would otherwise starve on support reservation.
-        needs_support = t_int is None or trk.speed > 0.95 * shooter_speed
+        # Debris falls on ballistics: blocking/herding is meaningless.
+        needs_support = debris_id is None \
+            and (t_int is None or trk.speed > 0.95 * shooter_speed)
         remaining_tracks = len(engage) - idx - 1
         support_budget = max(0, len(available) - remaining_tracks)
         if needs_support and support_budget > 0:

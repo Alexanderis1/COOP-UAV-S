@@ -21,8 +21,10 @@ from ..risk.zones import ZONE_WEIGHTS
 from .world import World
 
 # Event kinds counted as munition releases (one fire event = one shot;
-# a turret burst is one trigger pull).
-SHOT_EVENT_KINDS = {"kill", "miss", "fire_no_target"}
+# a turret burst is one trigger pull). Debris intercepts and LOS-blocked
+# releases spend ammunition too.
+SHOT_EVENT_KINDS = {"kill", "miss", "fire_no_target", "debris_neutralized",
+                    "fire_blocked_los"}
 AUTH_EVENT_KINDS = {"auth_request", "auth_approved", "auth_denied", "auth_expired"}
 
 
@@ -126,6 +128,13 @@ class EvalTracker(Node):
                 "wrecks_by_zone": self.world._wrecks_by_zone(),
                 "strays_by_zone": self.world._strays_by_zone(),
                 "debris_cost": round(float(debris_cost), 3),
+                # Debris interception credit (SIM-DEB-003): zone cost the
+                # defence averted by destroying wreckage before impact.
+                "debris_intercepts": len(self.world.debris_intercepted),
+                "debris_saved_cost": round(float(sum(
+                    ZONE_WEIGHTS[d["saved_zone"]]
+                    for d in self.world.debris_intercepted
+                )), 3),
             },
             "auth": {
                 "requests": len(auth["auth_request"]),

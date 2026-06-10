@@ -68,6 +68,23 @@ class RulesOfEngagement:
         self.debris = debris
         self.config = config or RoeConfig()
 
+    def evaluate_debris(self, request: FireRequest, t: float) -> FireClearance:
+        """Debris-mitigation shots (PHY-GCS-006/SIM-DEB-003): the target is
+        already falling on DANGEROUS or CRITICAL ground, and a kinetic hit
+        replaces the wreck with negligible fragments — the shot's own
+        collateral is by construction below the impact it averts. The
+        dedicated branch exists so the decision is logged and auditable,
+        not because the outcome is ever in doubt."""
+        return FireClearance(
+            header=Header(stamp=t),
+            task_id=request.task_id,
+            uav_id=request.uav_id,
+            track_id=request.track_id,
+            decision=EngagementDecision.AUTHORIZED,
+            expected_collateral=0.0,
+            reason="debris_mitigation",
+        )
+
     def evaluate(
         self,
         request: FireRequest,

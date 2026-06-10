@@ -41,6 +41,7 @@ from ..sensors.seeker import OnboardSeeker
 from ..threats.enemy_drone import THREAT_PROFILES, EnemyDrone
 from ..viz.recorder import Recorder
 from .adjudicator import EngagementAdjudicator
+from .debris_objects import DebrisReporter
 from .environment import Environment
 from .evaluation import EvalTracker
 from .turret import GroundTurret
@@ -128,6 +129,9 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
             world.add_node(OnboardSeeker(f"seeker-{uav.uav_id}", world, uav))
 
     world.add_node(FusionNode(world.bus, **cfg.get("fusion", {})))
+    # Debris-tracking picture (SIM-DEB-002): published before the C2 plans,
+    # so intercept tasking sees this tick's fall state.
+    world.add_node(DebrisReporter(world, rate_hz=cfg.get("record_hz", 5.0)))
 
     bs_cfg = dict(cfg.get("base_station", {}))
     roe = RoeConfig(**bs_cfg.pop("roe", {}))
@@ -135,6 +139,7 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         BaseStation(
             world.bus, env, world.debris_model,
             uav_speeds={uid: u.max_speed for uid, u in uavs.items()},
+            uav_effectors={uid: u.effector.type.value for uid, u in uavs.items()},
             roe_config=roe, **bs_cfg,
         )
     )

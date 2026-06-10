@@ -21,17 +21,23 @@ for the track's lifetime.
 
 from __future__ import annotations
 
+import numpy as np
+
 from ..core.bus import MessageBus
 from ..core.messages import (
+    DebrisArray,
+    DebrisState,
     EngagementDecision,
     EngagementResult,
     FireRequest,
     Header,
     RoeEvaluation,
     ThreatAssessment,
+    Track,
     TrackArray,
     UavMode,
     UavState,
+    ZoneClass,
 )
 from ..core.node import Node
 from ..sim.environment import Environment
@@ -42,6 +48,16 @@ from .roe import DENIAL_TTL_S, RoeConfig, RulesOfEngagement
 
 TASKS_TOPIC = "engagement/tasks"
 ROE_TOPIC = "c2/roe_evaluation"
+DEBRIS_TOPIC = "debris/state"
+
+# Debris-intercept priority (PHY-GCS-006): a wreck falling on CRITICAL
+# ground outranks most threat tracks, DANGEROUS sits mid-queue, SAFE-bound
+# debris is never engaged. The zone weights are the objective function:
+# minimise expected collateral damage and loss of life.
+DEBRIS_SCORE_DANGEROUS = 0.55
+DEBRIS_SCORE_CRITICAL = 0.90
+# Below this time-to-impact there is no realistic intercept window left.
+DEBRIS_MIN_WINDOW_S = 1.5
 
 # Telemetry silent for this long is treated as lost: allocating a platform
 # on its last-known state hands the shooter slot to a ghost (the comms
@@ -64,15 +80,26 @@ class BaseStation(Node):
         uav_speeds: dict[str, float],
         rate_hz: float = 1.0,
         roe_config: RoeConfig | None = None,
+        uav_effectors: dict[str, str] | None = None,
+        debris_policy: dict | None = None,
     ):
         super().__init__("base_station", bus, rate_hz=rate_hz)
         self.env = env
         self.uav_speeds = uav_speeds
+        # Effector type per platform (PHY-GCS-006/007): debris tasks go only
+        # to projectile carriers, and assignment is envelope-aware.
+        self.uav_effectors = uav_effectors or {}
+        policy = dict(debris_policy or {})
+        self.debris_engage_zones = {
+            ZoneClass[z] for z in policy.get("engage_zones",
+                                             ["CRITICAL", "DANGEROUS"])
+        }
         self.roe = RulesOfEngagement(env.risk_map, debris, roe_config)
 
         self._tracks: dict[int, object] = {}
         self._assessments: dict[int, ThreatAssessment] = {}
         self._uavs: dict[str, UavState] = {}
+        self._debris: dict[str, DebrisState] = {}
         self._denied: dict[int, float] = {}   # track_id -> denial time (TTL)
         self._killed: dict[int, float] = {}   # track_id -> kill report time
         self._shooters: dict[int, str] = {}   # track_id -> incumbent shooter
@@ -85,6 +112,7 @@ class BaseStation(Node):
         self.create_subscription("uav/state", self._on_uav_state)
         self.create_subscription("engagement/fire_request", self._on_fire_request)
         self.create_subscription("engagement/result", self._on_result)
+        self.create_subscription(DEBRIS_TOPIC, self._on_debris)
 
     # -- subscriptions -------------------------------------------------------
 
@@ -94,6 +122,9 @@ class BaseStation(Node):
     def _on_uav_state(self, msg: UavState) -> None:
         self._uavs[msg.uav_id] = msg
 
+    def _on_debris(self, msg: DebrisArray) -> None:
+        self._debris = {d.debris_id: d for d in msg.debris}
+
     def _on_result(self, msg: EngagementResult) -> None:
         if msg.hit:
             self._killed[msg.track_id] = msg.header.stamp
@@ -101,6 +132,15 @@ class BaseStation(Node):
     def _on_fire_request(self, msg: FireRequest) -> None:
         """Fire requests are answered immediately, not at the planning rate —
         an in-envelope window against a 55 m/s target lasts a second."""
+        if msg.target_kind == "debris":
+            # Debris mitigation (SIM-DEB-003): the dedicated ROE branch
+            # authorises and logs; no footprint costing needed.
+            clearance = self.roe.evaluate_debris(msg, self._t)
+            self._roe_pub.publish(
+                RoeEvaluation(header=Header(stamp=self._t), request=msg,
+                              clearance=clearance)
+            )
+            return
         track = self._tracks.get(msg.track_id)
         if track is None:
             return
@@ -141,6 +181,12 @@ class BaseStation(Node):
         self._assessments = {
             tid: threat_evaluation.assess(trk, self.env, t) for tid, trk in live.items()
         }
+        # Falling debris headed for populated ground enters the same queue
+        # as threat tracks (PHY-GCS-006): the zone-derived score makes red
+        # debris outrank most threats and yellow debris sit mid-queue.
+        debris_tracks, debris_assess, debris_info = self._debris_picture(t)
+        live.update(debris_tracks)
+        self._assessments.update(debris_assess)
         # A platform is a usable shooter only if it can actually fly the
         # engagement: rounds in the magazine, battery above the RTB floor,
         # not already committed to the recovery/turnaround cycle, and its
@@ -165,6 +211,8 @@ class BaseStation(Node):
             denied_tracks=denied,
             incumbents=self._shooters,
             task_ids=self._task_ids,
+            debris_info=debris_info,
+            uav_effectors=self.uav_effectors,
         )
         self._shooters = {task.track_id: task.shooter_id for task in tasks}
         self._task_ids = {
@@ -172,3 +220,37 @@ class BaseStation(Node):
             if pairing[0] in live
         }
         self._tasks_pub.publish(tasks)
+
+    def _debris_picture(self, t: float):
+        """Pseudo-tracks and assessments for interceptable debris
+        (SIM-DEB-003): only objects predicted to land in the configured
+        engage zones, with enough fall time left to matter."""
+        tracks: dict[int, Track] = {}
+        assessments: dict[int, ThreatAssessment] = {}
+        info: dict[int, str] = {}
+        for deb in self._debris.values():
+            if deb.impact_zone == ZoneClass.SAFE \
+                    or deb.impact_zone not in self.debris_engage_zones:
+                continue
+            if deb.t_impact < DEBRIS_MIN_WINDOW_S:
+                continue
+            score = (DEBRIS_SCORE_CRITICAL
+                     if deb.impact_zone == ZoneClass.CRITICAL
+                     else DEBRIS_SCORE_DANGEROUS)
+            tracks[deb.track_ref] = Track(
+                header=Header(stamp=t),
+                track_id=deb.track_ref,
+                position=np.asarray(deb.position, dtype=float),
+                velocity=np.asarray(deb.velocity, dtype=float),
+                p_decoy=0.0,
+            )
+            assessments[deb.track_ref] = ThreatAssessment(
+                header=Header(stamp=t),
+                track_id=deb.track_ref,
+                threat_score=score,
+                time_to_impact=deb.t_impact,
+                predicted_impact=np.asarray(deb.predicted_impact, dtype=float),
+                impact_zone=deb.impact_zone,
+            )
+            info[deb.track_ref] = deb.debris_id
+        return tracks, assessments, info

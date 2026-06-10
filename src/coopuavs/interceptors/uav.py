@@ -28,6 +28,8 @@ import numpy as np
 
 from ..core.bus import MessageBus
 from ..core.messages import (
+    DebrisArray,
+    DebrisState,
     EngagementDecision,
     EngagementTask,
     FireClearance,
@@ -93,6 +95,7 @@ class InterceptorUav(Node):
         self._task: EngagementTask | None = None
         self._role: str = "none"               # "shooter" | "support"
         self._tracks: dict[int, Track] = {}
+        self._debris: dict[str, DebrisState] = {}
         self._peers: dict[str, UavState] = {}
         self._clearance: FireClearance | None = None
         self._await_clearance = False
@@ -106,6 +109,7 @@ class InterceptorUav(Node):
         self._fire_pub = self.create_publisher(FIRE_TOPIC)
         self.create_subscription("engagement/tasks", self._on_tasks)
         self.create_subscription("tracks", self._on_tracks)
+        self.create_subscription("debris/state", self._on_debris)
         self.create_subscription("uav/state", self._on_peer_state)
         self.create_subscription("engagement/clearance", self._on_clearance)
         self.create_subscription("uav/command", self._on_command)
@@ -141,6 +145,9 @@ class InterceptorUav(Node):
 
     def _on_tracks(self, msg: TrackArray) -> None:
         self._tracks = {trk.track_id: trk for trk in msg.tracks}
+
+    def _on_debris(self, msg: DebrisArray) -> None:
+        self._debris = {d.debris_id: d for d in msg.debris}
 
     def _on_peer_state(self, msg: UavState) -> None:
         if msg.uav_id != self.uav_id:
@@ -182,7 +189,7 @@ class InterceptorUav(Node):
                 self._publish_state(t)
                 return
 
-        track = self._tracks.get(self._task.track_id) if self._task else None
+        track = self._target_picture() if self._task else None
 
         if self._rtb_ordered:
             # Operator override (HMI-AUT-005): break off, recover, turn around.
@@ -278,6 +285,8 @@ class InterceptorUav(Node):
                     effector=self.effector.type,
                     predicted_intercept=tgt_pos + track.velocity * 0.5,
                     p_kill=pk,
+                    target_kind=self._task.target_kind,
+                    debris_id=self._task.debris_id,
                 )
             )
 
@@ -299,6 +308,8 @@ class InterceptorUav(Node):
                 effector=self.effector.type,
                 predicted_intercept=track.position.copy(),
                 p_kill=pk,
+                target_kind=self._task.target_kind,
+                debris_id=self._task.debris_id,
             )
         )
 
@@ -341,6 +352,25 @@ class InterceptorUav(Node):
         self._fly_to(post)
 
     # -- helpers ------------------------------------------------------------------------
+
+    def _target_picture(self) -> Track | None:
+        """The pursuit picture for the current task: a fused track, or —
+        for a debris-intercept task (SIM-DEB-003) — the latest debris state
+        wrapped as a pseudo-track so guidance and fire control run
+        unchanged. A vanished debris object (landed or neutralized) reads
+        as no target and the platform goes home."""
+        if self._task.target_kind == "debris":
+            deb = self._debris.get(self._task.debris_id)
+            if deb is None:
+                return None
+            return Track(
+                header=deb.header,
+                track_id=self._task.track_id,
+                position=np.asarray(deb.position, dtype=float),
+                velocity=np.asarray(deb.velocity, dtype=float),
+                p_decoy=0.0,
+            )
+        return self._tracks.get(self._task.track_id)
 
     def _peer_position(self, uav_id: str) -> np.ndarray:
         if uav_id == self.uav_id:

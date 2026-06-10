@@ -170,7 +170,9 @@ class EngagementTask:
 
     ``shooter_id`` carries the designated effector platform; ``support_ids``
     are cooperative wingmen flying herding/blocking roles to shape the
-    target's trajectory toward ``desired_kill_box``.
+    target's trajectory toward ``desired_kill_box``. Debris-intercept tasks
+    (PHY-GCS-006) set ``target_kind="debris"`` and carry the debris id; the
+    synthetic negative ``track_id`` keeps the clearance correlation chain.
     """
 
     header: Header
@@ -180,6 +182,8 @@ class EngagementTask:
     support_ids: list[str] = field(default_factory=list)
     desired_kill_box: np.ndarray = field(default_factory=_vec3)  # centre, map
     priority: float = 0.0
+    target_kind: str = "track"          # "track" | "debris"
+    debris_id: str = ""
 
 
 @dataclass
@@ -194,6 +198,8 @@ class FireRequest:
     predicted_intercept: np.ndarray = field(default_factory=_vec3)
     p_kill: float = 0.0
     rounds: int = 0                     # burst size (turrets); 0 = one munition
+    target_kind: str = "track"          # "track" | "debris" (SIM-DEB-003)
+    debris_id: str = ""
 
 
 @dataclass
@@ -248,6 +254,41 @@ class EngagementResult:
     hit: bool = False
     debris_impact: np.ndarray | None = None
     debris_zone: ZoneClass | None = None
+    # Attribution (SIM-GT-004): weapon, engaged-time Pk and target kind.
+    effector: EffectorType | None = None
+    pk: float = 0.0
+    target_kind: str = "track"
+
+
+# ---------------------------------------------------------------------------
+# Debris messages (SIM-DEB-002)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DebrisState:
+    """One live falling-debris object on ``debris/state`` — the stand-in
+    for a debris-tracking radar (fidelity: representative).
+
+    ``track_ref`` is a stable negative pseudo-track id assigned at spawn:
+    debris rides the same task/clearance correlation chain as tracks
+    (every consumer keys on ``track_id``) without colliding with fusion
+    ids."""
+
+    header: Header
+    debris_id: str = ""
+    track_ref: int = 0                  # negative, stable for the object's life
+    position: np.ndarray = field(default_factory=_vec3)
+    velocity: np.ndarray = field(default_factory=_vec3)
+    predicted_impact: np.ndarray = field(default_factory=_vec3)   # [x, y, 0]
+    impact_zone: ZoneClass = ZoneClass.SAFE
+    t_impact: float = 0.0               # s until predicted ground impact
+
+
+@dataclass
+class DebrisArray:
+    header: Header
+    debris: list[DebrisState] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
