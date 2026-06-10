@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SRS-COOP-UAV-S-001 |
-| Version | 0.1 — Initial Release for Stakeholder Review |
+| Version | 0.2 — OI-001 Resolved: Class A+ Cooperative Engagement Strategy |
 | Status | DRAFT |
 | Date | 2026-06-10 |
 | Classification | RESTRICTED |
@@ -21,6 +21,7 @@
 | Rev | Date | Author | Description |
 |---|---|---|---|
 | 0.1 | 2026-06-10 | Requirements Engineering | Initial draft — elicited from stakeholder and derived from hackathon baseline (`claude/uav-swarm-interception-hackathon-f0vqi0`) |
+| 0.2 | 2026-06-10 | Requirements Engineering | OI-001 resolved: Class A+ engagement strategy defined as two-mode cooperative approach (relay interception primary; herding to anti-air gun kill zone secondary). Added SRS-COOP-007 through SRS-COOP-013, SRS-C2-011, SRS-IF-006/007, SRS-SAF-010/011. Updated threat table, traceability matrix, and OI list. |
 
 ---
 
@@ -133,7 +134,7 @@ The following open issues are identified at document version 0.1. They must be r
 
 | ID | Summary | Impact | Target Resolution |
 |---|---|---|---|
-| OI-001 | Class A+ Jet OWA (100 m/s) vs. VTOL-only interceptor fleet | Critical — engagement of Class A+ cannot be guaranteed by VTOL pursuit alone | PDR |
+| OI-001 | Class A+ Jet OWA (100 m/s) vs. VTOL-only interceptor fleet | **CLOSED v0.2** — Two-mode cooperative strategy adopted: relay interception primary, herding to anti-air gun kill zone secondary. See SRS-COOP-007 to SRS-COOP-013, SRS-C2-011, SRS-IF-006/007, SRS-SAF-010/011. | Closed |
 | OI-002 | Class-specific response time requirements not yet formally derived | High — performance requirements incomplete | Analysis due before PDR |
 | OI-003 | Detection/tracking KPIs derived from response time analysis not yet complete | High — performance requirements incomplete | Depends on OI-002 |
 | OI-004 | Directed energy effector type not specified (laser vs. HPM) | Medium — impacts platform, power, safety requirements | TBD |
@@ -174,7 +175,7 @@ The system shall address the following threat classes. All four classes are mand
 | Class ID | Name | Representative Platform | Speed | Altitude AGL | Mass | Warhead | Notes |
 |---|---|---|---|---|---|---|---|
 | A | Strategic OWA | Shahed-136 / Geran-2 | 50–65 m/s | 50 m – 5,000 m (adaptive) | ~200 kg | Yes, 50–90 kg | Saturation swarm; decoy mixing; terminal dive |
-| A+ | Jet OWA | Geran-3 / Shahed-238 | 95–110 m/s | 2,000–5,000 m | ~200 kg | Yes | High-speed; reduced intercept window; ⚠ OI-001 |
+| A+ | Jet OWA | Geran-3 / Shahed-238 | 95–110 m/s | 2,000–5,000 m | ~200 kg | Yes | High-speed; direct pursuit impossible for VTOL fleet. Engagement via cooperative relay interception or herding to anti-air gun kill zone. See SRS-COOP-007 to SRS-COOP-013. |
 | B | Tactical FPV | Quadcopter kamikaze | 30–40 m/s | 0–200 m | 1–5 kg | Yes | Fiber-optic guided variants are RF-jam-immune; agile |
 | C | Loitering Munition | Lancet-3 | 70–90 m/s | 50–500 m | 10–15 kg | Yes, AI-guided seeker | AI-guided terminal seeker; precision strike |
 | D | RF Decoy | Gerbera-type | Matches Class A profile | Matches Class A profile | ~18 kg | No | Shares OWA radar signature; decoy fraction up to 60% of salvos |
@@ -395,6 +396,15 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 [SRS-C2-010] In HITL mode, if the operator does not respond to a fire request within the remaining TTI minus the minimum intercept setup time, the C2 shall alert the operator that the engagement window is closing. If the operator still does not respond and TTI falls below the last-resort threshold, the system shall automatically escalate the request but shall not autonomously fire unless the hybrid rule in [SRS-C2-009] is met.
 
+[SRS-C2-011] **Class A+ engagement strategy arbitration (SHALL):** For each confirmed Class A+ track, the TEWA loop shall evaluate and continuously update the preferred engagement strategy at every planning cycle. The strategy selection logic shall be:
+
+1. Assess relay interception feasibility (SRS-COOP-007).
+2. If relay is feasible AND the expected relay-chain Pk exceeds a configurable threshold: assign relay interceptors (SRS-COOP-008).
+3. If relay is not feasible OR Pk is below threshold AND at least one kill zone is AVAILABLE: activate herding-to-kill-zone (SRS-COOP-010).
+4. If neither strategy is currently executable (no relay geometry, no available kill zone): hold all interceptors at best available monitoring positions; escalate to operator and Tier 1 C2 with THREAT UNENGAGEABLE alert; continue updating trajectory prediction for opportunity reassessment.
+
+The operator shall be informed of the current strategy in execution for each Class A+ track on the tactical display.
+
 ---
 
 ## 8. Functional Requirements — Rules of Engagement (ROE)
@@ -505,14 +515,14 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 | Parameter | Minimum Requirement |
 |---|---|
-| Maximum speed | ≥ 45 m/s (TBC — higher speeds preferred; see OI-001) |
+| Maximum speed | ≥ 45 m/s. Class A+ (95–110 m/s) is not engaged by direct pursuit; see SRS-COOP-007 to SRS-COOP-013 for the cooperative relay and herding strategy. |
 | Maximum acceleration | ≥ 15 m/s² |
 | Operational endurance | ≥ 25 minutes at cruise speed |
 | Payload mass (effector + seeker) | ≥ TBD kg |
 | Operating altitude | 50 m – 5,000 m AGL |
 | Operating temperature | −25°C to +45°C |
 
-⚠ OI-001: The maximum speed requirement of ≥ 45 m/s is insufficient to pursue Class A+ Jet OWA (95–110 m/s) in direct tail-chase geometry. The cooperative cutoff / relay interception architecture partially mitigates this, but cannot guarantee engagement in all geometries. This is a critical open issue requiring stakeholder decision.
+Class A+ direct-pursuit engagement is by design not required. Class A+ is addressed exclusively through cooperative relay interception and herding to anti-air gun kill zone (SRS-COOP-007 to SRS-COOP-013). OI-001 closed.
 
 ---
 
@@ -571,6 +581,52 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 [SRS-COOP-006] Incumbent hysteresis: re-assignment of a shooter from one track to another shall require the candidate replacement to offer a strictly better intercept cost by a margin factor (default 0.7). This prevents rapid shooter-swapping on estimate jitter that would disrupt converged pursuit geometry.
 
+### 11.2 Class A+ Jet OWA — Dedicated Cooperative Engagement Strategy
+
+> Applies exclusively to Class A+ (Jet OWA) threats. OI-001 resolution: direct tail-chase pursuit is geometrically impossible for the VTOL interceptor fleet. The system shall address Class A+ through two strategies applied in priority order: (1) cooperative relay interception and (2), when relay geometry is not achievable, herding to a pre-designated anti-air gun kill zone.
+
+[SRS-COOP-007] **Relay feasibility assessment (SHALL):** On confirmation of a Class A+ track, the C2 shall immediately assess whether relay interception geometry is achievable. Feasibility is defined as: at least one available interceptor UAV can reach a valid corridor cutoff point *before* the Class A+ threat arrives at that point, determined by the Apollonius criterion:
+
+```
+UAV_distance_to_cutoff / UAV_speed < A+_distance_to_cutoff / A+_speed
+```
+
+The feasibility assessment shall be completed within 20 seconds of track confirmation and shall be re-evaluated at every TEWA planning cycle as the A+ trajectory evolves.
+
+[SRS-COOP-008] **Relay interception execution (PRIMARY strategy — SHALL when feasible):** When relay feasibility is confirmed, the C2 shall assign a chain of relay interceptors along the predicted A+ flight corridor. Each relay interceptor shall be assigned a cutoff post it can reach before the A+ arrives. The relay chain shall be designed such that if the first interceptor misses, the next in the chain is already in position. Relay posts shall be spaced so that the A+ cannot outrun the chain without deviating significantly from its programmed trajectory.
+
+[SRS-COOP-009] **A+ trajectory prediction (SHALL):** Class A+ trajectory prediction shall be computed in 3D, accounting for the A+'s known flight profile (high-altitude cruise with terminal dive). The predicted trajectory shall be extrapolated a minimum of 90 seconds forward to allow relay posts to be pre-positioned. The trajectory prediction shall be updated at every TEWA cycle with the latest track state.
+
+[SRS-COOP-010] **Herding to anti-air gun kill zone (SECONDARY strategy — SHALL when relay is infeasible or insufficient):** When relay interception is assessed as infeasible, OR when the relay chain has been exhausted without achieving a kill, the C2 shall activate the herding-to-kill-zone strategy:
+
+1. **Kill zone selection:** The C2 shall select the anti-air gun kill zone that minimises the lateral angular deviation required from the A+'s current projected trajectory, among all zones currently marked AVAILABLE (gun crew confirmed present and ready). If no kill zone is available, the system shall alert the Tier 1 Metropolitan C2 and the operator immediately.
+
+2. **Herding formation assignment:** Available interceptors shall be assigned positions that create engagement threats on all A+ approach corridors except the one leading to the selected kill zone. Interceptors in herding positions shall be placed at posts the A+ would need to fly through on alternative routes — making those routes kinematically costly or geometrically risky. The kill-zone approach corridor shall be left uncontested.
+
+3. **Gun crew alert:** Simultaneously with herding formation assignment, the C2 shall issue a TRACK ALERT to the gun crew associated with the selected kill zone, including: current A+ position and velocity, predicted time of arrival (PTA) at kill zone entry point, and confidence interval on trajectory prediction.
+
+[SRS-COOP-011] **Anti-air gun kill zone management (SHALL):** Kill zones designated for Class A+ engagement shall be defined as part of the defended area configuration and shall meet all of the following criteria:
+- Located in a SAFE ground-risk zone (per the ground risk map classification).
+- Positioned such that anti-air gun engagement within the zone does not create debris risk over DANGEROUS or CRITICAL ground.
+- Reachable by the A+ trajectory with ≤ TBD degrees of heading change from its predicted course.
+- Associated with a specific gun crew identifier and a real-time availability status (AVAILABLE / UNAVAILABLE).
+
+Multiple kill zones may be designated. The C2 shall maintain kill zone status in real time and shall not attempt to herd a Class A+ toward an UNAVAILABLE zone.
+
+[SRS-COOP-012] **Gun crew engagement handoff protocol (SHALL):** The formal handoff of Class A+ engagement responsibility from the UAV C2 system to the human anti-air gun crew shall follow this sequence:
+
+| Step | Actor | Action |
+|---|---|---|
+| 1 | C2 | Issues TRACK ALERT to gun crew with A+ track data and PTA |
+| 2 | Gun crew | Acknowledges alert; responds with READY or NOT-READY |
+| 3a | C2 (if READY) | Continues herding formation; begins UAV evacuation from gun engagement cone (see SRS-SAF-010) |
+| 3b | C2 (if NOT-READY or no response within TBD s) | Selects alternate kill zone OR escalates to relay strategy with remaining UAVs OR alerts operator |
+| 4 | C2 | Issues CLEARED HOT signal to gun crew once all UAVs are confirmed outside the gun engagement cone |
+| 5 | Gun crew | Engages A+ when it enters the kill zone |
+| 6 | C2 | Updates track: marks as ENGAGED BY GUN; suspends UAV engagement tasks for this track |
+
+[SRS-COOP-013] **Strategy transition continuity (SHALL):** The system shall be capable of transitioning between relay interception and herding strategies mid-engagement if the tactical situation changes (e.g., relay feasibility is lost because the A+ changes altitude/heading; or a gun crew becomes available that was previously unavailable). Strategy transitions shall be executed within one TEWA planning cycle. During transition, at least one interceptor shall maintain visual/sensor contact with the A+ to preserve track continuity.
+
 ---
 
 ## 12. Performance Requirements
@@ -584,7 +640,7 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 | Threat Class | Indicative Total Response Time (detection → fire authorization) |
 |---|---|
 | A — Strategic OWA | ≤ 120 s |
-| A+ — Jet OWA | ≤ 45 s (highly sensitive to detection range — see OI-001) |
+| A+ — Jet OWA | Relay feasibility assessment ≤ 20 s from confirmed track; gun-zone alert issued ≥ TBD s before kill-zone ETA (see OI-002) |
 | B — Tactical FPV | ≤ 30 s |
 | C — Loitering Munition | ≤ 60 s |
 
@@ -616,6 +672,26 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 [SRS-IF-005] The system shall provide a replay interface for mission debrief. The replay shall present the same visual representation as the live console and shall be driven by the mission recorder log.
 
+[SRS-IF-006] **Anti-air gun crew alert interface (SHALL):** The system shall maintain a real-time, bidirectional communication interface with designated human anti-air gun crew positions. This interface shall support:
+
+- **C2 → Gun crew:** TRACK ALERT message containing: threat class (A+), current 3D position, velocity vector, predicted time of arrival at kill zone entry point, prediction confidence interval, and selected kill zone identifier.
+- **C2 → Gun crew:** CLEARED HOT signal, issued after UAV evacuation from the gun engagement cone is confirmed (SRS-SAF-010).
+- **C2 → Gun crew:** STAND DOWN signal, issued when the threat is destroyed by other means or the herding strategy is aborted.
+- **Gun crew → C2:** READY / NOT-READY acknowledgement with optional reason code.
+- **Gun crew → C2:** ENGAGED confirmation, issued when the gun crew fires at the threat.
+- **Gun crew → C2:** KILL / MISS report after engagement.
+
+All messages on this interface shall carry timestamps and shall be logged as operational records. Latency of READY/NOT-READY acknowledgement shall be monitored; failure to acknowledge within a configurable timeout shall be treated as NOT-READY.
+
+[SRS-IF-007] **Kill zone designation interface (SHALL):** Authorised operators at Tier 1 and Tier 2 shall be able to designate, modify, and remove anti-air gun kill zones on the tactical map. Each kill zone record shall specify:
+- Geographic centre and radius (ENU metres).
+- Associated gun crew identifier.
+- Coverage altitude band (min/max AGL).
+- Current availability status (AVAILABLE / UNAVAILABLE / DEGRADED).
+- Maximum debris safe zone for gun engagement (used by ROE to confirm zone-safe shots by gun crew).
+
+Kill zone definitions shall be stored in the Tier 1 Metropolitan C2 and propagated to all Tier 2 sector nodes. Changes to kill zone status shall propagate within one Tier 1 update cycle.
+
 ### 13.2 Internal Message Bus Interface
 
 [SRS-MSG-001] All message schemas shall be version-controlled and backward-compatible within a minor version series. Breaking schema changes shall require a major version increment and a migration plan.
@@ -646,9 +722,24 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 [SRS-SAF-006] **Mode display integrity (SHALL):** The engagement authority mode (HITL/HOTL) displayed on the operator console shall reflect the actual system mode at all times. Any discrepancy between displayed and actual mode shall trigger an audible and visual alarm and shall suspend engagement activity until the discrepancy is resolved.
 
+[SRS-SAF-010] **UAV / anti-air gun deconfliction — gun engagement cone (SHALL — inviolable):** No interceptor UAV shall be present within the gun engagement cone of a human anti-air gun emplacement when that gun is in CLEARED HOT status. Before the CLEARED HOT signal is issued to the gun crew (step 4 of the handoff protocol in SRS-COOP-012), the C2 shall:
+1. Command all interceptors to exit the gun engagement cone.
+2. Receive confirmed position reports from all interceptors placing them outside the cone.
+3. Only then issue the CLEARED HOT signal.
+
+If any interceptor cannot exit the cone in time, the CLEARED HOT signal shall be withheld and the gun crew shall be notified with a HOLD message. This constraint is not bypassable under any mode or scenario.
+
+The gun engagement cone shall be defined as: a 3D volumetric envelope centred on the gun emplacement, extending to the gun's maximum range, covering the full azimuth/elevation firing arc. The cone geometry shall be pre-configured per gun emplacement in the kill zone definition (SRS-IF-007).
+
+[SRS-SAF-011] **UAV self-suppression during herding (SHALL):** Interceptor UAVs assigned to herding positions against a Class A+ track (SRS-COOP-010) shall have their effector release inhibited by default while executing the herding role. Effector release inhibit shall be lifted only if:
+- The A+ trajectory has deviated from the herding funnel AND relay intercept geometry has simultaneously become viable for that UAV; OR
+- The C2 explicitly issues a SHOOT AUTHORIZATION for that UAV after re-evaluating the engagement geometry.
+
+This prevents uncoordinated UAV shots against a Class A+ from creating debris over uncleared ground while the gun-crew coordination is in progress.
+
 ### 14.2 Safety Assurance
 
-[SRS-SAF-007] The software implementing requirements [SRS-SAF-001] through [SRS-SAF-006] shall be developed and verified to DO-178C DAL B. The safety requirements list shall be included in the Functional Hazard Assessment (FHA) and the Preliminary System Safety Assessment (PSSA) as Hazard Mitigations.
+[SRS-SAF-007] The software implementing requirements [SRS-SAF-001] through [SRS-SAF-011] shall be developed and verified to DO-178C DAL B. The safety requirements list shall be included in the Functional Hazard Assessment (FHA) and the Preliminary System Safety Assessment (PSSA) as Hazard Mitigations.
 
 [SRS-SAF-008] The following items from the v0.1 draft are NOT safety requirements and shall be classified as design-level parameters pending safety review:
 - The ROE threshold values in [SRS-ROE-006] (⚠ OI-007).
@@ -757,18 +848,23 @@ The TEWA planning loop shall run at a minimum rate of 1 Hz. ⚠ See OI-002 — f
 
 The following items are unresolved at document version 0.1 and must be resolved before this SRS is elevated to baseline status (before PDR unless noted otherwise).
 
-### OI-001 — Class A+ Jet OWA Interception with VTOL-Only Fleet (CRITICAL)
+### OI-001 — Class A+ Jet OWA Interception with VTOL-Only Fleet — **CLOSED v0.2**
 
-**Description:** The stakeholder has specified that the system must engage all four threat classes (A, A+, B, C) AND that the interceptor platform shall be VTOL multirotor only. Class A+ Jet OWA operates at 95–110 m/s. The maximum speed of VTOL multirotor interceptors (SRS-UAV-013) is ≥ 45 m/s. The simulation baseline (v0.1 draft) explicitly documents that the jet OWA is "beyond the propeller interceptor tier" and shows 0% direct-pursuit attrition for this class.
+**Resolution (stakeholder, 2026-06-10):** Direct pursuit engagement of Class A+ by VTOL interceptors is acknowledged as geometrically infeasible and is not required. The system shall address Class A+ through a two-mode cooperative strategy:
 
-**Impact:** A VTOL multirotor fleet cannot reliably engage Class A+ threats by direct pursuit. Cooperative cutoff (relay) geometry partially mitigates this but cannot guarantee engagement in all geometries, especially at high altitude or when the OWA has a straight, unobstructed flight path.
+1. **Primary — Cooperative relay interception:** Pre-position relay interceptors along the predicted A+ corridor using Apollonius cutoff geometry. Relay posts are valid if the interceptor can reach the post before the A+ arrives, regardless of whether the interceptor can outrun the A+. Multiple relay stages form a chain; even slow VTOL platforms can contribute if pre-positioned far enough ahead.
 
-**Options for resolution:**
-1. Add a fixed-wing or hybrid VTOL-FW interceptor tier capable of ≥ 120 m/s.
-2. Accept that Class A+ engagement relies entirely on cooperative cutoff geometry and directed energy/EW effectors, with reduced Pk guarantee. Define an acceptable Pk for Class A+ accordingly.
-3. Reduce Class A+ in-scope from engagement to detect-and-track only, with warning relay to other C2 systems.
+2. **Secondary — Herding to anti-air gun kill zone:** When relay geometry is not achievable, UAVs channel the A+'s trajectory toward a pre-designated kill zone where human-operated anti-air guns can engage safely. UAVs create engagement threats on all alternative corridors while leaving the kill-zone approach uncontested.
 
-**Stakeholder decision required before PDR.**
+**New requirements generated:**
+- SRS-COOP-007 through SRS-COOP-013 (cooperative engagement for A+)
+- SRS-C2-011 (strategy arbitration in TEWA loop)
+- SRS-IF-006 (anti-air gun crew alert interface)
+- SRS-IF-007 (kill zone designation interface)
+- SRS-SAF-010 (UAV/gun deconfliction — inviolable)
+- SRS-SAF-011 (UAV effector inhibit during herding)
+
+**Residual accepted risk:** In scenarios where relay geometry is infeasible AND no kill zone is available (UNAVAILABLE gun crews), the system cannot guarantee engagement of the A+ threat. This shall be treated as a capability gap requiring operational mitigation (pre-positioning gun crews, maintaining kill zone availability). The C2 shall issue a THREAT UNENGAGEABLE alert in these scenarios.
 
 ---
 
@@ -837,7 +933,7 @@ The following items are unresolved at document version 0.1 and must be resolved 
 | Threat Class | Detection | Tracking | Classification | C2/TEWA | ROE | Interceptor | Effector | Cooperation |
 |---|---|---|---|---|---|---|---|---|
 | A — Strategic OWA | DET-001, DET-002, DET-003 | TRK-001–011 | CLS-001–008 | C2-001–010 | ROE-001–011 | UAV-001–013 | EFF-001–004 | COOP-001–006 |
-| A+ — Jet OWA | DET-001, DET-002 | TRK-001–011 | CLS-001–005 | C2-001–010 | ROE-001–011 | UAV-001–013 ⚠ OI-001 | EFF-001–004, EFF-009–010 | COOP-001–006 (primary mitigation) |
+| A+ — Jet OWA | DET-001, DET-002 | TRK-001–011 | CLS-001–005 | C2-001–011 | ROE-001–011 | UAV-001–013 (no direct pursuit) | EFF-001–004, EFF-005–008, EFF-009–010, IF-006, IF-007 | COOP-007–013 (relay primary; gun kill zone secondary); SAF-010, SAF-011 |
 | B — FPV | DET-001, DET-005 (acoustic critical) | TRK-001–011 | CLS-001–005 | C2-001–010 | ROE-001–011 | UAV-001–013 | EFF-001–004 (net preferred) | COOP-001–006 |
 | C — Loitering | DET-001–007 | TRK-001–011 | CLS-001–005 | C2-001–010 | ROE-001–011 | UAV-001–013 | EFF-001–004 | COOP-001–006 |
 | D — Decoy | DET-001–007 | TRK-001–011 | CLS-001–008 | C2-003–010 | ROE-008 | No engagement | N/A | N/A |
@@ -858,6 +954,11 @@ The following items in the v0.1 simulation draft require correction or validatio
 | SRS-EFF-005–008 (EW jamming) | Stub / not implemented | Full implementation required |
 | SRS-EFF-009–010 (directed energy) | Not implemented | Interface reservation after OI-004 resolution |
 | SRS-C2-007–010 (HITL/HOTL operator console) | Not implemented | Operator console required for operational system |
+| SRS-C2-011 (A+ strategy arbitration) | Not implemented — current draft treats A+ same as Class A | Implement relay feasibility check and herding-to-gun-zone branch in TEWA loop |
+| SRS-COOP-007–013 (A+ relay and herding) | Partially — cutoff geometry exists (cooperation.py) but no two-mode strategy, no gun zone handoff | Add A+ engagement mode FSM; implement gun kill zone management and handoff protocol |
+| SRS-IF-006/007 (gun crew alert interface) | Not implemented | New external interface component required |
+| SRS-SAF-010 (gun engagement cone deconfliction) | Not implemented | Hard safety function — highest priority; requires gun cone geometry model and UAV evacuation command |
+| SRS-SAF-011 (herding effector inhibit) | Not implemented | Add effector inhibit flag to UAV mode FSM for herding role |
 
 ---
 
