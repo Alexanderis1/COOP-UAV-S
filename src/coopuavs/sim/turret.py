@@ -35,6 +35,8 @@ from ..core.messages import (
     TurretState,
 )
 from ..core.node import Node
+from ..c2.roe import DENIAL_TTL_S
+from .adjudicator import TURRET_EVASION_FACTOR, TURRET_LETHAL_RADIUS
 from .world import World
 
 FIRE_TOPIC = "engagement/fire"
@@ -84,11 +86,12 @@ class GroundTurret(Node):
 
         self._tracks: dict[int, Track] = {}
         self._peer_claims: dict[str, int | None] = {}
-        self._denied: set[int] = set()
+        self._denied: dict[int, float] = {}   # track_id -> denial time (TTL)
         self._killed: set[int] = set()    # don't chase coasting dead tracks
         self._await_until = 0.0           # re-request clearance after this
         self._hold_until = 0.0
         self._cleared_until = 0.0
+        self._cleared_track: int | None = None   # the track the token costed
         self._next_burst_ok = 0.0
 
         self._state_pub = self.create_publisher(STATE_TOPIC)
@@ -116,16 +119,25 @@ class GroundTurret(Node):
                 self._cleared_until = 0.0
 
     def _on_clearance(self, msg: FireClearance) -> None:
+        """Tokens are correlated by ``track_id``: a verdict applies to the
+        track the ROE actually costed, not to whatever the turret happens
+        to be laying on when the (possibly delayed) answer arrives."""
         if msg.uav_id != self.turret_id:
             return
+        if msg.decision == EngagementDecision.DENIED:
+            if msg.track_id >= 0:
+                self._denied[msg.track_id] = msg.header.stamp
+                if msg.track_id == self.target_track:
+                    self.target_track = None
+                    self._await_until = 0.0
+            return
+        if msg.track_id != self.target_track:
+            return                       # stale token for an abandoned lay
         if msg.decision == EngagementDecision.AUTHORIZED:
             self._cleared_until = msg.header.stamp + self.clearance_window
-        elif msg.decision == EngagementDecision.HOLD:
+            self._cleared_track = msg.track_id
+        else:  # HOLD
             self._hold_until = msg.header.stamp + 1.5
-        else:  # DENIED — never re-ask for this track
-            if self.target_track is not None:
-                self._denied.add(self.target_track)
-            self.target_track = None
         self._await_until = 0.0
 
     # -- main loop -------------------------------------------------------------------
@@ -158,7 +170,7 @@ class GroundTurret(Node):
             self._publish_state(t)
             return
 
-        if t < self._cleared_until:
+        if t < self._cleared_until and self._cleared_track == track.track_id:
             self.state = "firing"
             if t >= self._next_burst_ok:
                 self._fire_burst(track, aim, dist, t)
@@ -179,8 +191,9 @@ class GroundTurret(Node):
         }
         best, best_priority = None, 0.0
         for trk in self._tracks.values():
-            if trk.track_id in self._denied or trk.track_id in claimed \
-                    or trk.track_id in self._killed:
+            denied_t = self._denied.get(trk.track_id)
+            if (denied_t is not None and t - denied_t < DENIAL_TTL_S) \
+                    or trk.track_id in claimed or trk.track_id in self._killed:
                 continue
             if trk.p_decoy >= self.decoy_threshold:
                 continue
@@ -221,10 +234,13 @@ class GroundTurret(Node):
 
     def _expected_pk(self, dist: float, target_speed: float) -> float:
         """Predicted per-burst kill probability from dispersion, range, TOF
-        and target speed — the same surface the adjudicator rolls against."""
+        and target speed — the same surface the adjudicator rolls against
+        (literally: the lethal-radius and evasion constants are imported
+        from the adjudicator so the two cannot drift apart)."""
         tof = dist / self.muzzle_velocity
-        sigma2 = (self.dispersion_mrad * 1e-3 * dist) ** 2 + (0.3 * target_speed * tof) ** 2
-        p_round = 1.0 - float(np.exp(-(2.0**2) / (2.0 * sigma2 + 1e-9)))
+        sigma2 = (self.dispersion_mrad * 1e-3 * dist) ** 2 \
+            + (TURRET_EVASION_FACTOR * target_speed * tof) ** 2
+        p_round = 1.0 - float(np.exp(-(TURRET_LETHAL_RADIUS**2) / (2.0 * sigma2 + 1e-9)))
         return 1.0 - (1.0 - p_round) ** self.rounds_per_burst
 
     def _request_clearance(self, track: Track, aim: np.ndarray, dist: float, t: float) -> None:
@@ -242,6 +258,9 @@ class GroundTurret(Node):
         )
 
     def _fire_burst(self, track: Track, aim: np.ndarray, dist: float, t: float) -> None:
+        # The last burst of a magazine may be partial: the adjudicator must
+        # roll (and land strays for) the rounds actually fired, not the
+        # nominal burst — hence the explicit count on the fire message.
         n = min(self.rounds_per_burst, self.magazine)
         self.magazine -= n
         self._next_burst_ok = t + n / self.rate_of_fire
@@ -254,6 +273,7 @@ class GroundTurret(Node):
                 effector=EffectorType.PROJECTILE,
                 predicted_intercept=aim.copy(),
                 p_kill=self._expected_pk(dist, track.speed),
+                rounds=n,
             )
         )
 

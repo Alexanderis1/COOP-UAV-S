@@ -50,6 +50,11 @@ MIN_PK_TO_RELEASE = 0.15   # abort if geometry collapsed while clearing
 # A clearance token lost in transit must not deadlock the interlock
 # (SIM-COM-003): if no answer arrives within this window, re-request.
 CLEARANCE_TIMEOUT_S = 3.0
+# An AUTHORIZED token authorises the geometry the ROE costed *now*, not a
+# shot at an arbitrary later time: stale tokens are discarded unconsumed.
+CLEARANCE_VALID_S = 3.0
+# Battery fraction below which the airframe breaks off and recovers.
+LOW_BATTERY_RTB = 0.15
 
 
 class InterceptorUav(Node):
@@ -118,14 +123,21 @@ class InterceptorUav(Node):
     # -- subscriptions -----------------------------------------------------------
 
     def _on_tasks(self, tasks: list[EngagementTask]) -> None:
+        previous_track = self._task.track_id if self._task else None
         self._task, self._role = None, "none"
         for task in tasks:
             if task.shooter_id == self.uav_id:
                 self._task, self._role = task, "shooter"
-                return
+                break
             if self.uav_id in task.support_ids:
                 self._task, self._role = task, "support"
-                return
+                break
+        # Retasked to a different target (or untasked): any clearance state
+        # belongs to the old engagement — the ROE never costed the new one.
+        new_track = self._task.track_id if self._task else None
+        if new_track != previous_track:
+            self._clearance = None
+            self._await_clearance = False
 
     def _on_tracks(self, msg: TrackArray) -> None:
         self._tracks = {trk.track_id: trk for trk in msg.tracks}
@@ -135,9 +147,15 @@ class InterceptorUav(Node):
             self._peers[msg.uav_id] = msg
 
     def _on_clearance(self, msg: FireClearance) -> None:
-        if msg.uav_id == self.uav_id:
-            self._clearance = msg
-            self._await_clearance = False
+        """Accept only tokens correlated to the *current* engagement: a
+        clearance answered after a retask authorises a shot whose debris
+        footprint was costed for a different track — drop it."""
+        if msg.uav_id != self.uav_id:
+            return
+        if self._task is None or msg.track_id != self._task.track_id:
+            return
+        self._clearance = msg
+        self._await_clearance = False
 
     def _on_command(self, msg: UavCommand) -> None:
         if msg.uav_id != self.uav_id:
@@ -175,7 +193,11 @@ class InterceptorUav(Node):
             else:
                 self._fly_to(self.home)
                 self.mode = UavMode.RTB
-        elif self.battery < 0.15 or (self.effector.ammo == 0 and self._role == "shooter"):
+        elif self.battery < LOW_BATTERY_RTB or self.effector.ammo == 0:
+            # Empty magazine sends the airframe home whatever its current
+            # role: the C2 drops ammo-out platforms from tasking within a
+            # cycle, so gating REARM on still *being* the shooter would
+            # park it at the pad in IDLE, never turning around.
             if self._at(self.home):
                 self.mode = UavMode.REARM
                 self._rearm_until = t + self.turnaround_s
@@ -223,11 +245,17 @@ class InterceptorUav(Node):
 
         self.mode = UavMode.ENGAGE
         if self._clearance is not None:
-            decision = self._clearance.decision
+            clearance = self._clearance
             self._clearance = None
-            if decision == EngagementDecision.AUTHORIZED:
+            # Belt-and-braces re-check of the correlation _on_clearance
+            # already enforced, plus freshness: a token consumed long after
+            # it was issued authorises geometry that no longer exists.
+            if (clearance.track_id != track.track_id
+                    or t - clearance.header.stamp > CLEARANCE_VALID_S):
+                return
+            if clearance.decision == EngagementDecision.AUTHORIZED:
                 self._fire(track, pk, t)
-            elif decision == EngagementDecision.HOLD:
+            elif clearance.decision == EngagementDecision.HOLD:
                 self._hold_until = t + 1.5   # geometry unsafe — re-ask shortly
             else:  # DENIED — C2 will re-task us; stop asking for this track
                 self._task = None
@@ -276,8 +304,17 @@ class InterceptorUav(Node):
 
     def _support_behaviour(self, track: Track) -> None:
         """Cooperative wingman: cutoff post if the target outruns the
-        shooter (relay interception), herding flank otherwise."""
-        support_ids = self._task.support_ids
+        shooter (relay interception), herding flank otherwise.
+
+        Post slots are claimed only among wingmen whose telemetry has been
+        heard: substituting our own position for a silent peer (degraded
+        link, SIM-COM-001) would both fabricate that peer's reachability
+        and shift which post *we* claim — two blockers converge on one
+        post and the corridor gaps."""
+        support_ids = [
+            uid for uid in self._task.support_ids
+            if uid == self.uav_id or uid in self._peers
+        ]
         my_idx = support_ids.index(self.uav_id) if self.uav_id in support_ids else 0
         positions = [self._peer_position(uid) for uid in support_ids]
 

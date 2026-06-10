@@ -15,6 +15,8 @@ from .bus import MessageBus, Publisher
 
 class Node:
     def __init__(self, name: str, bus: MessageBus, rate_hz: float = 10.0):
+        if rate_hz <= 0.0:
+            raise ValueError(f"node '{name}': rate_hz must be positive, got {rate_hz}")
         self.name = name
         self.bus = bus
         self.rate_hz = rate_hz
@@ -35,9 +37,17 @@ class Node:
     # -- scheduling ----------------------------------------------------------
 
     def maybe_update(self, t: float, dt: float) -> None:
-        """Called by the world every sim step; fires :meth:`update` at rate_hz."""
+        """Called by the world every sim step; fires :meth:`update` at rate_hz.
+
+        The next deadline advances from the *previous deadline*, not from
+        the (quantised-up) fire time: rebasing on the fire time accumulates
+        the quantisation error and a period that is not a multiple of the
+        world dt would run systematically below its declared rate."""
         if t + 1e-9 >= self._next_tick:
-            self._next_tick = t + 1.0 / self.rate_hz
+            period = 1.0 / self.rate_hz
+            self._next_tick += period
+            if self._next_tick <= t + 1e-9:   # missed deadlines don't backlog
+                self._next_tick = t + period
             self.update(t, dt)
 
     def update(self, t: float, dt: float) -> None:  # pragma: no cover - interface

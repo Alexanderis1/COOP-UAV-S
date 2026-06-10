@@ -24,15 +24,11 @@ docs/RESEARCH.md §2.
 
 from __future__ import annotations
 
-import itertools
-
 import numpy as np
 
 from ..core.messages import EngagementTask, Header, ThreatAssessment, Track, UavState
 from ..interceptors.guidance import intercept_time
 from ..risk.zones import RiskMap
-
-_task_ids = itertools.count(1)
 
 DECOY_IGNORE_THRESHOLD = 0.85   # p_decoy above which a track gets no shooter
 MAX_SUPPORT_PER_TASK = 2
@@ -49,8 +45,15 @@ def allocate(
     t: float,
     denied_tracks: set[int] = frozenset(),
     incumbents: dict[int, str] | None = None,
+    task_ids: dict[tuple[int, str], int] | None = None,
 ) -> list[EngagementTask]:
+    """``task_ids`` is the caller-owned registry mapping a (track, shooter)
+    pairing to its task id. A pairing keeps its id across planning cycles —
+    a :class:`~coopuavs.core.messages.FireClearance` must stay correlatable
+    to the engagement it was requested for, which a fresh id per cycle
+    would silently break."""
     incumbents = incumbents or {}
+    task_ids = task_ids if task_ids is not None else {}
     engage = [
         a for a in assessments
         if a.track_id in tracks
@@ -71,9 +74,12 @@ def allocate(
         del available[shooter_id]
 
         kill_box_xy = risk_map.nearest_safe_cell(trk.position[0], trk.position[1])
+        pairing = (a.track_id, shooter_id)
+        if pairing not in task_ids:
+            task_ids[pairing] = max(task_ids.values(), default=0) + 1
         task = EngagementTask(
             header=Header(stamp=t),
-            task_id=next(_task_ids),
+            task_id=task_ids[pairing],
             track_id=a.track_id,
             shooter_id=shooter_id,
             desired_kill_box=np.array([kill_box_xy[0], kill_box_xy[1], 0.0]),

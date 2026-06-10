@@ -24,6 +24,14 @@ import numpy as np
 _msg_seq = itertools.count()
 
 
+def reset_message_seq() -> None:
+    """Restart ``Header.seq`` numbering. Called by each new ``World`` so
+    that recordings and logs are byte-reproducible run-to-run even when
+    several runs share one Python process (batch, serve)."""
+    global _msg_seq
+    _msg_seq = itertools.count()
+
+
 def _vec3() -> np.ndarray:
     return np.zeros(3)
 
@@ -185,13 +193,23 @@ class FireRequest:
     effector: EffectorType = EffectorType.NET
     predicted_intercept: np.ndarray = field(default_factory=_vec3)
     p_kill: float = 0.0
+    rounds: int = 0                     # burst size (turrets); 0 = one munition
 
 
 @dataclass
 class FireClearance:
+    """Release verdict for one :class:`FireRequest`.
+
+    ``track_id`` binds the token to the engagement the ROE actually
+    costed: consumers must release only on that track, never on whatever
+    they happen to be tasked with when the (possibly delayed) token
+    arrives — the safety chain is in this correlation.
+    """
+
     header: Header
     task_id: int
     uav_id: str
+    track_id: int = -1
     decision: EngagementDecision = EngagementDecision.HOLD
     expected_collateral: float = 0.0
     reason: str = ""

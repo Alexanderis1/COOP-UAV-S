@@ -15,6 +15,7 @@ from typing import Callable
 import numpy as np
 
 from ..core.bus import MessageBus
+from ..core.messages import reset_message_seq
 from ..core.node import Node
 from ..risk.debris import DebrisModel
 from ..threats.enemy_drone import EnemyDrone
@@ -34,6 +35,9 @@ class World:
         self.dt = dt
         self.t = 0.0
         self.bus = MessageBus()
+        # Restart message numbering with the world clock: run N of a batch
+        # must produce the same recording as the same seed run standalone.
+        reset_message_seq()
         self.rng = np.random.default_rng(seed)
         self.debris_model = DebrisModel(self.rng)
         self.weather = weather or WeatherState(self.rng)

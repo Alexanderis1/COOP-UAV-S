@@ -14,7 +14,9 @@ Closes the TEWA loop at ``rate_hz``:
    clears a shot.
 
 Tracks whose engagement was DENIED (decoy-grade, unsafe geometry) are
-remembered and excluded from future allocation rather than re-chased.
+excluded from allocation for :data:`~coopuavs.c2.roe.DENIAL_TTL_S` and then
+re-evaluated — the verdict was for one instant's geometry and belief, not
+for the track's lifetime.
 """
 
 from __future__ import annotations
@@ -28,13 +30,15 @@ from ..core.messages import (
     RoeEvaluation,
     ThreatAssessment,
     TrackArray,
+    UavMode,
     UavState,
 )
 from ..core.node import Node
 from ..sim.environment import Environment
+from ..interceptors.uav import LOW_BATTERY_RTB
 from ..risk.debris import DebrisModel
 from . import assignment, threat_evaluation
-from .roe import RoeConfig, RulesOfEngagement
+from .roe import DENIAL_TTL_S, RoeConfig, RulesOfEngagement
 
 TASKS_TOPIC = "engagement/tasks"
 ROE_TOPIC = "c2/roe_evaluation"
@@ -58,9 +62,10 @@ class BaseStation(Node):
         self._tracks: dict[int, object] = {}
         self._assessments: dict[int, ThreatAssessment] = {}
         self._uavs: dict[str, UavState] = {}
-        self._denied: set[int] = set()
+        self._denied: dict[int, float] = {}   # track_id -> denial time (TTL)
         self._killed: set[int] = set()
         self._shooters: dict[int, str] = {}   # track_id -> incumbent shooter
+        self._task_ids: dict[tuple[int, str], int] = {}   # (track, shooter) -> id
         self._t = 0.0
 
         self._tasks_pub = self.create_publisher(TASKS_TOPIC)
@@ -96,7 +101,7 @@ class BaseStation(Node):
             t=self._t,
         )
         if clearance.decision == EngagementDecision.DENIED:
-            self._denied.add(msg.track_id)
+            self._denied[msg.track_id] = self._t
         self._roe_pub.publish(
             RoeEvaluation(header=Header(stamp=self._t), request=msg, clearance=clearance)
         )
@@ -111,7 +116,18 @@ class BaseStation(Node):
         self._assessments = {
             tid: threat_evaluation.assess(trk, self.env, t) for tid, trk in live.items()
         }
-        available = [u for u in self._uavs.values() if u.ammo > 0]
+        # A platform is a usable shooter only if it can actually fly the
+        # engagement: rounds in the magazine, battery above the RTB floor,
+        # and not already committed to the recovery/turnaround cycle —
+        # otherwise the allocator burns its best shooter slot on an
+        # airframe that is sitting on the pad ignoring its task.
+        available = [
+            u for u in self._uavs.values()
+            if u.ammo > 0
+            and u.battery >= LOW_BATTERY_RTB
+            and u.mode not in (UavMode.RTB, UavMode.REARM)
+        ]
+        denied = {tid for tid, t0 in self._denied.items() if t - t0 < DENIAL_TTL_S}
         tasks = assignment.allocate(
             list(self._assessments.values()),
             live,
@@ -119,8 +135,13 @@ class BaseStation(Node):
             self.uav_speeds,
             self.env.risk_map,
             t,
-            denied_tracks=self._denied,
+            denied_tracks=denied,
             incumbents=self._shooters,
+            task_ids=self._task_ids,
         )
         self._shooters = {task.track_id: task.shooter_id for task in tasks}
+        self._task_ids = {
+            pairing: tid for pairing, tid in self._task_ids.items()
+            if pairing[0] in live
+        }
         self._tasks_pub.publish(tasks)

@@ -26,7 +26,7 @@ class Radar(Sensor):
         position,
         max_range: float = 12000.0,
         rate_hz: float = 5.0,
-        reference_rcs: float = 0.5,     # RCS giving pd_max at half max range
+        reference_rcs: float = 0.5,     # RCS giving snr=1 (Pd = pd_max/2) at half effective range
         pd_max: float = 0.95,
         min_elevation_deg: float = 1.5,
         sigma_at_max_range: float = 60.0,
@@ -47,9 +47,11 @@ class Radar(Sensor):
         if elevation < self.min_elevation:
             return None
 
-        # Radar-equation-shaped Pd: SNR ~ rcs / R^4, normalised so that a
-        # reference_rcs target at half (weather-effective) max range sees
-        # pd_max. Precipitation mildly shrinks the effective range.
+        # Radar-equation-shaped Pd = pd_max * snr / (1 + snr): SNR ~ rcs / R^4,
+        # normalised so a reference_rcs target at half (weather-effective) max
+        # range has snr = 1 and thus sees pd_max / 2; pd_max is the asymptotic
+        # ceiling approached at close range. Precipitation mildly shrinks the
+        # effective range.
         snr = (enemy.rcs / self.reference_rcs) * (0.5 * self.effective_range() / rng_m) ** 4
         pd = self.pd_max * snr / (1.0 + snr)
         if self.rng.random() > pd:
