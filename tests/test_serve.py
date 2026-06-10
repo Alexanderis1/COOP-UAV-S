@@ -77,7 +77,8 @@ async def _drive() -> dict:
             eval_task = asyncio.create_task(eval_reader())
             second_start_sent = False
 
-            async with asyncio.timeout(60):
+            async def ops_reader():
+                nonlocal second_start_sent
                 async for raw in ops:
                     msg = json.loads(raw)
                     out["ops_types"].add(msg["type"])
@@ -98,6 +99,8 @@ async def _drive() -> dict:
                     elif msg["type"] == "summary":
                         out["summary"] = msg["data"]
                         break
+
+            await asyncio.wait_for(ops_reader(), 60)   # 3.10-compatible timeout
             eval_task.cancel()
     finally:
         await server.stop()
@@ -118,3 +121,88 @@ def test_ops_eval_round_trip_with_human_confirm():
     assert metrics["auth"]["approved"] >= 1
     assert metrics["auth"]["approved"] <= metrics["auth"]["requests"]
     assert out["summary"]["kills"] >= 1                  # approval released a shot
+
+
+async def _recv_type(ws, msg_type: str, timeout: float = 10.0) -> dict:
+    """Skip interleaved frames etc. until a message of msg_type arrives."""
+    async def _wait():
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg["type"] == msg_type:
+                return msg
+    return await asyncio.wait_for(_wait(), timeout)
+
+
+async def _drive_bad_messages() -> None:
+    server = CommandServer(PRESET, host="127.0.0.1", ws_port=0)
+    await server.start()
+    try:
+        uri = f"ws://127.0.0.1:{server.ws_port}"
+        async with websockets.connect(f"{uri}/ops") as ops:
+            # Valid JSON that is not an object (or with non-object data)
+            # must produce an error reply, not crash the connection.
+            for raw in ("5", '"pause"', '[1, 2]',
+                        json.dumps({"type": "pause", "data": [1, 2]})):
+                await ops.send(raw)
+                msg = await _recv_type(ops, "error")
+                assert "JSON object" in msg["data"]["message"]
+
+            # Oversized parametric requests: structured rejection (HMI-SCN-003).
+            big = {"type": "start_run",
+                   "data": {"threats": {"fpv": {"count": 100000}}, "seed": 1}}
+            await ops.send(json.dumps(big))
+            msg = await _recv_type(ops, "error")
+            assert "maximum" in msg["data"]["message"]
+            long_run = {"type": "start_run",
+                        "data": {"threats": {"fpv": {"count": 1}},
+                                 "duration": 1e9, "seed": 1}}
+            await ops.send(json.dumps(long_run))
+            msg = await _recv_type(ops, "error")
+            assert "duration" in msg["data"]["message"]
+
+            # Non-finite speed on a live run is refused, not clamped to nan.
+            start = json.loads(json.dumps(START_RUN))
+            start["data"]["speed"] = 0.1                 # keep the run alive
+            await ops.send(json.dumps(start))
+            await _recv_type(ops, "run_started")
+            for bad_speed in ("NaN", "Infinity", '"nan"'):
+                await ops.send('{"type": "set_speed", "data": {"speed": %s}}'
+                               % bad_speed)
+                msg = await _recv_type(ops, "error")
+                assert "finite" in msg["data"]["message"]
+            await ops.send(json.dumps({"type": "stop_run", "data": {}}))
+            await _recv_type(ops, "summary", timeout=15.0)
+    finally:
+        await server.stop()
+
+
+def test_malformed_and_oversized_requests_get_error_replies():
+    asyncio.run(_drive_bad_messages())
+
+
+async def _drive_origins() -> None:
+    server = CommandServer(PRESET, host="127.0.0.1", ws_port=0)
+    await server.start()
+    try:
+        uri = f"ws://127.0.0.1:{server.ws_port}/ops"
+        # No Origin (non-browser clients) and the server's own host are
+        # accepted: the command is processed ("no active run" error reply).
+        async with websockets.connect(uri) as ws:
+            await ws.send(json.dumps({"type": "pause", "data": {}}))
+            msg = await _recv_type(ws, "error")
+            assert "no active run" in msg["data"]["message"]
+        async with websockets.connect(uri, origin="http://127.0.0.1:8000") as ws:
+            await ws.send(json.dumps({"type": "pause", "data": {}}))
+            msg = await _recv_type(ws, "error")
+            assert "no active run" in msg["data"]["message"]
+        # A cross-site Origin is rejected before any message is processed.
+        async with websockets.connect(uri, origin="http://evil.example") as ws:
+            with pytest.raises(websockets.exceptions.ConnectionClosed):
+                await asyncio.wait_for(ws.recv(), 5)
+            assert ws.close_code == 4403
+    finally:
+        await server.stop()
+
+
+def test_origin_check_rejects_cross_site_browsers():
+    asyncio.run(_drive_origins())

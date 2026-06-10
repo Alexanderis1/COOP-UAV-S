@@ -14,6 +14,8 @@ Payload accessors return exactly the ICD data objects: ``frame()`` (§2.2),
 
 from __future__ import annotations
 
+import math
+
 from .scenario import Scenario
 
 MIN_SPEED = 0.1
@@ -45,7 +47,13 @@ class RunController:
             self._sync_run_info()
 
     def set_speed(self, speed: float) -> None:
-        self.speed = float(min(max(speed, MIN_SPEED), MAX_SPEED))
+        """Set the time-scale factor, clamped to [MIN_SPEED, MAX_SPEED];
+        raises ``ValueError`` on a non-finite value (nan would otherwise
+        slip through the min/max clamp)."""
+        speed = float(speed)
+        if not math.isfinite(speed):
+            raise ValueError(f"speed must be finite, got {speed}")
+        self.speed = min(max(speed, MIN_SPEED), MAX_SPEED)
         self._sync_run_info()
 
     def set_posture(self, posture: str) -> None:

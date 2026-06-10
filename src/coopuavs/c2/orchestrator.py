@@ -292,7 +292,8 @@ class Orchestrator(Node):
                            reason: str, collateral: float, t: float) -> None:
         self._clearance_pub.publish(FireClearance(
             header=Header(stamp=t), task_id=req.task_id, uav_id=req.uav_id,
-            decision=decision, expected_collateral=collateral, reason=reason,
+            track_id=req.track_id, decision=decision,
+            expected_collateral=collateral, reason=reason,
         ))
 
     def _decision(self, actor: str, text: str, req: FireRequest,

@@ -47,7 +47,7 @@ coopuavs run scenarios/residential_raid.yaml --live --speed 4
 # Monte-Carlo over seeds
 coopuavs batch scenarios/residential_raid.yaml -n 20
 
-pytest        # 21 tests incl. deterministic end-to-end raid
+pytest        # full suite incl. deterministic end-to-end raid
 ```
 
 Scenarios are pure YAML — map, risk zones, sensor laydown, fleet, raid composition, ROE thresholds. Experiments are data, not code: see `scenarios/residential_raid.yaml` (a 12×12 km residential area, two protected assets, a 9-drone three-wave raid).

@@ -33,6 +33,17 @@ from pathlib import Path
 
 from .sim import scenario as scenario_mod
 
+HOST_HELP = ("bind address for the HTTP and websocket servers; WARNING: a "
+             "non-loopback value exposes an unauthenticated control channel "
+             "to the network (default: 127.0.0.1)")
+
+
+def _positive_int(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return n
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="coopuavs", description=__doc__)
@@ -48,6 +59,7 @@ def main(argv: list[str] | None = None) -> None:
     run_p.add_argument("--speed", type=float, default=4.0, help="live time scale")
     run_p.add_argument("--port", type=int, default=8000)
     run_p.add_argument("--ws-port", type=int, default=8001)
+    run_p.add_argument("--host", default="127.0.0.1", help=HOST_HELP)
     run_p.add_argument("--record", type=Path, default=None, help="recording output path")
 
     serve_p = sub.add_parser(
@@ -57,20 +69,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     serve_p.add_argument("--port", type=int, default=8000, help="HTTP port (frontend)")
     serve_p.add_argument("--ws-port", type=int, default=8001, help="websocket port (/ops, /eval)")
+    serve_p.add_argument("--host", default="127.0.0.1", help=HOST_HELP)
     serve_p.add_argument("--preset", type=Path,
                          default=Path("scenarios/residential_raid.yaml"),
                          help="preset supplying map/zones/sensors/fleet/turrets/ROE")
 
     batch_p = sub.add_parser("batch", help="Monte-Carlo over seeds")
     batch_p.add_argument("scenario", type=Path)
-    batch_p.add_argument("-n", "--runs", type=int, default=10)
+    batch_p.add_argument("-n", "--runs", type=_positive_int, default=10)
 
     args = parser.parse_args(argv)
     if args.command == "run":
         _cmd_run(args)
     elif args.command == "serve":
         from .viz.server import serve
-        serve(args.preset, port=args.port, ws_port=args.ws_port)
+        serve(args.preset, port=args.port, ws_port=args.ws_port, host=args.host)
     elif args.command == "batch":
         _cmd_batch(args)
 
@@ -79,7 +92,7 @@ def _cmd_run(args) -> None:
     if args.live:
         from .viz.server import serve
         serve(args.scenario, port=args.port, ws_port=args.ws_port,
-              auto_start=True, seed=args.seed, speed=args.speed)
+              auto_start=True, seed=args.seed, speed=args.speed, host=args.host)
         return
 
     sc = scenario_mod.load(args.scenario, seed=args.seed)
@@ -91,7 +104,7 @@ def _cmd_run(args) -> None:
     print(f"recording: {path}")
     if not args.headless:
         from .viz.server import serve_replay
-        serve_replay(path, port=args.port)
+        serve_replay(path, port=args.port, host=args.host)
 
 
 def _cmd_batch(args) -> None:
@@ -108,8 +121,8 @@ def _cmd_batch(args) -> None:
         "runs": n,
         "mean_kills": sum(r["kills"] for r in rows) / n,
         "mean_armed_leakers": sum(r["armed_leakers"] for r in rows) / n,
-        "decoy_shots": sum(r["kills_decoy"] for r in rows) / n,
-        "critical_zone_wrecks": sum(
+        "mean_decoy_kills": sum(r["kills_decoy"] for r in rows) / n,
+        "total_critical_zone_wrecks": sum(
             r["wrecks_by_zone"].get("CRITICAL", 0) for r in rows
         ),
     }
