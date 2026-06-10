@@ -52,7 +52,7 @@ class Radar(Sensor):
         # range has snr = 1 and thus sees pd_max / 2; pd_max is the asymptotic
         # ceiling approached at close range. Precipitation mildly shrinks the
         # effective range.
-        snr = (enemy.rcs / self.reference_rcs) * (0.5 * self.effective_range() / rng_m) ** 4
+        snr = (enemy.rcs / self.reference_rcs) * (0.5 * self.effective_range() / (rng_m + 1e-9)) ** 4
         pd = self.pd_max * snr / (1.0 + snr)
         if self.rng.random() > pd:
             return None

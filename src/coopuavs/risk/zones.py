@@ -42,6 +42,7 @@ class RiskMap:
         """
         self.bounds = bounds
         self.cell_size = cell_size
+        self.default = default
         xmin, ymin, xmax, ymax = bounds
         self.nx = max(1, int(np.ceil((xmax - xmin) / cell_size)))
         self.ny = max(1, int(np.ceil((ymax - ymin) / cell_size)))
@@ -52,17 +53,21 @@ class RiskMap:
     def set_rect(self, rect: tuple[float, float, float, float], zone: ZoneClass) -> None:
         """Mark a rectangle (xmin, ymin, xmax, ymax) with a zone class.
 
-        Only the intersection with the map is painted: ``_index`` clips to
-        the grid, so a rectangle authored entirely off-map would otherwise
-        silently stamp a stripe of border cells with its class — a stray
-        CRITICAL rect in a scenario file must not forbid the map edge.
+        Only cells the rectangle actually overlaps are painted: max edges
+        are half-open, so an edge landing exactly on a cell boundary does
+        not paint the zero-overlap cell beyond it, and a rectangle authored
+        entirely off-map paints nothing — a stray CRITICAL rect in a
+        scenario file must not forbid the map edge.
         """
         xmin, ymin, xmax, ymax = self.bounds
         if rect[2] <= xmin or rect[0] >= xmax or rect[3] <= ymin or rect[1] >= ymax:
             return
         i0, j0 = self._index(rect[0], rect[1])
-        i1, j1 = self._index(rect[2], rect[3])
-        self.grid[min(j0, j1) : max(j0, j1) + 1, min(i0, i1) : max(i0, i1) + 1] = int(zone)
+        i1 = int(np.clip(np.ceil((rect[2] - xmin) / self.cell_size) - 1, 0, self.nx - 1))
+        j1 = int(np.clip(np.ceil((rect[3] - ymin) / self.cell_size) - 1, 0, self.ny - 1))
+        if i1 < i0 or j1 < j0:
+            return
+        self.grid[j0 : j1 + 1, i0 : i1 + 1] = int(zone)
 
     # -- queries ---------------------------------------------------------------
 
@@ -73,6 +78,11 @@ class RiskMap:
         return i, j
 
     def zone_at(self, x: float, y: float) -> ZoneClass:
+        xmin, ymin, xmax, ymax = self.bounds
+        if not (xmin <= x < xmax and ymin <= y < ymax):
+            # Off-map ground is unsurveyed: report the map's default class,
+            # not whatever zone happens to occupy the nearest edge cell.
+            return self.default
         i, j = self._index(x, y)
         return ZoneClass(int(self.grid[j, i]))
 

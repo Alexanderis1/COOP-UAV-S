@@ -43,6 +43,28 @@ def test_off_map_rect_does_not_paint_border_cells():
     assert rm.zone_at(0.0, 0.0) == ZoneClass.SAFE
 
 
+def test_grid_aligned_rect_does_not_paint_past_its_edge():
+    rm = RiskMap((-1000, -1000, 1000, 1000), cell_size=100.0,
+                 default=ZoneClass.SAFE)
+    rm.set_rect((0, 0, 300, 300), ZoneClass.CRITICAL)
+    assert rm.zone_at(250.0, 250.0) == ZoneClass.CRITICAL
+    # Max edges land exactly on cell boundaries: the cells beyond hold no
+    # part of the rect and must keep their class (the old floor-plus-one
+    # indexing painted one extra row and column).
+    assert rm.zone_at(350.0, 50.0) == ZoneClass.SAFE
+    assert rm.zone_at(50.0, 350.0) == ZoneClass.SAFE
+
+
+def test_zone_at_off_map_reports_the_default_class():
+    rm = RiskMap((-1000, -1000, 1000, 1000), cell_size=100.0,
+                 default=ZoneClass.DANGEROUS)
+    rm.set_rect((900, 900, 1000, 1000), ZoneClass.SAFE)   # edge cell
+    # Ground beyond the surveyed map is unknown — it must report the map's
+    # default class, not a copy of whatever zone the nearest edge cell has.
+    assert rm.zone_at(1500.0, 950.0) == ZoneClass.DANGEROUS
+    assert rm.zone_at(950.0, 950.0) == ZoneClass.SAFE
+
+
 def test_debris_net_drops_shorter_than_projectile():
     rng = np.random.default_rng(1)
     model = DebrisModel(rng, n_samples=2000)

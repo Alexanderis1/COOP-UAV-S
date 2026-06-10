@@ -107,3 +107,20 @@ def test_seed_clusters_merges_noise_level_duplicates():
     a = detection(0.0, [1000.0, 0.0, 500.0], sigma=60.0)
     b = detection(0.0, [1050.0, 0.0, 500.0], sigma=60.0)
     assert len(fusion._seed_clusters([a, b])) == 1
+
+
+def test_seeding_detection_classification_is_kept():
+    """The first detection of an object often carries the best evidence
+    (EO/IR structure ID, RF fingerprint) — seeding the track must not
+    silently discard it."""
+    bus = MessageBus()
+    fusion = FusionNode(bus, rate_hz=5.0)
+
+    det = detection(0.0, [200.0, 0.0, 300.0], "eo-1", sigma=10.0)
+    det.class_likelihoods = {ThreatClass.FPV: 0.9}
+    bus.publish("detections", det)
+    fusion.maybe_update(0.0, 0.2)
+
+    assert len(fusion.tracks) == 1
+    belief = fusion.tracks[0].class_belief
+    assert belief and belief[ThreatClass.FPV] > 0.5

@@ -80,7 +80,11 @@ class FusionNode(Node):
         )
         for scan in scans:
             for det in self._seed_clusters(self._associate_scan(scan)):
-                self.tracks.append(KalmanTrack(det))
+                trk = KalmanTrack(det)
+                # The seeding detection is evidence like any other: its class
+                # likelihoods and RF signature must enter the belief too.
+                classification.update_track_classification(trk, det)
+                self.tracks.append(trk)
 
     def _associate_scan(self, detections: list[Detection]) -> list[Detection]:
         """Update gated tracks, return the unassociated leftovers."""
