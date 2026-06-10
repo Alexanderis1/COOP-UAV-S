@@ -87,7 +87,7 @@ class EngagementAdjudicator(Node):
         )
         target = self._nearest_enemy(msg.predicted_intercept, msg.predicted_intercept,
                                      gate=150.0)
-        n_rounds = turret.rounds_per_burst
+        n_rounds = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
 
         if target is not None:
             dist = float(np.linalg.norm(target.position - turret.position))

@@ -30,8 +30,10 @@ import functools
 import http.server
 import json
 import random
+import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -51,34 +53,45 @@ MAX_TICK_WALL_S = 0.25        # clamp catch-up bursts after event-loop stalls
 
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
+    # Per-server state: _start_http builds a fresh subclass per server so two
+    # serve()/serve_replay() instances in one process do not clobber each other.
     recording_path: Path | None = None
+    ws_port: int | None = None
 
     def do_GET(self):  # noqa: N802 (http.server API)
-        if self.path.split("?")[0] == "/recording.json" and self.recording_path:
-            data = self.recording_path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+        path = self.path.split("?")[0]
+        if path == "/runtime-config.json":
+            self._send_json(json.dumps({"ws_port": self.ws_port}).encode())
+            return
+        if path == "/recording.json" and self.recording_path:
+            self._send_json(self.recording_path.read_bytes())
             return
         super().do_GET()
+
+    def _send_json(self, data: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def log_message(self, *args):  # quiet
         pass
 
 
-def _start_http(port: int, recording: Path | None) -> threading.Thread:
-    handler = functools.partial(_Handler, directory=str(WEB_DIR))
-    _Handler.recording_path = recording
-    httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
+def _start_http(port: int, recording: Path | None, host: str = "127.0.0.1",
+                ws_port: int | None = None) -> threading.Thread:
+    bound = type("_BoundHandler", (_Handler,),
+                 {"recording_path": recording, "ws_port": ws_port})
+    handler = functools.partial(bound, directory=str(WEB_DIR))
+    httpd = http.server.ThreadingHTTPServer((host, port), handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return thread
 
 
-def serve_replay(recording: Path, port: int = 8000) -> None:
-    _start_http(port, recording)
+def serve_replay(recording: Path, port: int = 8000, host: str = "127.0.0.1") -> None:
+    _start_http(port, recording, host=host)
     print(f"Dashboard (replay): http://localhost:{port}/?replay=1")
     try:
         threading.Event().wait()
@@ -94,7 +107,7 @@ def serve_replay(recording: Path, port: int = 8000) -> None:
 class CommandServer:
     """The /ops + /eval websocket endpoint pair on one port (ICD §1)."""
 
-    def __init__(self, preset_cfg: dict, host: str = "0.0.0.0", ws_port: int = 8001):
+    def __init__(self, preset_cfg: dict, host: str = "127.0.0.1", ws_port: int = 8001):
         self.preset_cfg = preset_cfg
         self.host = host
         self.ws_port = ws_port
@@ -133,7 +146,19 @@ class CommandServer:
 
     # -- connection handling --------------------------------------------------------
 
+    def _origin_allowed(self, origin: str | None) -> bool:
+        """Cross-site protection: accept connections with no Origin header
+        (non-browser clients) or an Origin on this server's own host or
+        localhost; reject anything else before processing any message."""
+        if origin is None:
+            return True
+        return urlsplit(origin).hostname in {self.host, "localhost",
+                                             "127.0.0.1", "::1"}
+
     async def _handler(self, ws) -> None:
+        if not self._origin_allowed(ws.request.headers.get("Origin")):
+            await ws.close(code=4403, reason="origin not allowed")
+            return
         path = ws.request.path.split("?")[0].rstrip("/") or "/"
         if path == "/ops":
             await self._serve_ops(ws)
@@ -162,6 +187,9 @@ class CommandServer:
                     msg = json.loads(raw)
                 except (ValueError, TypeError):
                     await self._error(ws, "malformed message (not JSON)")
+                    continue
+                if not isinstance(msg, dict) or not isinstance(msg.get("data") or {}, dict):
+                    await self._error(ws, "malformed message (not a JSON object)")
                     continue
                 await self._handle_control(ws, msg.get("type"), msg.get("data") or {})
         finally:
@@ -245,31 +273,47 @@ class CommandServer:
         })
         self._broadcast_ops("scene", self.ctl.scene())
         self._run_task = asyncio.get_event_loop().create_task(self._run_loop())
+        self._run_task.add_done_callback(self._on_run_task_done)
 
     # -- run loop ---------------------------------------------------------------------------
 
     async def _run_loop(self) -> None:
+        # Capture the controller/scenario at loop start: a stop_run+start_run
+        # inside one tick swaps self.ctl, and the old loop must neither tick
+        # the new controller nor clear the new run's state on exit.
+        ctl, sc = self.ctl, self.scenario
         loop = asyncio.get_event_loop()
         last = loop.time()
         try:
-            while self.ctl is not None and self.ctl.status != "done":
+            while ctl.status != "done":
                 await asyncio.sleep(TICK_PERIOD_S)
                 now = loop.time()
                 wall_dt = min(now - last, MAX_TICK_WALL_S)
                 last = now
-                self._flush(self.ctl.tick(wall_dt))
-            if self.ctl is not None:
-                self._flush([])                       # trailing auth resolutions
-                self._broadcast_ops("summary", self.ctl.summary())
+                self._flush(ctl, ctl.tick(wall_dt))
+            self._flush(ctl, [])                      # trailing auth resolutions
+            self._broadcast_ops("summary", ctl.summary())
         finally:
-            self.ctl = None
-            self.scenario = None
-            self._run_task = None
+            if self.ctl is ctl:
+                self.ctl = None
+                self._run_task = None
+            if self.scenario is sc:
+                self.scenario = None
 
-    def _flush(self, frames: list[dict]) -> None:
+    def _on_run_task_done(self, task: asyncio.Task) -> None:
+        """Surface run-loop crashes: log and broadcast instead of silently
+        dropping the exception of a never-awaited task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            print(f"run loop crashed: {exc!r}", file=sys.stderr)
+            self._broadcast_ops("error", {"message": f"run crashed: {exc}"})
+
+    def _flush(self, ctl: RunController, frames: list[dict]) -> None:
         """Broadcast new frames on /ops, matching truth payloads on /eval,
         and queued orchestrator northbound messages (ICD §2.2/§2.3/§4)."""
-        recorder = self.ctl.recorder
+        recorder = ctl.recorder
         truths = recorder.truths[self._truth_idx:]
         self._truth_idx = len(recorder.truths)
         for frame in frames:
@@ -314,12 +358,16 @@ def serve(
     auto_start: bool = False,
     seed: int | None = None,
     speed: float | None = None,
+    host: str = "127.0.0.1",
 ) -> None:
     """Run the ICD-RUNTIME backend until interrupted.
 
     ``auto_start=True`` (the ``coopuavs run --live`` path) builds the preset
     YAML as a scenario and starts it immediately; the server then returns to
     idle and keeps accepting ``start_run`` requests.
+
+    ``host`` binds both the HTTP and websocket servers; the default loopback
+    keeps the unauthenticated control channel off the network.
     """
     try:
         import websockets  # noqa: F401  (fail early with a clear message)
@@ -330,9 +378,9 @@ def serve(
     preset_cfg = yaml.safe_load(Path(preset).read_text())
 
     async def main() -> None:
-        server = CommandServer(preset_cfg, ws_port=ws_port)
+        server = CommandServer(preset_cfg, host=host, ws_port=ws_port)
         await server.start()
-        _start_http(port, None)
+        _start_http(port, None, host=host, ws_port=server.ws_port)
         print(f"Console:    http://localhost:{port}/")
         print(f"Websocket:  ws://localhost:{server.ws_port}/ops  +  /eval")
         if auto_start:

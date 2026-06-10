@@ -162,9 +162,12 @@ class EnemyDrone:
         self.body.command_velocity(v_cmd)
         self.body.step(dt)
 
-        if np.linalg.norm(self.position - self.target) < 30.0 or self.position[2] <= 0.0:
+        if np.linalg.norm(self.position - self.target) < 30.0:
             self.alive = False
             self.reached_target = True
+        elif self.position[2] <= 0.0:
+            # Ground impact away from the target: a crash, not a leaker.
+            self.alive = False
 
     def _evade(self, v_cmd: np.ndarray) -> np.ndarray:
         """Blend the objective heading with a dodge against the nearest

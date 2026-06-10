@@ -61,16 +61,22 @@ class FusionNode(Node):
     def _associate_and_update(self, detections: list[Detection]) -> None:
         """Associate per sensor scan: within one scan a target appears at
         most once, so GNN's one-detection-per-track constraint is correct
-        scan-wise. Across scans the same track legitimately absorbs one
-        update per sensor (sequential fusion). Precise scans (radar) are
-        processed first so they, not bearing-only pseudo-positions, seed
-        new tracks."""
-        by_sensor: dict[str, list[Detection]] = {}
+        scan-wise. A scan is one sensor at one timestamp — a sensor faster
+        than the fusion rate (the 10 Hz seeker against this 5 Hz cycle)
+        buffers several scans per cycle, which are absorbed sequentially
+        so the later scan updates the track the earlier one fed instead of
+        seeding a duplicate. Precise scans (radar) are processed first so
+        they, not bearing-only pseudo-positions, seed new tracks; equal
+        precision falls back to time order."""
+        by_scan: dict[tuple[str, float], list[Detection]] = {}
         for det in detections:
-            by_sensor.setdefault(det.sensor_id, []).append(det)
+            by_scan.setdefault((det.sensor_id, det.header.stamp), []).append(det)
         scans = sorted(
-            by_sensor.values(),
-            key=lambda scan: float(np.mean([np.trace(d.cov) for d in scan])),
+            by_scan.values(),
+            key=lambda scan: (
+                float(np.mean([np.trace(d.cov) for d in scan])),
+                scan[0].header.stamp,
+            ),
         )
         for scan in scans:
             for det in self._seed_clusters(self._associate_scan(scan)):
@@ -99,12 +105,21 @@ class FusionNode(Node):
         return [d for j, d in enumerate(detections) if j not in used]
 
     def _seed_clusters(self, detections: list[Detection]) -> list[Detection]:
-        """Collapse same-scan duplicates so one object seeds one track."""
+        """Collapse near-coincident leftovers so one object seeds one track.
+
+        Distinguishability is set by the *tightest* measurement axis: two
+        detections merge when their gap is within the sum of their smallest
+        principal standard deviations. For bearing-only RF that is the
+        cross-range sigma (hundreds of metres), not the ~9 km along-range
+        pseudo-position sigma, so distinct simultaneous first contacts stay
+        separate. Under-merging is self-healing — an unsupported duplicate
+        track coasts out within ``max_coast`` seconds."""
         seeds: list[Detection] = []
         for det in detections:
+            r_det = float(np.sqrt(np.linalg.eigvalsh(det.cov)[0]))
             for s in seeds:
-                gap2 = float(np.sum((det.position - s.position) ** 2))
-                if gap2 < np.trace(det.cov) + np.trace(s.cov):
+                gap = float(np.linalg.norm(det.position - s.position))
+                if gap < r_det + float(np.sqrt(np.linalg.eigvalsh(s.cov)[0])):
                     break
             else:
                 seeds.append(det)

@@ -2,6 +2,8 @@
 
 import copy
 
+import pytest
+
 from coopuavs.sim import scenario as scenario_mod
 from coopuavs.sim.runctl import RunController
 
@@ -101,6 +103,16 @@ def test_speed_is_clamped():
     assert ctl.speed == 10.0
     ctl.set_speed(0.0)
     assert ctl.speed == 0.1
+
+
+def test_non_finite_speed_rejected():
+    """nan slips through a plain min/max clamp — it must raise instead."""
+    ctl = RunController(scenario_mod.build(copy.deepcopy(CFG)))
+    ctl.set_speed(2.0)
+    for bad in (float("nan"), float("inf"), float("-inf"), "nan"):
+        with pytest.raises(ValueError, match="finite"):
+            ctl.set_speed(bad)
+    assert ctl.speed == 2.0                        # unchanged by rejections
 
 
 def test_payload_accessors_match_icd_shapes():

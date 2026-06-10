@@ -70,7 +70,7 @@ def test_turret_holds_fire_without_clearance_then_fires_and_strays():
     for _ in range(100):
         publish_truth_track(world)
         world.bus.publish("engagement/clearance", FireClearance(
-            header=Header(stamp=world.t), task_id=0, uav_id="t1",
+            header=Header(stamp=world.t), task_id=0, uav_id="t1", track_id=1,
             decision=EngagementDecision.AUTHORIZED,
         ))
         world.step()
@@ -87,6 +87,23 @@ def test_turret_holds_fire_without_clearance_then_fires_and_strays():
     assert all(s["pos"][0] > enemy_x * 0.5 for s in world.stray_impacts)
 
 
+def test_partial_last_burst_reports_actual_rounds():
+    """A 3-round magazine fires a 3-round last burst: the fire message
+    carries the true count so the adjudicator neither rolls Pk for nor
+    lands strays from phantom rounds (SIM-EFF-003)."""
+    world, turret = make_battlefield()
+    turret.magazine = 3
+    fires = []
+    world.bus.subscribe("engagement/fire", fires.append)
+    enemy = world.enemies["owa-1"]
+    track = Track(header=Header(stamp=world.t), track_id=1,
+                  position=enemy.position.copy(),
+                  velocity=enemy.velocity.copy())
+    turret._fire_burst(track, enemy.position.copy(), 500.0, world.t)
+    assert fires[0].rounds == 3
+    assert turret.magazine == 0
+
+
 def test_denied_clearance_blacklists_the_track():
     world, turret = make_battlefield()
     fires = []
@@ -98,10 +115,37 @@ def test_denied_clearance_blacklists_the_track():
         publish_truth_track(world)
         if requested:
             world.bus.publish("engagement/clearance", FireClearance(
-                header=Header(stamp=world.t), task_id=0, uav_id="t1",
+                header=Header(stamp=world.t), task_id=0, uav_id="t1", track_id=1,
                 decision=EngagementDecision.DENIED,
             ))
         world.step()
     assert fires == []
     assert turret.target_track is None
     assert 1 in turret._denied
+
+
+def test_clearance_for_another_track_is_ignored():
+    """The token is bound to the track the ROE costed (PHY-TUR-001): an
+    AUTHORIZED token for track 9 must not release a burst at track 1, and
+    a DENIED verdict for track 9 must not blacklist track 1."""
+    world, turret = make_battlefield()
+    fires = []
+    world.bus.subscribe("engagement/fire", fires.append)
+
+    for _ in range(100):
+        publish_truth_track(world)
+        world.bus.publish("engagement/clearance", FireClearance(
+            header=Header(stamp=world.t), task_id=0, uav_id="t1", track_id=9,
+            decision=EngagementDecision.AUTHORIZED,
+        ))
+        world.step()
+    assert fires == []                         # wrong-track token: no shot
+    assert turret.magazine == 300
+
+    world.bus.publish("engagement/clearance", FireClearance(
+        header=Header(stamp=world.t), task_id=0, uav_id="t1", track_id=9,
+        decision=EngagementDecision.DENIED,
+    ))
+    assert 9 in turret._denied
+    assert 1 not in turret._denied             # current lay survives
+    assert turret.target_track == 1

@@ -119,6 +119,7 @@ def test_operator_approval_clears_and_logs_latency():
     assert len(h.clearances) == 1
     assert h.clearances[0].decision == A
     assert h.clearances[0].reason == "geometry_safe"
+    assert h.clearances[0].track_id == 3       # token bound to the costed track
     approved = next(e for e in h.events if e["kind"] == "auth_approved")
     assert approved["latency"] == pytest.approx(3.0)
     assert ("auth_resolved", {"id": auth_id, "approved": True, "by": "operator"}) \

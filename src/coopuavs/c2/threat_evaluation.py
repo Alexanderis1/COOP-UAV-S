@@ -23,8 +23,14 @@ def predicted_impact(track: Track, env: Environment, horizon: float = 300.0) -> 
 
     Geometry is evaluated in the horizontal plane: a cruising OWA at 1500 m
     AGL is still *heading at* its ground asset, so altitude must not mask
-    the threat. Time-to-impact for a matched asset is horizontal time plus
-    the dive; otherwise straight-line extrapolation to the horizon.
+    the threat. Time-to-impact for a matched asset is the horizontal
+    closest-approach time (the terminal dive is not modelled yet);
+    otherwise straight-line extrapolation to the horizon.
+
+    Only *closing* geometry matches an asset: a track that just overflew
+    an asset outbound is within the miss radius but receding — pinning its
+    TTI to zero would hand an egressing drone maximum urgency and outrank
+    every inbound threat.
     """
     p, v = track.position, track.velocity
     speed_xy = float(np.linalg.norm(v[:2]))
@@ -34,7 +40,10 @@ def predicted_impact(track: Track, env: Environment, horizon: float = 300.0) -> 
     best_t, best_point = horizon, p + v * horizon
     for asset in env.assets:
         rel_xy = asset.position[:2] - p[:2]
-        t_closest = float(np.clip((rel_xy @ v[:2]) / (speed_xy**2), 0.0, horizon))
+        closing = float(rel_xy @ v[:2])
+        if closing <= 0.0:
+            continue
+        t_closest = float(np.clip(closing / (speed_xy**2), 0.0, horizon))
         miss = float(np.linalg.norm(p[:2] + v[:2] * t_closest - asset.position[:2]))
         if miss < 400.0 and t_closest < best_t:
             best_t, best_point = t_closest, asset.position.copy()

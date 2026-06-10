@@ -219,7 +219,7 @@ def test_late_clearance_against_collapsed_geometry_aborts():
     # The token arrives very late; meanwhile the target left the envelope.
     uav._tracks[1].position = np.array([2500.0, 0.0, 400.0])
     world.bus.publish("engagement/clearance", FireClearance(
-        header=Header(stamp=world.t), task_id=1, uav_id="u1",
+        header=Header(stamp=world.t), task_id=1, uav_id="u1", track_id=1,
         decision=EngagementDecision.AUTHORIZED,
     ))
     for _ in range(10):
@@ -237,7 +237,7 @@ def test_valid_clearance_still_releases():
     drive(world, requests, track_pos, n_steps=40)
     assert requests
     world.bus.publish("engagement/clearance", FireClearance(
-        header=Header(stamp=world.t), task_id=1, uav_id="u1",
+        header=Header(stamp=world.t), task_id=1, uav_id="u1", track_id=1,
         decision=EngagementDecision.AUTHORIZED,
     ))
     drive(world, requests, track_pos, n_steps=20)

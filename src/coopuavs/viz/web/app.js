@@ -33,7 +33,7 @@ if (mode === 'replay') ents.extrapolate = false;
 
 function send(type, data = {}) {
   if (mode === 'mock') mock.send({ type, data });
-  else if (mode === 'live') opsCh.send({ type, data });
+  else if (mode === 'live') opsCh?.send({ type, data });
   else panels.toast('replay mode — control commands are unavailable');
 }
 
@@ -160,14 +160,20 @@ if (mode === 'mock') {
     .catch((e) => panels.toast('recording load failed: ' + e.message));
 } else {
   const host = location.hostname || 'localhost';
-  opsCh = new Channel(`ws://${host}:8001/ops`, {
-    onMessage: handleOps,
-    onStatus: (on) => panels.setOpsStatus(on),
-  });
-  evalCh = new Channel(`ws://${host}:8001/eval`, {
-    onMessage: handleEval,
-    onStatus: (on) => setEval(on),     // refuse/drop => production mode
-  });
+  fetch('/runtime-config.json')
+    .then((r) => r.json())
+    .catch(() => ({}))                 // older backend: fall back to 8001
+    .then((cfg) => {
+      const wsPort = cfg.ws_port || 8001;
+      opsCh = new Channel(`ws://${host}:${wsPort}/ops`, {
+        onMessage: handleOps,
+        onStatus: (on) => panels.setOpsStatus(on),
+      });
+      evalCh = new Channel(`ws://${host}:${wsPort}/eval`, {
+        onMessage: handleEval,
+        onStatus: (on) => setEval(on),     // refuse/drop => production mode
+      });
+    });
 }
 
 // ------------------------------------------------------------- render loop

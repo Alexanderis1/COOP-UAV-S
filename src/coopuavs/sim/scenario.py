@@ -58,6 +58,13 @@ SENSOR_TYPES = {
 DEFAULT_FIRST_TIME = 10.0
 DEFAULT_SPACING = 8.0
 
+# Caps on client-supplied parametric request values (resource safety: the
+# request arrives over the /ops websocket and must not be able to exhaust
+# the backend).
+MAX_GROUP_COUNT = 200
+MAX_TOTAL_THREATS = 500
+MAX_DURATION_S = 7200.0
+
 
 @dataclass
 class Scenario:
@@ -234,6 +241,11 @@ def build_parametric(request: dict, preset_cfg: dict, seed: int) -> Scenario:
         count = int(group.get("count", 0))
         if count < 0:
             raise ValueError(f"threat class '{cls_key}': count must be >= 0")
+        if count > MAX_GROUP_COUNT:
+            raise ValueError(
+                f"threat class '{cls_key}': count {count} exceeds the "
+                f"per-class maximum of {MAX_GROUP_COUNT}"
+            )
         if count == 0:
             continue
         target = group.get("target", "auto")
@@ -265,6 +277,11 @@ def build_parametric(request: dict, preset_cfg: dict, seed: int) -> Scenario:
             })
 
     threats.sort(key=lambda th: th["time"])
+    if len(threats) > MAX_TOTAL_THREATS:
+        raise ValueError(
+            f"raid totals {len(threats)} threats, exceeding the "
+            f"maximum of {MAX_TOTAL_THREATS}"
+        )
     cfg["threats"] = threats
 
     if request.get("weather"):
@@ -272,7 +289,13 @@ def build_parametric(request: dict, preset_cfg: dict, seed: int) -> Scenario:
         weather.update(request["weather"])
         cfg["weather"] = weather
     if request.get("duration"):
-        cfg["duration"] = float(request["duration"])
+        duration = float(request["duration"])
+        if not 0.0 < duration <= MAX_DURATION_S:    # also rejects nan
+            raise ValueError(
+                f"duration must be in (0, {MAX_DURATION_S:.0f}] s, "
+                f"got {duration}"
+            )
+        cfg["duration"] = duration
     if request.get("posture"):
         cfg["posture"] = request["posture"]
 

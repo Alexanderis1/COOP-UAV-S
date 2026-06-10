@@ -50,6 +50,16 @@ class RoeConfig:
     last_resort_collateral: float = 2.0     # relaxed cost cap
     last_resort_p_critical: float = 0.05
     lookahead_times: tuple[float, ...] = (5.0, 10.0, 20.0)  # now-or-never horizon
+    # Now-or-never demands the future be *strictly* worse by this margin:
+    # over uniform ground every lookahead ties, and a tie must read as
+    # "holding costs nothing", not as licence to skip the HOLD/herd loop.
+    now_or_never_margin: float = 0.05
+
+
+# A DENIED track is excluded from allocation for this long (sim s), then
+# re-evaluated: the geometry, the class belief and the threat score all
+# move, and a permanent blacklist turns one bad instant into a leaker.
+DENIAL_TTL_S = 15.0
 
 
 class RulesOfEngagement:
@@ -76,6 +86,7 @@ class RulesOfEngagement:
                 header=Header(stamp=t),
                 task_id=request.task_id,
                 uav_id=request.uav_id,
+                track_id=request.track_id,
                 decision=decision,
                 expected_collateral=cost,
                 reason=reason,
@@ -101,7 +112,7 @@ class RulesOfEngagement:
                     continue
                 fp = self.debris.footprint(future_pos, target_velocity, effector)
                 future_costs.append(self.risk_map.collateral_cost(fp))
-            if future_costs and cost <= min(future_costs):
+            if future_costs and cost <= min(future_costs) - cfg.now_or_never_margin:
                 return clearance(EngagementDecision.AUTHORIZED, "now_or_never")
         tti = assessment.time_to_impact if assessment else 1e9
         if (

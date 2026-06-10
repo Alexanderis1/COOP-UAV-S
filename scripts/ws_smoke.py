@@ -66,8 +66,9 @@ async def main(host: str, ops_port: int) -> int:
 
         eval_task = asyncio.create_task(eval_reader())
 
-        exercised_pause = False
-        async with asyncio.timeout(180):
+        async def ops_reader() -> int:
+            nonlocal auth_answered, summary
+            exercised_pause = False
             async for raw in ops:
                 msg = json.loads(raw)
                 seen_ops.add(msg["type"])
@@ -90,8 +91,12 @@ async def main(host: str, ops_port: int) -> int:
                 if msg["type"] == "summary":
                     summary = msg["data"]
                     break
+            return 0
 
+        rc = await asyncio.wait_for(ops_reader(), 180)   # 3.10-compatible timeout
         eval_task.cancel()
+        if rc:
+            return rc
 
     failures = []
     if missing := REQUIRED_OPS - seen_ops:

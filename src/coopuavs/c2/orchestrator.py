@@ -95,6 +95,7 @@ class Orchestrator(Node):
         self._pending: dict[int, PendingAuth] = {}
         self._auth_ids = itertools.count(1)
         self._tracks: dict[int, Track] = {}
+        self._seen_tracks: set[int] = set()   # ever-seen ids, for loss detection
         self._t = 0.0
 
         self._clearance_pub = self.create_publisher(CLEARANCE_TOPIC)
@@ -117,6 +118,12 @@ class Orchestrator(Node):
 
     def _on_tracks(self, msg: TrackArray) -> None:
         self._tracks = {trk.track_id: trk for trk in msg.tracks}
+        self._seen_tracks.update(self._tracks)
+
+    def _track_lost(self, track_id: int) -> bool:
+        """True when a track we once saw has dropped out of the picture —
+        never true for ids we never saw (a fusion gap is not a loss)."""
+        return track_id in self._seen_tracks and track_id not in self._tracks
 
     def _on_roe(self, msg: RoeEvaluation) -> None:
         """One evaluated fire request: clear, deny, or escalate (ORC-002)."""
@@ -197,6 +204,21 @@ class Orchestrator(Node):
         req, roe = pending.request, pending.roe
         t = self._t
         latency = round(max(0.0, t - pending.raised_t), 2)
+        if approve and self._track_lost(req.track_id):
+            # The world moved on while the human deliberated: the costed
+            # track is gone (killed or dropped). An approval must not
+            # release a weapon on whatever replaced it.
+            self._publish_clearance(req, EngagementDecision.HOLD,
+                                    "track lost while pending",
+                                    roe.expected_collateral, t)
+            self._log("auth_expired", id=pending.auth_id, uav_id=req.uav_id,
+                      track_id=req.track_id)
+            self._decision("orc", f"authorisation #{pending.auth_id} approved by "
+                           f"{by} but track {req.track_id} is gone — "
+                           f"{req.uav_id} holds fire", req, by=by)
+            self._emit("auth_resolved", {"id": pending.auth_id,
+                                         "approved": False, "by": "track_lost"})
+            return True
         if approve:
             self._publish_clearance(req, EngagementDecision.AUTHORIZED,
                                     roe.reason, roe.expected_collateral, t)
@@ -270,7 +292,8 @@ class Orchestrator(Node):
                            reason: str, collateral: float, t: float) -> None:
         self._clearance_pub.publish(FireClearance(
             header=Header(stamp=t), task_id=req.task_id, uav_id=req.uav_id,
-            decision=decision, expected_collateral=collateral, reason=reason,
+            track_id=req.track_id, decision=decision,
+            expected_collateral=collateral, reason=reason,
         ))
 
     def _decision(self, actor: str, text: str, req: FireRequest,

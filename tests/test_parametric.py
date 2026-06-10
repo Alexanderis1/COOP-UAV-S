@@ -112,6 +112,41 @@ def test_unknown_class_rejected():
         scenario_mod.build_parametric(request, PRESET, seed=1)
 
 
+def test_oversized_group_count_rejected():
+    request = {"threats": {"fpv": {"count": scenario_mod.MAX_GROUP_COUNT + 1}}}
+    with pytest.raises(ValueError, match="per-class maximum"):
+        scenario_mod.build_parametric(request, PRESET, seed=1)
+
+
+def test_oversized_total_threats_rejected():
+    # Each group within the per-class cap, but the raid total over the limit.
+    per_class = scenario_mod.MAX_GROUP_COUNT
+    request = {"threats": {
+        cls: {"count": per_class} for cls in ("fpv", "owa_strategic", "loitering")
+    }}
+    assert 3 * per_class > scenario_mod.MAX_TOTAL_THREATS
+    with pytest.raises(ValueError, match="exceeding the"):
+        scenario_mod.build_parametric(request, PRESET, seed=1)
+
+
+def test_excessive_or_non_finite_duration_rejected():
+    request = {"threats": {"fpv": {"count": 1}},
+               "duration": scenario_mod.MAX_DURATION_S + 1.0}
+    with pytest.raises(ValueError, match="duration"):
+        scenario_mod.build_parametric(request, PRESET, seed=1)
+    request["duration"] = float("nan")
+    with pytest.raises(ValueError, match="duration"):
+        scenario_mod.build_parametric(request, PRESET, seed=1)
+
+
+def test_capped_request_still_builds():
+    request = {"threats": {"fpv": {"count": scenario_mod.MAX_GROUP_COUNT}},
+               "duration": scenario_mod.MAX_DURATION_S}
+    sc = scenario_mod.build_parametric(request, PRESET, seed=1)
+    assert len(sc.world._spawn_queue) == scenario_mod.MAX_GROUP_COUNT
+    assert sc.duration == scenario_mod.MAX_DURATION_S
+
+
 def test_yaml_build_path_unchanged():
     sc = scenario_mod.build(PRESET)
     assert len(sc.world._spawn_queue) == 1

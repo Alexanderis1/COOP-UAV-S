@@ -110,6 +110,12 @@ class CommsModel:
     # -- bus router interface ----------------------------------------------------
 
     def routes(self, topic: str, sender: str | None, receiver: str | None) -> bool:
+        # A node's own subscription to a topic it publishes is process-local
+        # (e.g. a UAV hears peers on ``uav/state``): self-delivery never
+        # rides the radio, so it must not roll loss twice on the same link
+        # or bias the delivery-ratio window with loopback samples.
+        if sender is not None and sender == receiver:
+            return False
         return topic in ROUTED_TOPICS and (sender is not None or receiver is not None)
 
     def send(self, topic: str, msg: Any, callback: Callable,

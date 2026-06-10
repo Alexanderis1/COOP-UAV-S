@@ -74,3 +74,36 @@ def test_classification_belief_follows_evidence():
 
     trk = out[-1].tracks[0]
     assert trk.p_decoy > 0.5
+
+
+def rf_detection(t, pos, sensor_pos, sensor="rf-1"):
+    """Bearing-only pseudo-position: tight across the line of sight,
+    enormous along it (mirrors RfSensor's covariance construction)."""
+    rel = np.asarray(pos, dtype=float) - np.asarray(sensor_pos, dtype=float)
+    los = rel / np.linalg.norm(rel)
+    cross, along = 330.0, 9000.0
+    cov = np.eye(3) * cross**2 + np.outer(los, los) * (along**2 - cross**2)
+    return Detection(
+        header=Header(stamp=t, frame_id="map"),
+        sensor_id=sensor,
+        position=np.asarray(pos, dtype=float),
+        cov=cov,
+    )
+
+
+def test_distant_rf_first_contacts_seed_separate_tracks():
+    """Two simultaneous bearing-only contacts kilometres apart are distinct
+    objects; the seed gate must scale with the tight cross-range sigma, not
+    the ~9 km along-range sigma (which used to merge anything within
+    ~12.7 km)."""
+    fusion = FusionNode(MessageBus(), rate_hz=5.0)
+    a = rf_detection(0.0, [8000.0, 0.0, 1000.0], [0.0, 0.0, 0.0])
+    b = rf_detection(0.0, [8000.0, 4000.0, 1000.0], [0.0, 0.0, 0.0])
+    assert len(fusion._seed_clusters([a, b])) == 2
+
+
+def test_seed_clusters_merges_noise_level_duplicates():
+    fusion = FusionNode(MessageBus(), rate_hz=5.0)
+    a = detection(0.0, [1000.0, 0.0, 500.0], sigma=60.0)
+    b = detection(0.0, [1050.0, 0.0, 500.0], sigma=60.0)
+    assert len(fusion._seed_clusters([a, b])) == 1
