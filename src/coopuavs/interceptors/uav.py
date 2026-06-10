@@ -306,6 +306,12 @@ class InterceptorUav(Node):
         """Cooperative wingman: cutoff post if the target outruns the
         shooter (relay interception), herding flank otherwise.
 
+        The relay decision keys on the *shooter's* speed (can the assigned
+        effector platform win the tail chase?), taken from its telemetry —
+        gating on this support's own speed posted blockers for targets the
+        shooter handles alone, and herded targets the shooter can never
+        catch. Post reachability likewise uses each blocker's own speed.
+
         Post slots are claimed only among wingmen whose telemetry has been
         heard: substituting our own position for a silent peer (degraded
         link, SIM-COM-001) would both fabricate that peer's reachability
@@ -318,9 +324,14 @@ class InterceptorUav(Node):
         my_idx = support_ids.index(self.uav_id) if self.uav_id in support_ids else 0
         positions = [self._peer_position(uid) for uid in support_ids]
 
-        if track.speed > self.max_speed * 0.95:
+        shooter = self._peers.get(self._task.shooter_id)
+        shooter_speed = (shooter.max_speed
+                         if shooter is not None and shooter.max_speed > 0.0
+                         else self.max_speed)
+        if track.speed > shooter_speed * 0.95:
             posts = cooperation.cutoff_points(
-                track, len(support_ids), positions, self.max_speed
+                track, len(support_ids), positions,
+                [self._peer_speed(uid) for uid in support_ids],
             )
             post = posts[min(my_idx, len(posts) - 1)]
             self.mode = UavMode.BLOCKING
@@ -336,6 +347,14 @@ class InterceptorUav(Node):
             return self.body.position
         peer = self._peers.get(uav_id)
         return peer.position if peer is not None else self.body.position
+
+    def _peer_speed(self, uav_id: str) -> float:
+        if uav_id == self.uav_id:
+            return self.max_speed
+        peer = self._peers.get(uav_id)
+        if peer is not None and peer.max_speed > 0.0:
+            return peer.max_speed
+        return self.max_speed
 
     def _fly_to(self, waypoint: np.ndarray) -> None:
         self.body.command_velocity(
@@ -357,5 +376,6 @@ class InterceptorUav(Node):
                 ammo=self.effector.ammo,
                 task_id=self._task.task_id if self._task else None,
                 link=self.link_quality,
+                max_speed=self.max_speed,
             )
         )

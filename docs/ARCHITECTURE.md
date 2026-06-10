@@ -60,7 +60,7 @@ Three decisions shape everything else:
   │            cooperative cutoff/herding posts, effector)               │
   │            publishes 'uav/state'                                     │
   └──────────────────────────────────────────────────────────────────────┘
-                           │ pattern subscriptions
+                           │ topic subscriptions + world truth (eval side)
                            ▼
                 Recorder → recording JSON / live websocket → Three.js C2 dashboard
 ```
@@ -165,7 +165,7 @@ TEWA loop at 1 Hz in `BaseStation`:
   off-axis / closing speed.
 - `uav.InterceptorUav` — mode FSM (IDLE / PURSUIT / ENGAGE / BLOCKING /
   HERDING / RTB), fire-control on tracks extrapolated to now, shot
-  discipline (request ≥ 0.30 Pk, abort release < 0.15), hard rule: **no
+  discipline (request ≥ 0.25 Pk, abort release < 0.15), hard rule: **no
   release without clearance** — the safety chain lives in the message flow,
   which is where a human-on-the-loop console will plug in.
 

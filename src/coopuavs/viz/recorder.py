@@ -190,9 +190,25 @@ class Recorder(Node):
             "run": dict(self.run_meta),
         }
 
+    def capture_terminal(self) -> None:
+        """Append a final frame if anything happened since the last tick.
+
+        The run can resolve between recorder ticks (the step loops break
+        the instant the raid is over): without this, the replay file and
+        the live /ops stream cut off before the last kill and the events
+        logged since the previous tick. Idempotent — a snapshot adding no
+        time and no events is not appended."""
+        final = self.snapshot()
+        if (not self.frames or final["t"] > self.frames[-1]["t"]
+                or final["events"] or final["decisions"]):
+            self.frames.append(final)
+            if self.eval_tracker is not None:
+                self.truths.append(self.eval_tracker.truth_payload())
+
     def save(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.capture_terminal()
         summary = self.world.summary()
         if self.eval_tracker is not None:
             summary["metrics"] = self.eval_tracker.metrics()

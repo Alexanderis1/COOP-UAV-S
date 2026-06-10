@@ -97,6 +97,23 @@ def test_tick_pattern_pause_and_speed_do_not_change_results():
     assert ctl_a.summary() == ctl_b.summary()
 
 
+def test_finishing_tick_emits_the_terminal_frame():
+    """The raid can resolve between recorder ticks: the tick that flips the
+    run to done must flush the terminal state into its frame slice, or the
+    /ops stream (and event feed) ends before the last kill."""
+    cfg = copy.deepcopy(CFG)
+    cfg["duration"] = 30.07            # ends between two 5 Hz recorder ticks
+    ctl = RunController(scenario_mod.build(cfg))
+    frames = []
+    while ctl.status == "running":
+        frames += ctl.tick(0.25)
+
+    assert ctl.status == "done" and frames
+    assert frames[-1]["t"] == round(ctl.world.t, 2)
+    # Nothing logged after the last scheduled tick is left unconsumed.
+    assert ctl.recorder._events_emitted == len(ctl.world.events)
+
+
 def test_speed_is_clamped():
     ctl = RunController(scenario_mod.build(copy.deepcopy(CFG)))
     ctl.set_speed(99.0)

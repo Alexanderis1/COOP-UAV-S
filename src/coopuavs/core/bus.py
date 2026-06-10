@@ -55,9 +55,10 @@ class MessageBus:
     def subscribe_pattern(self, pattern: str, callback: Callable[[str, Any], None]) -> None:
         """Subscribe to all topics matching a glob (e.g. ``uav/*/state``).
 
-        Pattern subscribers receive ``(topic, msg)`` — used by recorders and
-        the dashboard bridge, which need the whole graph. They are always
+        Pattern subscribers receive ``(topic, msg)`` and are always
         delivered synchronously (evaluation-side taps, not radio links).
+        A hook for ad-hoc instrumentation that needs the whole graph; the
+        shipped Recorder uses plain per-topic subscriptions.
         """
         self._pattern_subs.append((pattern, callback))
 

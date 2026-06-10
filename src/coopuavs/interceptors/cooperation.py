@@ -34,7 +34,7 @@ def cutoff_points(
     track: Track,
     n_blockers: int,
     blocker_positions: list[np.ndarray],
-    blocker_speed: float,
+    blocker_speeds: list[float] | float,
     horizon: float = 120.0,
     spacing: float = 15.0,
 ) -> list[np.ndarray]:
@@ -44,17 +44,23 @@ def cutoff_points(
     blocker arrives at the corridor point before the target does (with
     ``spacing`` seconds margin), then spread blockers down-corridor so a
     miss at one post hands the target to the next — the relay.
+
+    ``blocker_speeds`` is one speed per blocker (a scalar is broadcast):
+    reachability must be tested with each airframe's own capability, or a
+    mixed net/gun support pair claims posts the slower one cannot hold.
     """
     posts: list[np.ndarray] = []
     claimed_tau: list[float] = []
     p, v = track.position, track.velocity
+    if isinstance(blocker_speeds, (int, float)):
+        blocker_speeds = [float(blocker_speeds)] * n_blockers
 
-    for own in blocker_positions[:n_blockers]:
+    for own, speed in zip(blocker_positions[:n_blockers], blocker_speeds):
         best_tau = None
         tau = 5.0
         while tau <= horizon:
             point = p + v * tau
-            t_arrive = np.linalg.norm(point - own) / max(blocker_speed, 1e-6)
+            t_arrive = np.linalg.norm(point - own) / max(speed, 1e-6)
             margin_ok = t_arrive + spacing <= tau
             slot_free = all(abs(tau - c) >= spacing for c in claimed_tau)
             if margin_ok and slot_free:
