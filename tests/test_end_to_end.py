@@ -66,3 +66,13 @@ def test_deterministic_given_seed():
     s1 = scenario_mod.build(SMALL_SCENARIO).run()
     s2 = scenario_mod.build(SMALL_SCENARIO).run()
     assert s1 == s2
+
+
+def test_deterministic_urban_raid():
+    """SIM-003 extends to the v0.3 urban scenario: occlusion, sentinels,
+    live debris and debris interception all run through the seeded RNG."""
+    def run_once():
+        sc = scenario_mod.load("scenarios/urban_raid.yaml", seed=7)
+        sc.world.run(60.0, stop_when_clear=False)
+        return sc.world.events
+    assert run_once() == run_once()
