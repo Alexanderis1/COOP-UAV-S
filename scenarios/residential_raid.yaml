@@ -1,0 +1,101 @@
+# Reference scenario: mixed OWA raid with decoys against a residential area.
+#
+# Geometry: 12 x 12 km map, ENU metres, origin at the city centre. A belt of
+# open fields (SAFE) surrounds a built-up core (DANGEROUS by default) with
+# CRITICAL pockets (hospital, school, shelter, dense housing). A river runs
+# east-west through the centre: the only debris-friendly ground downtown, and
+# therefore where the C2 prefers to place kill boxes.
+#
+# Raid design: strategic OWAs mixed with same-signature decoys from the NW,
+# low-altitude FPVs under the radar horizon from the W, one loitering
+# munition, and one jet OWA from the N that outruns every interceptor —
+# included specifically to exercise cooperative cutoff (relay) geometry.
+
+name: residential_raid
+seed: 7
+dt: 0.05
+duration: 600.0
+record_hz: 5.0
+
+environment:
+  bounds: [-6000.0, -6000.0, 6000.0, 6000.0]
+  cell_size: 100.0
+  default_zone: DANGEROUS
+  zones:
+    # open country surrounding the town
+    - { rect: [-6000, -6000,  6000, -3500], class: SAFE }
+    - { rect: [-6000,  3500,  6000,  6000], class: SAFE }
+    - { rect: [-6000, -6000, -3500,  6000], class: SAFE }
+    - { rect: [ 3500, -6000,  6000,  6000], class: SAFE }
+    # river through the centre + a city park
+    - { rect: [-6000,  -150,  6000,   150], class: SAFE }
+    - { rect: [ -400,   300,   200,   900], class: SAFE }
+    # critical infrastructure (applied last: wins overlaps)
+    - { rect: [  300,   900,   900,  1400], class: CRITICAL }   # hospital
+    - { rect: [ -900,  -500,  -400,  -100], class: CRITICAL }   # school
+    - { rect: [-1600,  1200, -1100,  1700], class: CRITICAL }   # shelter
+    - { rect: [  800, -1400,  1700,  -500], class: CRITICAL }   # dense housing
+
+  assets:
+    - { name: substation, position: [1500.0,  300.0, 0.0], value: 1.0, radius: 40.0 }
+    - { name: depot,      position: [-2000.0, -1500.0, 0.0], value: 0.8, radius: 40.0 }
+
+  buildings:
+    - { rect: [  300,   900,   900,  1400], height: 25.0 }
+    - { rect: [ -900,  -500,  -400,  -100], height: 12.0 }
+    - { rect: [  800, -1400,  1700,  -500], height: 30.0 }
+    - { rect: [-1600,  1200, -1100,  1700], height: 10.0 }
+    - { rect: [ 1400,   200,  1600,   400], height: 8.0 }
+
+base_station:
+  rate_hz: 1.0
+  roe:
+    max_expected_collateral: 0.30
+    max_p_critical: 0.01
+    last_resort_time: 25.0
+    last_resort_threat: 0.35
+    last_resort_collateral: 2.0
+    last_resort_p_critical: 0.05
+
+fusion:
+  rate_hz: 5.0
+  confirm_hits: 3
+  max_coast: 5.0
+
+sensors:
+  - { type: radar,    name: radar-main, position: [0.0, -2500.0, 15.0], max_range: 12000.0 }
+  - { type: rf,       name: rf-df,      position: [0.0, -2500.0, 15.0], max_range: 15000.0 }
+  - { type: eo_ir,    name: eo-base,    position: [0.0, -2500.0, 20.0] }
+  - { type: eo_ir,    name: eo-substn,  position: [1500.0, 300.0, 20.0] }
+  - { type: eo_ir,    name: eo-depot,   position: [-2000.0, -1500.0, 20.0] }
+  # acoustic pickets covering the low-altitude western approach
+  - { type: acoustic, name: ac-w1, position: [-4500.0, -1000.0, 5.0] }
+  - { type: acoustic, name: ac-w2, position: [-3500.0,   200.0, 5.0] }
+  - { type: acoustic, name: ac-w3, position: [-3000.0, -1800.0, 5.0] }
+  - { type: acoustic, name: ac-nw, position: [-3500.0,  3000.0, 5.0] }
+
+interceptors:
+  # fast gun interceptors
+  - { id: hawk-1, home: [-500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-2, home: [-300.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-3, home: [ 300.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-4, home: [ 500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-5, home: [-2200.0, -1500.0, 400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-6, home: [ 1700.0,   300.0, 400.0], effector: projectile, max_speed: 80.0 }
+  # slower net carriers — debris-friendly kills for low/slow targets
+  - { id: net-1,  home: [-100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
+  - { id: net-2,  home: [ 100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
+
+threats:
+  # wave 1: strategic OWAs + decoys, NW axis
+  - { time: 10.0, class: OWA_STRATEGIC, spawn: [-5800.0, 5800.0, 1400.0], target: substation }
+  - { time: 18.0, class: DECOY,         spawn: [-5600.0, 5800.0, 1450.0], target: substation }
+  - { time: 26.0, class: OWA_STRATEGIC, spawn: [-5800.0, 5400.0, 1500.0], target: depot }
+  - { time: 36.0, class: DECOY,         spawn: [-5700.0, 5600.0, 1400.0], target: depot }
+  - { time: 48.0, class: OWA_STRATEGIC, spawn: [-5200.0, 5800.0, 1500.0], target: substation }
+  # wave 2: low-level western penetration
+  - { time: 60.0, class: LOITERING,     spawn: [-5800.0,  500.0,  400.0], target: substation }
+  - { time: 75.0, class: FPV,           spawn: [-5500.0, -800.0,   80.0], target: depot }
+  - { time: 88.0, class: FPV,           spawn: [-5500.0, -300.0,   80.0], target: depot }
+  # wave 3: jet OWA — faster than any interceptor, cooperative cutoff required
+  - { time: 100.0, class: OWA_JET,      spawn: [0.0, 5900.0, 3000.0], target: substation }

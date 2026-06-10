@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>COOP-UAV-S — C2 Dashboard</title>
+<style>
+  :root { --bg:#0b0e13; --panel:#121826ee; --fg:#cfd8e3; --accent:#4fc3f7; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+              font:13px/1.45 "JetBrains Mono", ui-monospace, monospace; overflow:hidden; }
+  #view { position:absolute; inset:0; }
+  .panel { position:absolute; background:var(--panel); border:1px solid #233047;
+           border-radius:8px; padding:10px 14px; backdrop-filter:blur(4px); }
+  #hud { top:12px; left:12px; min-width:230px; }
+  #hud h1 { font-size:14px; margin:0 0 6px; color:var(--accent); letter-spacing:1px; }
+  #hud .row { display:flex; justify-content:space-between; gap:18px; }
+  #events { bottom:12px; left:12px; width:430px; max-height:30vh; overflow-y:auto; }
+  #events div { white-space:nowrap; opacity:.9; }
+  #events .kill { color:#7CFC9A; } #events .leaker { color:#ff6b6b; }
+  #events .miss { color:#ffd166; }
+  #uavs { top:12px; right:12px; min-width:250px; }
+  #uavs h2, #events h2 { font-size:12px; margin:0 0 6px; color:var(--accent); }
+  #controls { bottom:12px; right:12px; display:flex; gap:8px; align-items:center; }
+  #controls button { background:#1c2738; color:var(--fg); border:1px solid #2e3f5c;
+                     border-radius:6px; padding:4px 12px; cursor:pointer; }
+  #controls input[type=range] { width:220px; }
+  .legend { display:flex; gap:10px; margin-top:6px; flex-wrap:wrap; }
+  .legend span::before { content:"■ "; }
+  .lg-enemy::before { color:#ff4040 !important; } .lg-uav::before { color:#39d2ff !important; }
+  .lg-track::before { color:#ffe14d !important; } .lg-wreck::before { color:#999 !important; }
+  .lg-safe::before { color:#1d4d2a !important; } .lg-dang::before { color:#7a5a1e !important; }
+  .lg-crit::before { color:#7a1e1e !important; }
+  #banner { top:45%; left:50%; transform:translate(-50%,-50%); font-size:18px;
+            display:none; text-align:center; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="view"></div>
+<div id="hud" class="panel">
+  <h1>COOP-UAV-S</h1>
+  <div class="row"><span>T+</span><b id="t">0.0 s</b></div>
+  <div class="row"><span>Hostiles live</span><b id="n-enemies">0</b></div>
+  <div class="row"><span>Kills</span><b id="n-kills">0</b></div>
+  <div class="row"><span>Leakers</span><b id="n-leakers">0</b></div>
+  <div class="legend">
+    <span class="lg-enemy">hostile</span><span class="lg-uav">interceptor</span>
+    <span class="lg-track">track</span><span class="lg-wreck">wreck</span><br>
+    <span class="lg-safe">safe</span><span class="lg-dang">dangerous</span>
+    <span class="lg-crit">critical</span>
+  </div>
+</div>
+<div id="uavs" class="panel"><h2>INTERCEPTORS</h2><div id="uav-list"></div></div>
+<div id="events" class="panel"><h2>EVENT LOG</h2><div id="event-list"></div></div>
+<div id="controls" class="panel">
+  <button id="play">⏸</button>
+  <input id="seek" type="range" min="0" max="0" value="0">
+  <select id="speed"><option>1</option><option>2</option><option selected>4</option><option>8</option></select>
+  <span>×</span>
+</div>
+<div id="banner" class="panel"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const LIVE = new URLSearchParams(location.search).has('live');
+const ZONE_COLORS = ['#1d4d2a', '#7a5a1e', '#7a1e1e'];      // safe / dangerous / critical
+const CLS_COLOR = { owa_strategic:0xff4040, owa_jet:0xff7a29, fpv:0xff3d8a,
+                    loitering:0xc9342c, decoy:0xb45cff };
+
+// ---------- three.js scaffolding -------------------------------------------
+const scene3 = new THREE.Scene();
+scene3.fog = new THREE.Fog(0x0b0e13, 9000, 26000);
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 60000);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+document.getElementById('view').appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene3.add(new THREE.AmbientLight(0xffffff, .55));
+const sun = new THREE.DirectionalLight(0xfff2d9, 1.0);
+sun.position.set(3000, 6000, 2000); scene3.add(sun);
+addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+// map ENU (x east, y north, z up) -> three (x, y=up, z=-north)
+const W = (p) => new THREE.Vector3(p[0], p[2], -p[1]);
+
+// ---------- static scene -----------------------------------------------------
+function buildScene(sc) {
+  const [x0, y0, x1, y1] = sc.bounds;
+  const ny = sc.grid.length, nx = sc.grid[0].length;
+  const cnv = document.createElement('canvas'); cnv.width = nx; cnv.height = ny;
+  const ctx = cnv.getContext('2d');
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    ctx.fillStyle = ZONE_COLORS[sc.grid[j][i]];
+    ctx.fillRect(i, ny - 1 - j, 1, 1);     // grid row j = south->north
+  }
+  const tex = new THREE.CanvasTexture(cnv);
+  tex.magFilter = THREE.NearestFilter; tex.colorSpace = THREE.SRGBColorSpace;
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(x1 - x0, y1 - y0),
+    new THREE.MeshLambertMaterial({ map: tex }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set((x0 + x1) / 2, 0, -(y0 + y1) / 2);
+  scene3.add(ground);
+
+  for (const b of sc.buildings) {
+    const [bx0, by0, bx1, by1] = b.rect;
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(bx1 - bx0, b.height, by1 - by0),
+      new THREE.MeshLambertMaterial({ color: 0x39455c }));
+    m.position.set((bx0 + bx1) / 2, b.height / 2, -(by0 + by1) / 2);
+    scene3.add(m);
+  }
+  for (const a of sc.assets) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(28, 28, 60, 16),
+      new THREE.MeshLambertMaterial({ color: 0x4fc3f7, emissive: 0x10405c }));
+    m.position.copy(W(a.pos)); m.position.y = 30; scene3.add(m);
+  }
+  const cx = (x0 + x1) / 2, cz = -(y0 + y1) / 2;
+  camera.position.set(cx, 4200, cz + 5200);
+  controls.target.set(cx, 0, cz);
+}
+
+// ---------- dynamic objects ---------------------------------------------------
+const pools = { enemies: new Map(), uavs: new Map(), tracks: new Map(), wrecks: new Map() };
+function getOr(map, id, make) { if (!map.has(id)) { const o = make(); scene3.add(o); map.set(id, o); } return map.get(id); }
+function prune(map, liveIds) { for (const [id, o] of map) if (!liveIds.has(id)) { scene3.remove(o); map.delete(id); } }
+
+const enemyGeo = new THREE.ConeGeometry(22, 60, 6);
+const uavGeo = new THREE.ConeGeometry(16, 44, 4);
+const trackGeo = new THREE.SphereGeometry(30, 10, 8);
+const wreckGeo = new THREE.BoxGeometry(26, 8, 26);
+
+function applyFrame(f) {
+  const liveE = new Set();
+  for (const e of f.enemies) {
+    if (!e.alive) continue; liveE.add(e.id);
+    const m = getOr(pools.enemies, e.id, () => new THREE.Mesh(enemyGeo,
+      new THREE.MeshLambertMaterial({ color: CLS_COLOR[e.cls] ?? 0xff4040 })));
+    m.position.copy(W(e.pos)); m.rotation.x = Math.PI / 2;
+  }
+  prune(pools.enemies, liveE);
+
+  const liveU = new Set();
+  for (const u of f.uavs) {
+    liveU.add(u.id);
+    const m = getOr(pools.uavs, u.id, () => new THREE.Mesh(uavGeo,
+      new THREE.MeshLambertMaterial({ color: 0x39d2ff, emissive: 0x0a3a4a })));
+    m.position.copy(W(u.pos));
+  }
+  prune(pools.uavs, liveU);
+
+  const liveT = new Set();
+  for (const t of f.tracks) {
+    liveT.add(t.id);
+    const m = getOr(pools.tracks, t.id, () => new THREE.Mesh(trackGeo,
+      new THREE.MeshBasicMaterial({ color: 0xffe14d, wireframe: true, transparent: true })));
+    m.position.copy(W(t.pos));
+    m.material.opacity = 0.85 - 0.6 * t.p_decoy;   // likely decoys fade out
+  }
+  prune(pools.tracks, liveT);
+
+  f.wrecks.forEach((wk, i) => {
+    const m = getOr(pools.wrecks, i, () => new THREE.Mesh(wreckGeo,
+      new THREE.MeshLambertMaterial({ color: 0x888888 })));
+    m.position.set(wk.pos[0], 5, -wk.pos[1]);
+  });
+
+  // HUD
+  document.getElementById('t').textContent = f.t.toFixed(1) + ' s';
+  document.getElementById('n-enemies').textContent = liveE.size;
+  document.getElementById('n-kills').textContent =
+    f.enemies.filter(e => e.killed).length;
+  document.getElementById('n-leakers').textContent =
+    f.enemies.filter(e => !e.alive && !e.killed).length;
+  document.getElementById('uav-list').innerHTML = f.uavs.map(u =>
+    `<div class="row"><span>${u.id}</span>` +
+    `<span>${u.mode} · ammo ${u.ammo} · ${(u.battery * 100) | 0}%</span></div>`).join('');
+  for (const ev of f.events) logEvent(ev);
+}
+
+const evList = document.getElementById('event-list');
+function logEvent(ev) {
+  const d = document.createElement('div');
+  d.className = ev.kind;
+  const extra = Object.entries(ev).filter(([k]) => !['t', 'kind'].includes(k))
+    .map(([k, v]) => `${k}=${v}`).join(' ');
+  d.textContent = `[${ev.t.toFixed(1).padStart(7)}] ${ev.kind.toUpperCase()} ${extra}`;
+  evList.prepend(d);
+  while (evList.children.length > 120) evList.lastChild.remove();
+}
+
+function showSummary(s) {
+  const b = document.getElementById('banner');
+  b.style.display = 'block';
+  b.innerHTML = `<b>RAID RESOLVED</b><br>kills ${s.kills}/${s.enemies_total}` +
+    ` · armed leakers ${s.armed_leakers}` +
+    `<br>wrecks: ${Object.entries(s.wrecks_by_zone).map(([z, n]) => `${z}:${n}`).join(' ') || '—'}`;
+}
+
+// ---------- playback / live feed ---------------------------------------------
+let frames = [], idx = 0, playing = true;
+const seek = document.getElementById('seek');
+document.getElementById('play').onclick = (e) => {
+  playing = !playing; e.target.textContent = playing ? '⏸' : '▶';
+};
+seek.oninput = () => { idx = +seek.value; playing = false; document.getElementById('play').textContent = '▶'; };
+
+if (LIVE) {
+  document.getElementById('controls').style.display = 'none';
+  const ws = new WebSocket(`ws://${location.hostname}:8001/`);
+  ws.onmessage = (m) => {
+    const { type, data } = JSON.parse(m.data);
+    if (type === 'scene') buildScene(data);
+    else if (type === 'frame') applyFrame(data);
+    else if (type === 'summary') showSummary(data);
+  };
+} else {
+  const rec = await (await fetch('recording.json')).json();
+  buildScene(rec.scene);
+  frames = rec.frames;
+  seek.max = frames.length - 1;
+  let acc = 0, last = performance.now(), shown = -1;
+  (function tick(now) {
+    requestAnimationFrame(tick);
+    const speed = +document.getElementById('speed').value;
+    const fps = 5 * speed;                       // recordings are 5 Hz
+    acc += (now - last) / 1000 * fps; last = now;
+    while (playing && acc >= 1 && idx < frames.length - 1) { idx++; acc--; }
+    seek.value = idx;
+    if (idx !== shown) { applyFrame(frames[idx]); shown = idx; }
+    if (idx >= frames.length - 1 && rec.summary) showSummary(rec.summary);
+  })(performance.now());
+}
+
+(function render() { requestAnimationFrame(render); controls.update(); renderer.render(scene3, camera); })();
+</script>
+</body>
+</html>
