@@ -293,7 +293,7 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 
 [SRS-DET-003] The RF-DF subsystem shall detect threats at ranges exceeding the radar subsystem's maximum detection range and shall output bearing estimates with associated angular uncertainty. The RF-DF subsystem shall flag contacts whose RF signature matches the Class A/D profile as requiring multi-sensor confirmation before classification.
 
-[SRS-DET-004] The EO/IR subsystem shall provide positive classification evidence at close range (TBD km — see OI-003). Classification quality shall improve monotonically as range decreases. At maximum EO/IR classification range, the system shall provide a meaningful update to decoy probability.
+[SRS-DET-004] The EO/IR subsystem shall provide positive classification evidence at close range (≥ 4 km detection range; ≥ 1.2 km full positive identification range, both derived from validated simulation baseline; OI-003 closed). Classification quality shall improve monotonically as range decreases. At maximum EO/IR classification range, the system shall provide a meaningful update to decoy probability.
 
 [SRS-DET-005] The acoustic sensor network shall detect Class B (FPV) threats flying below the radar horizon at altitudes ≤ 200 m AGL and at ranges sufficient to provide a track confirmation within the Class B response time requirement (see OI-002). Acoustic sensors shall output bearing estimates and engine-class cues.
 
@@ -305,7 +305,7 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 
 [SRS-DET-008] The combined sensor network shall provide no detection coverage gap in the altitude band 50 m to 5,000 m AGL within the defended area. Coverage gaps at low altitude (< 200 m) shall be compensated by the acoustic sensor picket network.
 
-[SRS-DET-009] Sensor deployment shall be based on a formal coverage analysis that demonstrates detection probability ≥ TBD% (see OI-003) for each threat class at the minimum required detection range.
+[SRS-DET-009] Sensor deployment shall be based on a formal coverage analysis that demonstrates detection probability ≥ 90% (OI-003 closed) for each threat class at the minimum required detection range.
 
 ---
 
@@ -335,7 +335,7 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 
 ### 5.3 Track Data Freshness
 
-[SRS-TRK-010] Any software component that consumes a track for engagement purposes shall assess track data freshness before acting. A track update older than TBD seconds (see OI-002 — this limit is tied to response time requirements) shall be treated as stale and shall not trigger a fire request.
+[SRS-TRK-010] Any software component that consumes a track for engagement purposes shall assess track data freshness before acting. A track update older than **5 seconds** shall be treated as stale and shall not trigger a fire request. This matches the track coast window (SRS-TRK-003) — a stale track beyond this limit has no confirmed update and may have manoeuvred significantly. OI-002 closed.
 
 [SRS-TRK-011] Interceptor UAV software shall extrapolate the most recently received track state to the current time before computing intercept geometry. Staleness beyond the configurable threshold shall cause the UAV to enter HOLD mode and await a fresh track update.
 
@@ -373,8 +373,8 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 - Tracks with ambiguous class belief → initialise as `MANEUVERING` (conservative default: assume the system can respond, avoid committing to a fixed-route strategy prematurely).
 
 [SRS-CLS-011] The trajectory adaptation estimate shall be updated continuously from observed track behaviour:
-- **Evidence for FIXED_ROUTE:** Predicted trajectory at T−N seconds matches observed position at T within TBD metres. The track does not deviate when interceptors approach within a configurable proximity threshold.
-- **Evidence for MANEUVERING:** Observed track position diverges from predicted by more than TBD metres after an interceptor approach within proximity threshold. Or: track velocity changes abruptly in a way inconsistent with pre-programmed weave profiles (Class A/D weave is sinusoidal at known frequency; a sudden aperiodic heading change is evidence of active evasion).
+- **Evidence for FIXED_ROUTE:** Predicted trajectory at T−N seconds matches observed position at T within **50 m**. The track does not deviate when interceptors approach within **500 m** proximity.
+- **Evidence for MANEUVERING:** Observed track position diverges from predicted by more than **50 m** after an interceptor approach within **500 m** proximity. Or: track velocity changes abruptly in a way inconsistent with pre-programmed weave profiles (Class A/D weave is sinusoidal at known frequency; a sudden aperiodic heading change is evidence of active evasion).
 
 The adaptation estimate shall be a Bayesian probability `p_maneuvering ∈ [0,1]`. A threshold (default 0.4) separates FIXED_ROUTE (below) from MANEUVERING (above). Thresholds shall be configurable.
 
@@ -487,7 +487,7 @@ If the RED dwell period is unknown, the system shall assume maximum plausible dw
 
 [SRS-ROE-003] The ground risk map shall classify every cell of the defended area as SAFE, DANGEROUS, or CRITICAL. Default classification for any unclassified cell shall be DANGEROUS, on the assumption that urban ground is populated. Critical infrastructure cells (hospitals, schools, shelters, dense housing) shall be designated CRITICAL.
 
-[SRS-ROE-004] Zone classification weights for collateral cost computation shall be: SAFE ≈ 0.02, DANGEROUS = 1.0, CRITICAL ≥ 20.0. Exact values shall be reviewed and confirmed by the safety authority before baseline (⚠ OI-007).
+[SRS-ROE-004] Zone classification weights for collateral cost computation shall be: SAFE ≈ 0.02, DANGEROUS = 1.0, CRITICAL ≥ 20.0. These values are adopted as requirements (OI-007 closed). They shall be validated against the population casualty model in the PSSA before operational deployment — this is a mandatory pre-deployment gate per SRS-ROE-006.
 
 ### 8.2 Authorization Decision Logic
 
@@ -577,7 +577,7 @@ If the RED dwell period is unknown, the system shall assume maximum plausible dw
 
 [SRS-UAV-011] Interceptor UAV navigation shall not rely solely on GPS. The UAV shall implement a GPS-independent navigation fallback (inertial navigation, visual odometry, or equivalent) capable of maintaining position accuracy sufficient to execute the RTB manoeuvre in the event of GPS jamming or spoofing.
 
-[SRS-UAV-012] The GPS-independent navigation system shall maintain position error below TBD m (⚠ OI-002) for the duration of the comms-degraded autonomous operation window.
+[SRS-UAV-012] The GPS-independent navigation system shall maintain position error below **50 m** for the duration of the comms-degraded autonomous operation window. This is consistent with SRS-PERF-005 track accuracy at engagement ranges; it is sufficient for RTB navigation to a known charging station. OI-002 closed.
 
 ### 9.5 Platform Performance Constraints (VTOL Multirotor)
 
@@ -588,7 +588,7 @@ If the RED dwell period is unknown, the system shall assume maximum plausible dw
 | Maximum speed | ≥ 45 m/s. Class A+ (95–110 m/s) is not engaged by direct pursuit; see SRS-COOP-007 to SRS-COOP-016 for the cooperative relay (primary) and route-ambush gun coordination (secondary) strategies. |
 | Maximum acceleration | ≥ 15 m/s² |
 | Operational endurance | ≥ 25 minutes at cruise speed |
-| Payload mass (effector + seeker) | ≥ TBD kg |
+| Payload mass (effector + seeker) | ≥ 2 kg — TBD by hardware platform selection (net gun ≈ 0.8 kg, projectile launcher ≈ 1.2 kg, seeker ≈ 0.4 kg; combined load varies by effector config) |
 | Operating altitude | 50 m – 5,000 m AGL |
 | Operating temperature | −25°C to +45°C |
 
@@ -602,13 +602,13 @@ Class A+ direct-pursuit engagement is by design not required. Class A+ (FIXED-RO
 
 [SRS-UAV-015] **Minimum deployment threshold (SHALL):** A configurable minimum number of interceptor UAVs (`min_deployed`) shall be maintained in airborne, operationally ready status during any active threat scenario. "Operationally ready" means: airborne AND in mode IDLE, TRANSIT, PURSUIT, ENGAGE, BLOCKING, or HERDING. UAVs in modes RTB, CHARGING, or MAINTENANCE do NOT count toward the minimum. The default `min_deployed` value and any changes shall be authorised by the Tier 2 operator. The system shall alert the operator if the deployed count falls or is predicted to fall below `min_deployed` within a configurable time horizon.
 
-[SRS-UAV-016] **Autonomous RTB request and C2 arbitration (SHALL):** When a UAV's estimated remaining flight time falls below the configurable RTB-trigger threshold (default: time required to reach nearest charging station plus a safety margin of TBD minutes), the UAV shall autonomously request permission to RTB. The C2 shall evaluate the request against the following rules:
+[SRS-UAV-016] **Autonomous RTB request and C2 arbitration (SHALL):** When a UAV's estimated remaining flight time falls below the configurable RTB-trigger threshold (default: time required to reach nearest charging station plus a safety margin of **5 minutes**), the UAV shall autonomously request permission to RTB. The C2 shall evaluate the request against the following rules:
 
 | Condition | C2 Response |
 |---|---|
 | UAV is not the assigned shooter in an active engagement AND return would not drop deployed count below `min_deployed` | Approve RTB immediately; assign nearest available charging station |
 | UAV is the assigned shooter in an active engagement AND relay/substitute shooter is available | Approve RTB; reassign engagement to substitute before UAV departs |
-| UAV is the assigned shooter AND no substitute is available AND engagement is active | Defer RTB approval for up to TBD seconds (within safe battery margin); concurrently seek substitute |
+| UAV is the assigned shooter AND no substitute is available AND engagement is active | Defer RTB approval for up to **60 seconds** (within safe battery margin); concurrently seek substitute |
 | Battery SoC falls below emergency threshold (default 10%) | Unconditional RTB regardless of any of the above; C2 cannot override emergency RTB |
 | Return would drop deployed count below `min_deployed` AND no UAVs are currently charging | Alert operator; approve RTB anyway if SoC ≤ 15% (cannot hold UAV in air below safe margin) |
 
@@ -687,7 +687,7 @@ Precise performance curves shall be derived from validated atmospheric attenuati
 [SRS-EFF-013] **HEL weather sensitivity and operational limits (SHALL):** The HEL effector shall automatically report a `WEATHER_DEGRADED` or `WEATHER_DENIED` status to the C2 based on real-time atmospheric visibility and humidity data. The C2 shall not assign HEL engagement tasks when status is `WEATHER_DENIED`. When status is `WEATHER_DEGRADED`, the C2 shall reduce the HEL's assigned maximum engagement range accordingly and prefer kinetic effectors.
 
 [SRS-EFF-014] **HEL beam safety zone and no-fly cone (SHALL — safety-critical):** The HEL beam path defines a lethal no-fly volume. Before issuing HEL fire clearance, the C2 ROE module shall verify:
-1. No friendly UAV (sentinel or interceptor) is located within the beam path volume (defined as: cylinder of radius TBD m centred on the beam axis, from emitter to predicted dwell point).
+1. No friendly UAV (sentinel or interceptor) is located within the beam path volume (defined as: cylinder of radius **≥ 10 m** centred on the beam axis, from emitter to predicted dwell point; exact exclusion radius subject to optical engineering analysis before operational deployment).
 2. No civil aviation contact is within the beam path.
 3. The beam path does not intersect any declared protected area (hospital, civilian shelter) at ground level.
 
@@ -767,7 +767,7 @@ When relay interception is assessed as infeasible for a MANEUVERING threat, the 
 [SRS-COOP-011] **Anti-air gun kill zone management (SHALL):** Kill zones designated for Class A+ engagement shall be defined as part of the defended area configuration and shall meet all of the following criteria:
 - Located in a SAFE ground-risk zone (per the ground risk map classification).
 - Positioned such that anti-air gun engagement within the zone does not create debris risk over DANGEROUS or CRITICAL ground.
-- Reachable by the A+ trajectory with ≤ TBD degrees of heading change from its predicted course.
+- Reachable by the MANEUVERING threat with ≤ 30 degrees of heading change from its predicted course (for herding strategies — the herded threat must not need to deviate more than 30° to reach the kill zone, otherwise herding channel posts are impractical to set up). For FIXED-ROUTE threats, use SRS-COOP-014 proximity criterion instead.
 - Associated with a specific gun crew identifier and a real-time availability status (AVAILABLE / UNAVAILABLE).
 
 Multiple kill zones may be designated. The C2 shall maintain kill zone status in real time and shall not attempt to herd a Class A+ toward an UNAVAILABLE zone.
@@ -779,7 +779,7 @@ Multiple kill zones may be designated. The C2 shall maintain kill zone status in
 | 1 | C2 | Issues TRACK ALERT to gun crew with A+ track data and PTA |
 | 2 | Gun crew | Acknowledges alert; responds with READY or NOT-READY |
 | 3a | C2 (if READY) | Continues herding formation; begins UAV evacuation from gun engagement cone (see SRS-SAF-010) |
-| 3b | C2 (if NOT-READY or no response within TBD s) | Selects alternate kill zone OR escalates to relay strategy with remaining UAVs OR alerts operator |
+| 3b | C2 (if NOT-READY or no response within **30 s**) | Selects alternate kill zone OR escalates to relay strategy with remaining UAVs OR alerts operator |
 | 4 | C2 | Issues CLEARED HOT signal to gun crew once all UAVs are confirmed outside the gun engagement cone |
 | 5 | Gun crew | Engages A+ when it enters the kill zone |
 | 6 | C2 | Updates track: marks as ENGAGED BY GUN; suspends UAV engagement tasks for this track |
@@ -792,9 +792,9 @@ Multiple kill zones may be designated. The C2 shall maintain kill zone status in
 
 When relay interception is not achievable and the track is classified as FIXED-ROUTE, herding is prohibited (SRS-C2-012). The secondary strategy is **route-ambush**: coordinate human anti-air gun crews to engage the threat at the safest point on its own predicted trajectory. The C2 shall:
 
-1. **Ambush point selection:** Compute all points on the A+'s predicted trajectory (extrapolated ≥ 90 s ahead per SRS-COOP-009) that fall within a configurable proximity (TBD m) of a gun kill zone currently marked AVAILABLE. Select the point that minimises debris risk (nearest to SAFE ground zone, consistent with gun crew having clear field of fire and sufficient engagement lead time).
+1. **Ambush point selection:** Compute all points on the A+'s predicted trajectory (extrapolated ≥ 90 s ahead per SRS-COOP-009) that fall within a configurable proximity (**≤ 2,000 m**, representing the gun's effective engagement range) of a gun kill zone currently marked AVAILABLE. Select the point that minimises debris risk (nearest to SAFE ground zone, consistent with gun crew having clear field of fire and sufficient engagement lead time).
 
-2. **Lead-time validation:** Verify that the selected ambush point allows the gun crew at least TBD seconds of preparation time (tracking acquisition + traverse/elevation to target bearing) before the threat arrives. If no point satisfies the lead-time constraint, escalate to operator.
+2. **Lead-time validation:** Verify that the selected ambush point allows the gun crew at least **45 seconds** of preparation time (tracking acquisition + traverse/elevation to target bearing) before the threat arrives. If no point satisfies the lead-time constraint, escalate to operator.
 
 3. **Gun crew alert:** Issue the TRACK ALERT to the selected gun crew with: threat class, current position and velocity, predicted ambush point coordinates, predicted time of arrival (PTA) at ambush point, and lateral position uncertainty at that point. The alert format is identical to the herding handoff (SRS-IF-006) — the gun crew interface is the same; only the strategic context differs.
 
@@ -820,7 +820,7 @@ When relay interception is not achievable and the track is classified as FIXED-R
 [SRS-SENT-002] **Deployment zone (SHALL):** Sentinels shall be deployed outside the defended zone perimeter at a stand-off distance sufficient to provide advance warning for the most time-critical RF-silent threat class (Class B FPV at 30–40 m/s, approaching at low altitude). The minimum stand-off distance shall be derived from the Class B response time requirement (OI-002) as: `d_min = V_FPV × T_response + d_sensor_range`. Until OI-002 is resolved, sentinels shall be deployed at a minimum of 5 km outside the defended perimeter as a conservative estimate.
 
 [SRS-SENT-003] **Sentinel sensor suite (SHALL):** Each sentinel UAV shall carry at minimum:
-- **Wide-field EO/IR imager**: for area surveillance and initial detection of thermal signatures. Field-of-view and sensitivity shall be sufficient to detect a Class B FPV (heat signature, 1–5 kg) at range ≥ TBD m (see OI-003) under the environmental conditions of SRS-ENV-003/005/006.
+- **Wide-field EO/IR imager**: for area surveillance and initial detection of thermal signatures. Field-of-view and sensitivity shall be sufficient to detect a Class B FPV (heat signature, 1–5 kg) at range **≥ 4 km** under the environmental conditions of SRS-ENV-003/005/006. This is the airborne EO/IR detection range from the validated simulation baseline; OI-003 closed.
 - **Acoustic sensor**: for detection of low-altitude, low-RCS threats (Class B FPV) below the radar horizon. Acoustic sensors on an airborne platform have different noise characteristics than ground-based sensors — the sensor design shall account for rotor noise masking and implement appropriate noise cancellation.
 
 Sentinels should also carry:
@@ -867,7 +867,7 @@ The patrol planner is centrally coordinated at the Tier 2 C2 level (baseline): t
 | Lateral resolution | ≤ 100 m × 100 m per cell (configurable per deployment) |
 | Vertical resolution | ≤ 50 m per cell (configurable) |
 | Vertical extent | 0 m AGL to 5,500 m AGL (full threat altitude band plus margin) |
-| Lateral extent | Defended zone bounds plus sentinel patrol zone plus TBD km buffer |
+| Lateral extent | Defended zone bounds plus sentinel patrol zone plus **5 km** buffer (matching sentinel stand-off distance; ensures all sentinel patrol positions are within the map) |
 | Coordinate system | ENU metres, origin at the Tier 1 Metropolitan C2 reference point |
 
 [SRS-COV-002] **3D obstacle model (SHALL):** The coverage map system shall maintain a 3D obstacle model used for LOS raycasting. The obstacle model shall incorporate at minimum:
@@ -904,7 +904,7 @@ U = (number of GREEN voxels in all critical surveillance zones) /
     (total voxels in all critical surveillance zones)
 ```
 
-This metric shall be displayed on the operator console and shall be used by the Sentinel patrol planner as the primary optimisation objective. The C2 shall alert the operator when U falls below a configurable minimum threshold (default: TBD).
+This metric shall be displayed on the operator console and shall be used by the Sentinel patrol planner as the primary optimisation objective. The C2 shall alert the operator when U falls below a configurable minimum threshold (default: **0.70** — alert when less than 70% of critical zone voxels are GREEN).
 
 [SRS-COV-008] **Coverage map publication (SHALL):** The full 3D coverage map shall be published on the `coverage/map` topic at a configurable rate (default 1 Hz). To minimise bandwidth, the map shall be serialised using a sparse differential encoding: only voxels that changed status since the last publication are included. Consumers shall maintain a local cached map and apply the differential update. A full-map snapshot shall be provided on demand and at system start or reconnection.
 
@@ -964,7 +964,7 @@ For Class A+, relay interceptors shall be **pre-positioned** during the advance 
 
 [SRS-IF-002] The operator console interface shall present a real-time tactical display showing: all confirmed tracks with class belief and threat score, all interceptor positions and modes, active engagement tasks, kill box locations, ROE decisions (with reason codes), and current engagement authority mode (HITL/HOTL).
 
-[SRS-IF-003] The operator console shall provide explicit controls for: mode transition (HITL ↔ HOTL), per-track engagement approval (HITL mode), pre-authorization of HOTL window (⚠ OI-006), manual track overriding, and emergency HOLD (suspend all engagements immediately).
+[SRS-IF-003] The operator console shall provide explicit controls for: mode transition (HITL ↔ HOTL), per-track engagement approval (HITL mode), pre-authorization of HOTL window (maximum 30 minutes; OI-006 closed), manual track overriding, and emergency HOLD (suspend all engagements immediately).
 
 [SRS-IF-004] All datalinks between the C2 and interceptor UAVs shall use authenticated and encrypted communications. Authentication shall use a public-key infrastructure or equivalent. Encryption shall use AES-256 or equivalent. ⚠ See Section 15 (Cybersecurity) for full requirements.
 
@@ -1068,11 +1068,11 @@ This prevents uncoordinated UAV shots against a Class A+ from creating debris ov
 [SRS-SAF-007] The software implementing requirements [SRS-SAF-001] through [SRS-SAF-012] shall be developed and verified to DO-178C DAL B. The safety requirements list shall be included in the Functional Hazard Assessment (FHA) and the Preliminary System Safety Assessment (PSSA) as Hazard Mitigations.
 
 [SRS-SAF-008] The following items from the v0.1 draft are NOT safety requirements and shall be classified as design-level parameters pending safety review:
-- The ROE threshold values in [SRS-ROE-006] (⚠ OI-007).
+- The ROE threshold values in [SRS-ROE-006] — adopted as requirements in v0.5 (OI-007 closed); PSSA IHL review is a mandatory pre-deployment gate, not a SRS-level open item.
 - The DECOY_IGNORE_THRESHOLD value (0.85) — this is a resource allocation parameter, not a safety constraint.
-- The 1 Hz TEWA loop rate — this is a minimum performance parameter, not a safety limit.
+- The 2 Hz TEWA loop rate — this is a minimum performance parameter, not a safety limit.
 
-[SRS-SAF-009] The absence of a hard requirement for zero critical-zone debris impacts is a deliberate stakeholder decision (see Section 8.2 last-resort logic, [SRS-ROE-005]). The ROE allows, as a last resort, engagements where P(CRITICAL hit) ≤ 5% when the alternative is an unimpeded warhead strike. This trade-off involves IHL implications and shall be reviewed and approved by a legal authority before operational use (⚠ OI-007).
+[SRS-SAF-009] The absence of a hard requirement for zero critical-zone debris impacts is a deliberate stakeholder decision (see Section 8.2 last-resort logic, [SRS-ROE-005]). The ROE allows, as a last resort, engagements where P(CRITICAL hit) ≤ 5% when the alternative is an unimpeded warhead strike. This trade-off involves IHL implications and shall be reviewed and approved by a legal authority before operational use. This is a mandatory pre-deployment gate documented in SRS-ROE-006 (OI-007 closed).
 
 ---
 
@@ -1080,7 +1080,7 @@ This prevents uncoordinated UAV shots against a Class A+ from creating debris ov
 
 ### 15.1 Communication Security
 
-[SRS-SEC-001] All RF datalinks between C2 infrastructure and interceptor UAVs shall use AES-256 or equivalent symmetric encryption. Encryption keys shall be rotated at intervals not exceeding TBD hours.
+[SRS-SEC-001] All RF datalinks between C2 infrastructure and interceptor UAVs shall use AES-256 or equivalent symmetric encryption. Encryption keys shall be rotated at intervals not exceeding **24 hours** (subject to confirmation by cryptographic security review before operational deployment).
 
 [SRS-SEC-002] All commands sent over the UAV datalink shall carry an HMAC authentication token computed with a shared secret. The UAV shall reject any command without a valid HMAC. Replay attacks shall be prevented by including a monotonic sequence number in each command message.
 
