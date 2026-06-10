@@ -33,6 +33,16 @@ def test_nearest_safe_cell_avoids_critical():
     assert rm.zone_at(cell[0], cell[1]) == ZoneClass.SAFE
 
 
+def test_off_map_rect_does_not_paint_border_cells():
+    rm = RiskMap((-1000, -1000, 1000, 1000), cell_size=100.0,
+                 default=ZoneClass.SAFE)
+    rm.set_rect((5000, 5000, 6000, 6000), ZoneClass.CRITICAL)   # fully off-map
+    assert rm.zone_at(999.0, 999.0) == ZoneClass.SAFE
+    rm.set_rect((900, 900, 1500, 1500), ZoneClass.DANGEROUS)    # hangs off edge
+    assert rm.zone_at(950.0, 950.0) == ZoneClass.DANGEROUS      # clipped overlap
+    assert rm.zone_at(0.0, 0.0) == ZoneClass.SAFE
+
+
 def test_debris_net_drops_shorter_than_projectile():
     rng = np.random.default_rng(1)
     model = DebrisModel(rng, n_samples=2000)

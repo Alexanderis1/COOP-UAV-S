@@ -50,7 +50,16 @@ class RiskMap:
     # -- authoring -----------------------------------------------------------
 
     def set_rect(self, rect: tuple[float, float, float, float], zone: ZoneClass) -> None:
-        """Mark a rectangle (xmin, ymin, xmax, ymax) with a zone class."""
+        """Mark a rectangle (xmin, ymin, xmax, ymax) with a zone class.
+
+        Only the intersection with the map is painted: ``_index`` clips to
+        the grid, so a rectangle authored entirely off-map would otherwise
+        silently stamp a stripe of border cells with its class — a stray
+        CRITICAL rect in a scenario file must not forbid the map edge.
+        """
+        xmin, ymin, xmax, ymax = self.bounds
+        if rect[2] <= xmin or rect[0] >= xmax or rect[3] <= ymin or rect[1] >= ymax:
+            return
         i0, j0 = self._index(rect[0], rect[1])
         i1, j1 = self._index(rect[2], rect[3])
         self.grid[min(j0, j1) : max(j0, j1) + 1, min(i0, i1) : max(i0, i1) + 1] = int(zone)
