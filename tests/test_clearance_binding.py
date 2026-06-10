@@ -161,12 +161,16 @@ def test_denied_track_reenters_allocation_after_ttl():
         position=np.array([3000.0, 0.0, 800.0]),
         velocity=np.array([-55.0, 0.0, 0.0]),
     )]))
-    bs._on_uav_state(UavState(header=Header(stamp=0.0), uav_id="u1",
-                              position=np.zeros(3), ammo=4))
     bs._denied[1] = 0.0
 
+    # Telemetry is republished fresh before each planning tick, as the
+    # 10 Hz uav/state stream does — silent platforms are not allocated.
+    bs._on_uav_state(UavState(header=Header(stamp=DENIAL_TTL_S - 5.0),
+                              uav_id="u1", position=np.zeros(3), ammo=4))
     bs.update(DENIAL_TTL_S - 5.0, 1.0)
     assert published[-1] == []                 # still inside the TTL window
+    bs._on_uav_state(UavState(header=Header(stamp=DENIAL_TTL_S + 1.0),
+                              uav_id="u1", position=np.zeros(3), ammo=4))
     bs.update(DENIAL_TTL_S + 1.0, 1.0)
     assert [task.track_id for task in published[-1]] == [1]
 

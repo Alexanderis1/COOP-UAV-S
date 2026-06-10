@@ -54,7 +54,7 @@ class EngagementAdjudicator(Node):
             return
 
         uav = self.uavs[msg.uav_id]
-        target = self._nearest_enemy(uav.position, msg.predicted_intercept)
+        target = self._nearest_enemy(msg.predicted_intercept)
         result = EngagementResult(
             header=Header(stamp=self.world.t),
             task_id=msg.task_id,
@@ -85,8 +85,7 @@ class EngagementAdjudicator(Node):
             track_id=msg.track_id,
             uav_id=msg.uav_id,
         )
-        target = self._nearest_enemy(msg.predicted_intercept, msg.predicted_intercept,
-                                     gate=150.0)
+        target = self._nearest_enemy(msg.predicted_intercept, gate=150.0)
         n_rounds = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
 
         if target is not None:
@@ -174,15 +173,20 @@ class EngagementAdjudicator(Node):
             debris_zone=zone.name, pk=round(pk, 3),
         )
 
-    def _nearest_enemy(self, shooter_pos: np.ndarray, aim_point: np.ndarray,
-                       gate: float = 300.0):
-        """Nearest live enemy to the shooter; the munition only threatens
-        what is physically nearby, whatever the track said."""
+    def _nearest_enemy(self, aim_point: np.ndarray, gate: float = 300.0):
+        """Nearest live enemy to the munition's *aim point*. The shot was
+        cleared and released at a predicted intercept; what it can plausibly
+        hit is whatever flies near that point (track-vs-truth error is tens
+        of metres). Resolving by distance to the shooter instead can hand
+        the kill to a bystander behind the launch rail and attribute it to
+        the engaged track. True shooter-target geometry still decides the
+        kill probability, so an aim point with nothing in effector reach
+        resolves as a miss."""
         best, best_d = None, gate
         for enemy in self.world.enemies.values():
             if not enemy.alive:
                 continue
-            d = float(np.linalg.norm(enemy.position - shooter_pos))
+            d = float(np.linalg.norm(enemy.position - aim_point))
             if d < best_d:
                 best, best_d = enemy, d
         return best

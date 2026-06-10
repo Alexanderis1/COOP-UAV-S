@@ -35,6 +35,7 @@ from ..core.messages import (
     TurretState,
 )
 from ..core.node import Node
+from ..c2.base_station import KILL_RECONFIRM_GRACE_S, TRACK_FRESH_S
 from ..c2.roe import DENIAL_TTL_S
 from .adjudicator import TURRET_EVASION_FACTOR, TURRET_LETHAL_RADIUS
 from .world import World
@@ -87,7 +88,7 @@ class GroundTurret(Node):
         self._tracks: dict[int, Track] = {}
         self._peer_claims: dict[str, int | None] = {}
         self._denied: dict[int, float] = {}   # track_id -> denial time (TTL)
-        self._killed: set[int] = set()    # don't chase coasting dead tracks
+        self._killed: dict[int, float] = {}   # track_id -> kill report time
         self._await_until = 0.0           # re-request clearance after this
         self._hold_until = 0.0
         self._cleared_until = 0.0
@@ -113,7 +114,7 @@ class GroundTurret(Node):
 
     def _on_result(self, msg) -> None:
         if msg.hit:
-            self._killed.add(msg.track_id)
+            self._killed[msg.track_id] = msg.header.stamp
             if msg.track_id == self.target_track:
                 self.target_track = None
                 self._cleared_until = 0.0
@@ -185,6 +186,17 @@ class GroundTurret(Node):
     def _select_target(self, t: float) -> Track | None:
         """Highest-priority engageable track: in range, credible (p_decoy
         below threshold), not claimed by a lower-id peer turret."""
+        # Kill claims are reconciled against the track picture exactly as
+        # the C2 does: hits are reported under the engaged track id, but the
+        # round is adjudicated against whatever flew at the aim point — a
+        # "killed" track still absorbing measurements is alive.
+        for tid, t_kill in list(self._killed.items()):
+            trk = self._tracks.get(tid)
+            if trk is None:
+                del self._killed[tid]
+            elif (t - t_kill > KILL_RECONFIRM_GRACE_S
+                    and trk.time_since_update < TRACK_FRESH_S):
+                del self._killed[tid]
         claimed = {
             tid for pid, tid in self._peer_claims.items()
             if tid is not None and pid < self.turret_id

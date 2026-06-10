@@ -43,6 +43,17 @@ from .roe import DENIAL_TTL_S, RoeConfig, RulesOfEngagement
 TASKS_TOPIC = "engagement/tasks"
 ROE_TOPIC = "c2/roe_evaluation"
 
+# Telemetry silent for this long is treated as lost: allocating a platform
+# on its last-known state hands the shooter slot to a ghost (the comms
+# layer can drop a UAV for minutes under jamming).
+UAV_STATE_STALE_S = 5.0
+# Kill reports are reconciled against the track picture: a "killed" track
+# still absorbing measurements this long after the hit means the munition
+# found a different airframe — the engaged threat is still flying. The
+# grace covers detections that were already in flight when the kill landed.
+KILL_RECONFIRM_GRACE_S = 2.0
+TRACK_FRESH_S = 1.0
+
 
 class BaseStation(Node):
     def __init__(
@@ -63,7 +74,7 @@ class BaseStation(Node):
         self._assessments: dict[int, ThreatAssessment] = {}
         self._uavs: dict[str, UavState] = {}
         self._denied: dict[int, float] = {}   # track_id -> denial time (TTL)
-        self._killed: set[int] = set()
+        self._killed: dict[int, float] = {}   # track_id -> kill report time
         self._shooters: dict[int, str] = {}   # track_id -> incumbent shooter
         self._task_ids: dict[tuple[int, str], int] = {}   # (track, shooter) -> id
         self._t = 0.0
@@ -85,7 +96,7 @@ class BaseStation(Node):
 
     def _on_result(self, msg: EngagementResult) -> None:
         if msg.hit:
-            self._killed.add(msg.track_id)
+            self._killed[msg.track_id] = msg.header.stamp
 
     def _on_fire_request(self, msg: FireRequest) -> None:
         """Fire requests are answered immediately, not at the planning rate —
@@ -110,6 +121,20 @@ class BaseStation(Node):
 
     def update(self, t: float, dt: float) -> None:
         self._t = t
+        # Reconcile kill claims with the evidence. A hit is reported under
+        # the *engaged* track id, but the munition is adjudicated against
+        # whatever actually flew at the intercept point — when threats are
+        # bunched the wrong airframe can die. A track that keeps absorbing
+        # measurements past the grace window is demonstrably alive: drop the
+        # kill mark or the armed threat is never engaged again. Marks for
+        # vanished tracks are pruned (track ids are never reused).
+        for tid, t_kill in list(self._killed.items()):
+            trk = self._tracks.get(tid)
+            if trk is None:
+                del self._killed[tid]
+            elif (t - t_kill > KILL_RECONFIRM_GRACE_S
+                    and trk.time_since_update < TRACK_FRESH_S):
+                del self._killed[tid]
         live = {
             tid: trk for tid, trk in self._tracks.items() if tid not in self._killed
         }
@@ -118,14 +143,16 @@ class BaseStation(Node):
         }
         # A platform is a usable shooter only if it can actually fly the
         # engagement: rounds in the magazine, battery above the RTB floor,
-        # and not already committed to the recovery/turnaround cycle —
-        # otherwise the allocator burns its best shooter slot on an
-        # airframe that is sitting on the pad ignoring its task.
+        # not already committed to the recovery/turnaround cycle, and its
+        # telemetry recent enough to trust — otherwise the allocator burns
+        # its best shooter slot on an airframe that is sitting on the pad
+        # (or silent behind a jammer) ignoring its task.
         available = [
             u for u in self._uavs.values()
             if u.ammo > 0
             and u.battery >= LOW_BATTERY_RTB
             and u.mode not in (UavMode.RTB, UavMode.REARM)
+            and t - u.header.stamp <= UAV_STATE_STALE_S
         ]
         denied = {tid for tid, t0 in self._denied.items() if t - t0 < DENIAL_TTL_S}
         tasks = assignment.allocate(
