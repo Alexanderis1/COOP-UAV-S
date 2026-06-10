@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SRS-COOP-UAV-S-001 |
-| Version | 0.3 — Threat maneuverability classification; UAV battery orchestration |
+| Version | 0.4 — Sentinel UAVs, 3D coverage map, anti-air turret integration |
 | Status | DRAFT |
 | Date | 2026-06-10 |
 | Classification | RESTRICTED |
@@ -23,6 +23,7 @@
 | 0.1 | 2026-06-10 | Requirements Engineering | Initial draft — elicited from stakeholder and derived from hackathon baseline (`claude/uav-swarm-interception-hackathon-f0vqi0`) |
 | 0.2 | 2026-06-10 | Requirements Engineering | OI-001 resolved: Class A+ engagement strategy defined as two-mode cooperative approach (relay interception primary; herding to anti-air gun kill zone secondary). Added SRS-COOP-007 through SRS-COOP-013, SRS-C2-011, SRS-IF-006/007, SRS-SAF-010/011. Updated threat table, traceability matrix, and OI list. |
 | 0.3 | 2026-06-10 | Requirements Engineering | Stakeholder correction: threat trajectory adaptation attribute added; herding strategy restricted to maneuvering threats only (Class B/C); fixed-route threats (Class A/A+) use route-ambush gun coordination instead. Battery orchestration requirements added: charging stations, minimum deployment threshold, autonomous RTB/charge/redeploy cycle. Added SRS-CLS-009–012, SRS-C2-012, SRS-COOP-014–016, SRS-UAV-014–021, SRS-SIM-012–014. |
+| 0.4 | 2026-06-10 | Requirements Engineering | Sentinel UAV role added (forward observer, RF-silent detection, outside defended zone). 3D coverage map with obstacle-aware LOS, GREEN/RED voxel status, staleness tracking, and coverage utility metric. Anti-air turret integration as ground-fixed effectors with fire control slaving, ROE enforcement, and turret-UAV deconfliction. Operator 3D situational awareness display expanded. Fleet role taxonomy (SENTINEL vs INTERCEPTOR) formalised. Added SRS-SENT-001–010, SRS-COV-001–010, SRS-TUR-001–007, SRS-C2-013–014, SRS-IF-008–009, SRS-SAF-012, SRS-SIM-015–017. |
 
 ---
 
@@ -106,6 +107,16 @@ The COOP-UAV-S system provides layered, multi-domain detection, classification, 
 | VTOL | Vertical Take-Off and Landing |
 | WTA | Weapon-Target Assignment |
 | FIXED-ROUTE | Threat trajectory adaptation class: follows a pre-programmed GPS/INS route; does NOT respond to interceptor positioning or threats. Cannot be herded or lured. |
+| Sentinel UAV | UAV operating in forward observer role outside the defended zone perimeter. Carries sensors, not effectors. Publishes coverage footprints and detections. Distinct from Interceptor UAV. |
+| Interceptor UAV | UAV operating in defender role within or at the edge of the defended zone. Carries effectors (projectile, net). Executes engagement tasks from C2. |
+| RF-silent threat | A hostile UAV that emits no detectable RF signal (no datalink, no active GPS receiver noise). Cannot be detected by RF-DF sensors. Detectable only by radar, EO/IR, acoustic, or onboard seeker. |
+| Voxel | The smallest addressable unit of the 3D coverage map: a cuboid cell in the 3D grid with defined spatial extent. |
+| GREEN cell | A coverage map voxel that is currently within the line-of-sight and detection range of at least one active Sentinel UAV sensor. |
+| RED cell | A coverage map voxel not currently covered by any active Sentinel UAV sensor. |
+| RED dwell time | Elapsed time since a voxel was last classified GREEN. Exceeding the configured threshold triggers a coverage gap alert. |
+| LOS | Line-of-Sight: an unobstructed straight line between a sensor and a point in space, used for coverage computation. |
+| Anti-air Turret | A fixed, ground-mounted kinetic effector (gun system) with an automated or remote-operated fire control, integrated with the C2 for track slaving and ROE enforcement. Distinct from a manually aimed human gun crew. |
+| Coverage utility | Scalar metric [0,1] representing the fraction of critical surveillance zone voxels currently GREEN. Used as patrol planning objective. |
 | MANEUVERING | Threat trajectory adaptation class: AI or human-guided; can actively respond to interceptor positioning by adjusting route. Herding strategies are applicable. |
 | Route-Ambush | Gun engagement coordination strategy for FIXED-ROUTE threats: gun crew is positioned at the safest available point ON the threat's predicted route (no trajectory deflection expected). |
 | Herding | Engagement shaping strategy for MANEUVERING threats: interceptors create threat corridors that exploit the threat's evasion capability to channel it toward a designated kill zone. |
@@ -236,10 +247,19 @@ Requirements in Sections 4–16 apply to **Partition A** unless explicitly noted
 
 | Topic | Message Type | Producer | Consumers |
 |---|---|---|---|
-| `detections` | `Detection` | All sensors | FusionNode |
-| `tracks` | `TrackArray` | FusionNode | C2 (all tiers), UAVs, Recorder |
+| `detections` | `Detection` | All sensors, Sentinel UAV seekers | FusionNode |
+| `tracks` | `TrackArray` | FusionNode | C2 (all tiers), UAVs, Turrets, Recorder |
 | `uav/state` | `UavState` | Each interceptor UAV | C2, peer UAVs, Recorder |
-| `engagement/tasks` | `EngagementTask` | Sector C2 | UAVs |
+| `sentinel/state` | `SentinelState` | Each sentinel UAV | C2, Recorder |
+| `sentinel/coverage_footprint` | `CoverageFootprint` | Each sentinel UAV | Coverage Map node |
+| `sentinel/contact_report` | `ContactReport` | Each sentinel UAV | Sector C2 |
+| `coverage/map` | `CoverageMap` (sparse diff) | Coverage Map node | C2, Operator display, Recorder |
+| `coverage/alert` | `CoverageGapAlert` | Coverage Map node | Sector C2, Operator display |
+| `turret/state` | `TurretState` | Each anti-air turret | C2, Recorder, Operator display |
+| `turret/fire_request` | `FireRequest` | Anti-air turret | Sector C2 |
+| `turret/clearance` | `FireClearance` | Sector C2 | Anti-air turret |
+| `turret/fire` | `FireRequest` | Anti-air turret | Engagement Adjudicator |
+| `engagement/tasks` | `EngagementTask` | Sector C2 | Interceptor UAVs |
 | `engagement/fire_request` | `FireRequest` | Shooter UAV | Sector C2 |
 | `engagement/clearance` | `FireClearance` | Sector C2 | Shooter UAV |
 | `engagement/fire` | `FireRequest` | Shooter UAV | Engagement Adjudicator |
@@ -438,6 +458,22 @@ When `p_maneuvering` is in the transition zone (0.35–0.45), the system shall d
 
 Class C (Loitering Munition) transitions from fixed-route behaviour in cruise to maneuvering in the terminal phase. The C2 shall monitor Class C tracks for phase transition evidence and update the strategy accordingly at each TEWA cycle.
 
+### 7.4 Coverage-Aware Threat Processing
+
+[SRS-C2-013] **Coverage gap urgency adjustment (SHALL):** When a new detection arrives from a Sentinel UAV operating in a zone that was previously RED (uncovered), the C2 shall compute an adjusted urgency score for the resulting track. The effective advance warning time is shorter than nominal because the threat was undetected during the RED dwell period. The threat score urgency component shall be recomputed as:
+
+```
+effective_warning_time = TTI − RED_dwell_at_detection
+adjusted_urgency = 1 / (1 + effective_warning_time / 60.0)
+```
+
+If the RED dwell period is unknown, the system shall assume maximum plausible dwell time equal to the zone's configured maximum RED dwell threshold (SRS-COV-006). This ensures conservative prioritisation of threats emerging from coverage gaps.
+
+[SRS-C2-014] **Coverage map consumption and alerts (SHALL):** The C2 shall subscribe to the 3D coverage map topic (`coverage/map`) and shall:
+- Display current coverage utility metric on the operator console at all times.
+- Identify and log all coverage gap alerts (RED cells in critical surveillance zones exceeding dwell threshold).
+- Recommend Sentinel UAV repositioning to the operator when a persistent coverage gap exists that could be resolved by redeploying an available sentinel. The recommendation shall include: gap location, duration, and which sentinel is best positioned to cover it.
+
 ---
 
 ## 8. Functional Requirements — Rules of Engagement (ROE)
@@ -635,6 +671,27 @@ The decision shall be re-evaluated at every TEWA planning cycle. A UAV shall not
 
 [SRS-EFF-010] Until OI-004 is resolved, the DE module shall be treated as a reserved interface. The software architecture shall include the message bus interface for a DE effector without implementing specific DE engagement logic.
 
+### 10.4 Fixed Ground Effectors — Anti-Air Turrets
+
+> Anti-air turrets are fixed, ground-mounted gun systems with automated or remote-operated fire control. They are distinct from manually aimed human gun crews (SRS-IF-006/007): turrets have their own fire control computers, slaved to the C2 track picture, and do not require a human to manually aim and fire. ROE enforcement, UAV deconfliction, and track assignment all apply.
+
+[SRS-TUR-001] **Turret definition and registration (SHALL):** Each anti-air turret shall be registered in the Tier 2 sector C2 configuration with: unique turret ID, ground position (ENU metres), 3D engagement envelope (azimuth min/max, elevation min/max, maximum range), calibre and projectile ballistics (used by debris model), maximum fire rate, and ammo capacity. Turret configuration shall be updateable by the Tier 2 operator without software redeployment.
+
+[SRS-TUR-002] **Turret state interface (SHALL):** Each turret shall report a real-time state message to the C2, equivalent in structure to `UavState` but for a fixed emplacement. The turret state shall include: current azimuth/elevation aim point, ammo count, availability status (OPERATIONAL / DEGRADED / OFFLINE / RELOADING), and current assigned track ID (if any). This state shall be published on a `turret/state` topic and displayed on the operator console.
+
+[SRS-TUR-003] **Track slaving (SHALL):** The C2 assignment module shall be capable of assigning a confirmed track to a turret as the primary or backup effector. When assigned, the turret's fire control shall receive a continuous stream of track state updates and shall independently compute and update its aim point using a predictive lead solution. Track assignment to turrets shall follow the same threat prioritisation as UAV assignment (SRS-C2-004 through SRS-C2-006).
+
+[SRS-TUR-004] **Turret ROE enforcement (SHALL — identical to UAV):** Turret fire shall be subject to the full ROE framework (SRS-ROE-001 through SRS-ROE-011). A `FireRequest` originating from a turret shall be evaluated by the ROE module using the turret's ground position as the effector origin. The debris model (SRS-ROE-010) shall be applied to the turret's projectile characteristics. No turret shall fire without a valid `FireClearance` token. This constraint is inviolable.
+
+[SRS-TUR-005] **Turret–UAV deconfliction (SHALL — inviolable):** Before issuing fire clearance to a turret, the C2 shall verify that no friendly UAV (sentinel or interceptor) is currently within the turret's firing cone for the proposed firing solution. The firing cone shall be defined as the volume swept by the projectile trajectory plus a safety buffer (TBD metres). The C2 shall command any UAV within the cone to exit before issuing clearance, using the same mechanism as SRS-SAF-010. No exception is permitted.
+
+[SRS-TUR-006] **Turret vs. UAV effector selection (SHALL):** The C2 assignment module shall evaluate turrets alongside interceptor UAVs when allocating effectors to tracks. The selection shall prefer:
+- **Turrets** for: threats within the turret's fixed engagement arc, low/slow threats where turret fire is debris-safe, and situations where UAV ammo is depleted or UAV pursuit would enter dangerous ground.
+- **Interceptor UAVs** for: threats outside the turret arc, threats requiring active pursuit (no fixed-route solution within turret range), and high-altitude targets beyond turret elevation limits.
+Combined turret + UAV assignment for a single high-priority track (layered engagement) is permitted and shall be coordinated by the C2 to ensure deconfliction before any clearance is issued.
+
+[SRS-TUR-007] **Turret ammo management (SHALL):** The C2 shall track turret ammo counts in real time. When a turret's ammo count falls below a configurable threshold, the C2 shall alert the operator and shall not assign new tracks to that turret unless no other effector is available. Ammo resupply events shall be reported by the turret to the C2 via the turret state interface.
+
 ---
 
 ## 11. Functional Requirements — Cooperative Engagement
@@ -730,6 +787,107 @@ When relay interception is not achievable and the track is classified as FIXED-R
 - If transitioning from MANEUVERING to FIXED-ROUTE: cancel herding formation (herding posts are now wasted resources); switch to route-ambush coordination.
 - Log the transition event with timestamp, track ID, old and new p_maneuvering, and new strategy assigned.
 
+### 11.4 Sentinel UAV Role — Forward Observer and RF-Silent Threat Detection
+
+> Sentinel UAVs are a distinct role from Interceptor UAVs. They carry sensors but not primary effectors, operate outside the defended zone perimeter, and are the primary means of detecting RF-silent threats that cannot be found by RF-DF sensors. The C2 maintains two separate fleets: SENTINEL and INTERCEPTOR. Battery orchestration (SRS-UAV-014–021) applies to both roles but with different operational thresholds.
+
+[SRS-SENT-001] **Sentinel UAV role definition (SHALL):** A Sentinel UAV operates as a forward airborne observer. Its primary mission is: (a) extend detection coverage to RF-silent threats beyond the range of ground-based radar and acoustic sensors, and (b) maintain continuous 3D area coverage outside the defended zone perimeter to minimise the dwell time of unobserved voxels. Sentinels shall NOT be assigned as primary kinetic shooters. They may carry a secondary lightweight effector for self-defence only, which shall not be engaged by C2 assignment and shall remain inhibited during normal sentinel operations.
+
+[SRS-SENT-002] **Deployment zone (SHALL):** Sentinels shall be deployed outside the defended zone perimeter at a stand-off distance sufficient to provide advance warning for the most time-critical RF-silent threat class (Class B FPV at 30–40 m/s, approaching at low altitude). The minimum stand-off distance shall be derived from the Class B response time requirement (OI-002) as: `d_min = V_FPV × T_response + d_sensor_range`. Until OI-002 is resolved, sentinels shall be deployed at a minimum of 5 km outside the defended perimeter as a conservative estimate.
+
+[SRS-SENT-003] **Sentinel sensor suite (SHALL):** Each sentinel UAV shall carry at minimum:
+- **Wide-field EO/IR imager**: for area surveillance and initial detection of thermal signatures. Field-of-view and sensitivity shall be sufficient to detect a Class B FPV (heat signature, 1–5 kg) at range ≥ TBD m (see OI-003) under the environmental conditions of SRS-ENV-003/005/006.
+- **Acoustic sensor**: for detection of low-altitude, low-RCS threats (Class B FPV) below the radar horizon. Acoustic sensors on an airborne platform have different noise characteristics than ground-based sensors — the sensor design shall account for rotor noise masking and implement appropriate noise cancellation.
+
+Sentinels should also carry:
+- **Narrow-field EO/IR imager**: for target classification once a contact is detected by the wide-field channel.
+- **Miniaturised radar or LiDAR**: for obstacle awareness (required for 3D LOS computation and autonomous flight near buildings/terrain).
+
+[SRS-SENT-004] **RF-silent threat detection responsibility (SHALL):** The sentinel network is the primary detection layer for RF-silent threats. For any hostile contact that produces no RF signature detectable by the RF-DF network, the system shall rely on: radar (range and altitude permitting), acoustic ground pickets (short range, low altitude), and — critically — Sentinel UAV sensors as the early-warning layer. Sentinel detections shall feed the standard `detections` topic and be processed identically by the fusion node (SRS-TRK-001 through SRS-TRK-011). All `Detection` messages from sentinels shall include a `sensor_platform_id` field identifying the reporting sentinel's position and timestamp, so the fusion node can apply the correct position uncertainty.
+
+[SRS-SENT-005] **Sentinel coverage publishing (SHALL):** At each update cycle (minimum 2 Hz), each sentinel shall compute and publish its current **perceived volume**: the set of voxels in the 3D coverage grid that are within its sensor line-of-sight and within its detection range for each sensor type. Publication shall be on the `sentinel/coverage_footprint` topic and shall include: sentinel ID, timestamp, set of GREEN voxel coordinates, and per-voxel confidence (a function of range and viewing angle). The coverage map node (SRS-COV-003) subscribes to this topic to build the aggregate map.
+
+[SRS-SENT-006] **Patrol autonomy — coverage-driven (SHALL):** Sentinels shall autonomously plan and execute patrol routes that maximise the coverage utility metric (SRS-COV-008) within their assigned patrol sector. The patrol planner shall re-plan whenever:
+- The coverage utility of the assigned sector falls below a configurable minimum threshold.
+- A RED dwell alert is issued for a voxel within the sentinel's reachable coverage range.
+- A contact is detected, requiring the sentinel to transition to target-tracking mode and hold position.
+- Battery or weather constraints change the reachable patrol volume.
+
+The patrol planner is centrally coordinated at the Tier 2 C2 level (baseline): the C2 assigns patrol sectors and waypoints to avoid redundant coverage between sentinels. A decentralised patrol coordination mode (sentinels negotiate sectors autonomously) is a future capability (see ROADMAP).
+
+[SRS-SENT-007] **Multi-sentinel coverage coordination (SHALL):** The C2 shall maintain awareness of all sentinel positions and coverage footprints and shall ensure that no two sentinels are assigned to sectors with significant overlap, unless a specific area requires redundant coverage (e.g., a high-threat approach corridor). When a sentinel RTBs for charging, the C2 shall assess whether the resulting coverage gap exceeds the RED dwell threshold and shall either: reassign an adjacent sentinel to expand its sector, or expedite redeployment of the charging sentinel or a replacement.
+
+[SRS-SENT-008] **Contact report and target handoff (SHALL):** When a sentinel detects a new contact:
+1. It publishes a `Detection` to the `detections` topic (standard pipeline).
+2. It simultaneously issues a `ContactReport` to the C2 flagging the detection as **forward observer** origin. The report includes: estimated threat class, confidence, and the current RED dwell time at the contact's location (indicating how long it may have been undetected).
+3. The C2 shall treat forward observer contacts with elevated urgency per SRS-C2-013.
+4. The sentinel shall transition to tracking mode: maintaining sensor focus on the contact, publishing updated detections at maximum sensor rate until a confirmed track is established in the fusion node (SRS-TRK-002).
+5. Once the track is confirmed and interceptors are assigned, the sentinel shall resume patrol — unless its track quality contribution is irreplaceable (the track would drop to tentative without the sentinel's updates), in which case it shall continue tracking until another sensor or interceptor seeker can maintain the contact.
+
+[SRS-SENT-009] **Sentinel–interceptor deconfliction (SHALL):** When an interceptor is assigned to engage a track that a sentinel is tracking:
+- The C2 shall share the sentinel's current position with the interceptor.
+- The interceptor's guidance shall maintain a configurable minimum separation from the sentinel.
+- The sentinel shall not enter the interceptor's engagement corridor (the cone defined by the intercept geometry) to avoid being mistaken for the target or interfering with the shot.
+- These deconfliction constraints shall be enforced at the C2 task assignment level, not left to the individual UAV agents.
+
+[SRS-SENT-010] **Sentinel-specific battery thresholds (SHALL):** Because sentinels are deployed farther from charging stations than interceptors, their RTB trigger threshold (SRS-UAV-016) shall account for the greater return transit distance. The minimum battery reserve at RTB initiation shall guarantee arrival at the assigned charging station with ≥ TBD% SoC remaining as a landing buffer. The `min_deployed` sentinel count (SRS-UAV-015) shall be defined separately from the `min_deployed` interceptor count — both must be maintained independently during operations.
+
+### 11.5 Three-Dimensional Coverage Map
+
+> The coverage map is the shared situational awareness layer that shows the C2 and operators which portions of the airspace are currently observed by the sentinel network. It is 3D, obstacle-aware, and updated in real time.
+
+[SRS-COV-001] **3D voxel grid definition (SHALL):** The coverage map shall be a 3D voxel grid over the union of the defended area and the sentinel patrol zone. Grid parameters:
+
+| Parameter | Requirement |
+|---|---|
+| Lateral resolution | ≤ 100 m × 100 m per cell (configurable per deployment) |
+| Vertical resolution | ≤ 50 m per cell (configurable) |
+| Vertical extent | 0 m AGL to 5,500 m AGL (full threat altitude band plus margin) |
+| Lateral extent | Defended zone bounds plus sentinel patrol zone plus TBD km buffer |
+| Coordinate system | ENU metres, origin at the Tier 1 Metropolitan C2 reference point |
+
+[SRS-COV-002] **3D obstacle model (SHALL):** The coverage map system shall maintain a 3D obstacle model used for LOS raycasting. The obstacle model shall incorporate at minimum:
+- Building footprints and heights (from scenario configuration or GIS data).
+- Terrain digital elevation model (DEM) — the ground is an obstacle at terrain height.
+- Declared no-fly zones (treated as opaque obstacles for coverage computation).
+
+The obstacle model shall be loaded at system initialisation and shall be updateable during operation (e.g., a building collapse or new obstacle declared). Obstacle model updates shall propagate to all coverage map consumers within one map update cycle.
+
+[SRS-COV-003] **Line-of-sight computation (SHALL):** For each sentinel UAV at its current position, the coverage map system shall compute sensor LOS to each voxel by raycasting from the sensor position to the voxel centre against the 3D obstacle model. A voxel is within LOS if the ray does not intersect any obstacle voxel. LOS computation shall account for:
+- Sensor detection range (range-dependent: GREEN only within effective detection range for the relevant threat class).
+- Sensor field of view (the sentinel's sensor frustum — not all visible voxels are within the sensor FOV).
+- Sentinel heading and sensor gimbal orientation (if a gimballed sensor is modelled).
+
+LOS computation shall be updated at every sentinel position update (minimum 2 Hz).
+
+[SRS-COV-004] **GREEN/RED cell classification (SHALL):** A voxel is classified **GREEN** if and only if: at least one active sentinel has LOS to that voxel AND the voxel is within that sentinel's effective sensor detection range. A voxel is classified **RED** if no sentinel currently satisfies these conditions. GREEN/RED status shall be updated within one coverage map publication cycle of a sentinel position change.
+
+[SRS-COV-005] **Coverage staleness and RED dwell tracking (SHALL):** The coverage map system shall track per-voxel:
+- `last_green_ts`: timestamp of the last time the voxel was GREEN.
+- `red_dwell_s`: elapsed time since `last_green_ts` (continuously updated while the voxel is RED).
+- A voxel that has never been GREEN since system start shall have `red_dwell_s = +∞` (never observed).
+
+These fields shall be included in the published coverage map and displayed in the operator interface.
+
+[SRS-COV-006] **Coverage gap alert (SHALL):** The system shall maintain a configurable set of **critical surveillance zones** — 3D sub-volumes of the coverage map designated as high-priority observation areas (e.g., known threat approach corridors, asset protection zones outside the defended perimeter). For each cell within a critical surveillance zone:
+- When `red_dwell_s` exceeds a configurable threshold T_red_alert (default: TBD seconds; to be derived from OI-002 response time analysis), the C2 shall issue a **COVERAGE GAP ALERT** to the operator, including: voxel coordinates, zone name, and RED dwell duration.
+- Coverage gap alerts shall be logged and shall appear as highlighted volumes on the operator's 3D situational awareness display.
+
+[SRS-COV-007] **Coverage utility metric (SHALL):** The system shall compute and publish a scalar coverage utility U ∈ [0,1] at every TEWA planning cycle:
+
+```
+U = (number of GREEN voxels in all critical surveillance zones) /
+    (total voxels in all critical surveillance zones)
+```
+
+This metric shall be displayed on the operator console and shall be used by the Sentinel patrol planner as the primary optimisation objective. The C2 shall alert the operator when U falls below a configurable minimum threshold (default: TBD).
+
+[SRS-COV-008] **Coverage map publication (SHALL):** The full 3D coverage map shall be published on the `coverage/map` topic at a configurable rate (default 1 Hz). To minimise bandwidth, the map shall be serialised using a sparse differential encoding: only voxels that changed status since the last publication are included. Consumers shall maintain a local cached map and apply the differential update. A full-map snapshot shall be provided on demand and at system start or reconnection.
+
+[SRS-COV-009] **Obstacle-aware sentinel patrol planning (SHALL):** Sentinel patrol waypoints shall be computed with awareness of the 3D obstacle model. Sentinels shall not be assigned waypoints that require flight through an obstacle. Patrol route planning shall account for terrain masking: a waypoint at low altitude near a hill may provide less coverage than a higher-altitude waypoint, even if geometrically closer to the target zone.
+
+[SRS-COV-010] **Coverage map integration with threat detection (SHALL):** When a threat detection arrives from any sensor, the C2 shall query the coverage map to determine the RED dwell time at the detection location. If `red_dwell_s > 0`, this indicates the threat may have been present in the area longer than the detection timestamp suggests. The C2 shall include `red_dwell_at_detection` in the `ThreatAssessment` for the resulting track, and shall use it in the urgency computation per SRS-C2-013.
+
 ---
 
 ## 12. Performance Requirements
@@ -795,6 +953,32 @@ All messages on this interface shall carry timestamps and shall be logged as ope
 
 Kill zone definitions shall be stored in the Tier 1 Metropolitan C2 and propagated to all Tier 2 sector nodes. Changes to kill zone status shall propagate within one Tier 1 update cycle.
 
+[SRS-IF-008] **3D Situational Awareness Display (SHALL):** The operator console shall provide a real-time interactive 3D map displaying all of the following layers simultaneously, each independently togglable:
+
+| Layer | Content |
+|---|---|
+| Coverage map | Semi-transparent GREEN/RED voxel volume overlay; RED dwell intensity (brighter = longer unobserved); critical surveillance zone outlines |
+| Obstacle model | Building footprints and heights; terrain surface |
+| Sentinel UAVs | Position, heading, battery %, current sensor coverage frustum (as a transparent cone), mode (PATROL / TRACKING / RTB / CHARGING), assigned sector outline |
+| Interceptor UAVs | Position, heading, battery %, ammo count, current mode (IDLE / PURSUIT / ENGAGE / BLOCKING / HERDING / RTB), assigned track ID |
+| Threat tracks | Track position (trail), velocity vector, class belief (colour coded by dominant class), `p_maneuvering` indicator, threat score, TTI countdown, current strategy assigned (relay / route-ambush / herding) |
+| Anti-air turrets | Ground position, engagement arc (3D cone frustum), current aim point, assigned track ID, ammo count, availability status |
+| Kill zones / Ambush points | Marked on map with gun crew status (AVAILABLE / NOT READY) and current coordination phase |
+| Coverage utility | Scalar meter and per-zone RED dwell heatmap overlay |
+
+The display shall update at minimum 5 Hz for dynamic elements (UAV positions, tracks) and 1 Hz for coverage map. The display shall support zoom, pan, rotation, and altitude slice (show a horizontal cross-section of the 3D map at a configurable AGL).
+
+[SRS-IF-009] **Anti-air turret fire control interface (SHALL):** Each anti-air turret shall have a dedicated fire control interface channel between the turret's fire control computer and the C2. This interface shall support:
+- **C2 → Turret:** Track assignment (target track ID and latest track state).
+- **C2 → Turret:** Fire clearance (`FireClearance` token — same structure as UAV clearance, SRS-MSG-004).
+- **C2 → Turret:** HOLD command (suspend firing immediately).
+- **C2 → Turret:** STAND DOWN (disengage from current track).
+- **Turret → C2:** Fire request (`FireRequest` — same structure as UAV fire request, SRS-MSG-003).
+- **Turret → C2:** Engagement result (`EngagementResult` — HIT/MISS/ABORT).
+- **Turret → C2:** State update (SRS-TUR-002 fields, minimum 1 Hz).
+
+The turret interface shall use the same authenticated, encrypted datalink requirements as the UAV link (SRS-SEC-001/002). A compromised or spoofed turret fire command is a critical safety risk.
+
 ### 13.2 Internal Message Bus Interface
 
 [SRS-MSG-001] All message schemas shall be version-controlled and backward-compatible within a minor version series. Breaking schema changes shall require a major version increment and a migration plan.
@@ -840,9 +1024,11 @@ The gun engagement cone shall be defined as: a 3D volumetric envelope centred on
 
 This prevents uncoordinated UAV shots against a Class A+ from creating debris over uncleared ground while the gun-crew coordination is in progress.
 
+[SRS-SAF-012] **Sentinel self-defence effector inhibit (SHALL):** Any secondary effector carried by a Sentinel UAV for self-defence purposes shall be inhibited by the C2 at all times during normal sentinel operations. The inhibit shall only be lifted by an explicit SELF-DEFENCE AUTHORIZATION issued by the Tier 2 operator — never autonomously. This ensures sentinels, which operate outside the defended perimeter and potentially within civilian airspace, do not inadvertently engage targets without operator authorisation. Sentinel `FireRequest` messages shall be treated by the ROE module as requiring HITL authorisation regardless of the system's current HITL/HOTL mode.
+
 ### 14.2 Safety Assurance
 
-[SRS-SAF-007] The software implementing requirements [SRS-SAF-001] through [SRS-SAF-011] shall be developed and verified to DO-178C DAL B. The safety requirements list shall be included in the Functional Hazard Assessment (FHA) and the Preliminary System Safety Assessment (PSSA) as Hazard Mitigations.
+[SRS-SAF-007] The software implementing requirements [SRS-SAF-001] through [SRS-SAF-012] shall be developed and verified to DO-178C DAL B. The safety requirements list shall be included in the Functional Hazard Assessment (FHA) and the Preliminary System Safety Assessment (PSSA) as Hazard Mitigations.
 
 [SRS-SAF-008] The following items from the v0.1 draft are NOT safety requirements and shall be classified as design-level parameters pending safety review:
 - The ROE threshold values in [SRS-ROE-006] (⚠ OI-007).
@@ -957,6 +1143,16 @@ This prevents uncoordinated UAV shots against a Class A+ from creating debris ov
 - A scenario with MANEUVERING threats where herding is applicable.
 - A scenario with a Class C loitering munition that transitions from fixed-route cruise to maneuvering terminal phase, verifying that the strategy updates correctly at transition.
 - A scenario where a FIXED-ROUTE threat is initially misclassified as MANEUVERING and the system corrects its strategy when behavioural evidence accumulates.
+
+[SRS-SIM-015] **Sentinel UAV and coverage map simulation (SHALL):** The simulation platform shall model:
+- Sentinel UAV agents with a distinct software profile from interceptors: patrol autonomy, coverage footprint publication, contact report on detection, tracking mode, and sentinel-specific battery thresholds.
+- 3D obstacle model integrated with the simulation world (building footprints and terrain surface from the scenario YAML must generate an obstacle voxel map used by both the coverage LOS engine and the sentinel flight planner).
+- LOS raycasting from each sentinel's current position and sensor FOV to compute GREEN/RED voxel classifications at every sentinel update cycle.
+- Per-voxel RED dwell time tracking and coverage gap alerts.
+
+[SRS-SIM-016] **RF-silent threat detection scenario (SHALL):** The simulation shall include at least one scenario where all hostile threats emit no RF signature (RF-DF detections suppressed). In this scenario, the system shall demonstrate: (a) ground radar provides detection above the radar horizon; (b) ground acoustic sensors provide detection at low altitude within their range; (c) sentinel UAVs provide the primary early-warning detection for low-altitude threats outside acoustic sensor range. The scenario shall verify that track confirmation times are within the Class B response time requirement once OI-002 is resolved.
+
+[SRS-SIM-017] **Anti-air turret simulation (SHALL):** The simulation shall model anti-air turrets as fixed-position effector nodes that participate in the C2 assignment and ROE pipeline identically to UAV shooters. Turret simulation shall include: engagement envelope check (target within azimuth/elevation arc and range), fire request submission, ROE clearance receipt, engagement adjudication (using the same probabilistic Pk model as UAV effectors), turret-UAV deconfliction verification, and ammo depletion. At least one scenario shall include both interceptor UAVs and turrets competing for the same tracks, verifying that the priority assignment and deconfliction rules produce correct, non-conflicting outcomes.
 
 ---
 
@@ -1080,9 +1276,16 @@ The following items in the v0.1 simulation draft require correction or validatio
 | SRS-COOP-014–016 (route-ambush coordination) | Not implemented | New C2 module: ambush point selection on predicted trajectory, gun crew alert integration |
 | SRS-UAV-014–021 (battery orchestration) | Partially — battery drain and RTB on low battery exist (uav.py); no C2 orchestration, no charging stations, no minimum deployment threshold | Add charging station model, C2 fleet orchestration loop, staggered recharge scheduler; extend `UavState` with estimated remaining flight time |
 | SRS-SIM-012–014 (simulation: charging, maneuverability scenarios) | Not implemented | Add charging station nodes to sim; add mode-weighted battery depletion; add trajectory adaptation test scenarios |
+| SRS-SENT-001–010 (Sentinel UAV role and patrol autonomy) | Not implemented — no sentinel role in current draft; all UAVs are interceptors | Add `SentinelUav` node class; patrol planner; coverage footprint publisher; contact report; sentinel-specific battery thresholds; role separation from InterceptorUav |
+| SRS-COV-001–010 (3D coverage map) | Not implemented — no coverage map concept in current draft | New `CoverageMapNode`: 3D voxel grid, obstacle model, LOS raycasting, GREEN/RED status, RED dwell tracking, sparse diff publication, coverage utility metric, gap alerts |
+| SRS-TUR-001–007 (anti-air turrets) | Not implemented — no turret concept in current draft | New `AntiAirTurret` node; integrate with C2 assignment (alongside UAVs); ROE enforcement using same pipeline; turret-UAV deconfliction (extension of SAF-010); turret state interface |
+| SRS-IF-008 (3D situational awareness display) | Partially — Three.js 3D display exists in viz/ but has no coverage map, no sentinel layer, no turret layer; 2D-centric | Extend Three.js dashboard: add coverage voxel volume rendering, sentinel FOV frustums, turret engagement arcs, RED dwell heatmap, coverage utility meter |
+| SRS-C2-013/014 (coverage-aware urgency, coverage alerts) | Not implemented | Extend BaseStation to consume coverage/map and coverage/alert topics; adjust urgency scoring with RED dwell |
+| SRS-SAF-012 (sentinel effector inhibit) | Not applicable to current draft (no sentinels) | Implement inhibit flag in SentinelUav; HITL-only authorisation for sentinel self-defence |
+| SRS-SIM-015–017 (sentinel/coverage/turret simulation) | Not implemented | Add sentinel nodes, LOS engine, obstacle voxel map, turret nodes to sim; add RF-silent-only scenario |
 
 ---
 
-*End of SRS-COOP-UAV-S-001 v0.3*
+*End of SRS-COOP-UAV-S-001 v0.4*
 
 *This document is a DRAFT. It has not been formally reviewed or approved. All requirements are subject to change following stakeholder review of the open issues listed in Section 18.*
