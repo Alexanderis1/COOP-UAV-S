@@ -180,6 +180,60 @@ def test_malformed_and_oversized_requests_get_error_replies():
     asyncio.run(_drive_bad_messages())
 
 
+async def _recv_frame_where(ws, pred, timeout: float = 10.0) -> dict:
+    """Skip messages until a frame whose run block satisfies pred arrives."""
+    async def _wait():
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg["type"] == "frame" and pred(msg["data"]["run"]):
+                return msg["data"]
+    return await asyncio.wait_for(_wait(), timeout)
+
+
+async def _drive_pause_state_push() -> None:
+    server = CommandServer(PRESET, host="127.0.0.1", ws_port=0)
+    await server.start()
+    try:
+        uri = f"ws://127.0.0.1:{server.ws_port}"
+        async with websockets.connect(f"{uri}/ops") as ops:
+            start = json.loads(json.dumps(START_RUN))
+            start["data"]["speed"] = 0.1                 # keep the run alive
+            await ops.send(json.dumps(start))
+            await _recv_type(ops, "frame")
+
+            # The pause must become visible to already-connected clients: a
+            # paused controller emits no frames on its own, so without the
+            # command-driven push the PAUSE button could never show RESUME.
+            await ops.send(json.dumps({"type": "pause", "data": {}}))
+            frame = await _recv_frame_where(ops, lambda r: r["status"] == "paused")
+            # The push re-sends the last frame; its events/decisions were
+            # already delivered once and must not be duplicated.
+            assert frame["events"] == [] and frame["decisions"] == []
+
+            # Speed and posture changes made while paused propagate the same
+            # way (no tick loop is running to carry them).
+            await ops.send(json.dumps({"type": "set_speed", "data": {"speed": 2.0}}))
+            frame = await _recv_frame_where(ops, lambda r: r["speed"] == 2.0)
+            assert frame["run"]["status"] == "paused"
+            await ops.send(json.dumps({"type": "set_posture",
+                                       "data": {"posture": "weapons_hold"}}))
+            await _recv_frame_where(ops, lambda r: r["posture"] == "weapons_hold")
+
+            # Resume flips the status back immediately, ahead of the next
+            # recorder-cadence frame (0.2 sim s is 2 wall s at speed 0.1).
+            await ops.send(json.dumps({"type": "resume", "data": {}}))
+            await _recv_frame_where(ops, lambda r: r["status"] == "running")
+
+            await ops.send(json.dumps({"type": "stop_run", "data": {}}))
+            await _recv_type(ops, "summary", timeout=15.0)
+    finally:
+        await server.stop()
+
+
+def test_pause_state_reaches_connected_clients():
+    asyncio.run(_drive_pause_state_push())
+
+
 async def _drive_origins() -> None:
     server = CommandServer(PRESET, host="127.0.0.1", ws_port=0)
     await server.start()

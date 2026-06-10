@@ -246,6 +246,16 @@ class CommandServer:
                 await self._error(ws, f"unknown command '{msg_type}'")
         except (KeyError, TypeError, ValueError) as e:
             await self._error(ws, f"bad '{msg_type}' command: {e}")
+            return
+        if msg_type in ("pause", "resume", "set_speed", "set_posture"):
+            # A paused controller emits no frames on its own, so a run-block
+            # change made while paused would reach clients only on reconnect
+            # (the PAUSE button could never become RESUME). Push the current
+            # frame with the updated run block; its events/decisions were
+            # already delivered with the original frame, so strip them.
+            frame = ctl.frame()
+            frame["events"], frame["decisions"] = [], []
+            self._broadcast_ops("frame", frame)
 
     async def _start_run(self, ws, request: dict) -> None:
         if self.active:
