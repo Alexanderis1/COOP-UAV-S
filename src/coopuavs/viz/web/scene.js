@@ -1,0 +1,260 @@
+// scene.js — three.js scaffolding, static scene (terrain/buildings/assets/
+// sensors/turrets/homes), environment-driven lighting & fog, picking.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ZONE_COLORS, SENSOR_COLOR, clamp } from './util.js';
+
+// map ENU (x east, y north, z up) -> three (x, y=up, z=-north)
+export const W = (p) => new THREE.Vector3(p?.[0] || 0, p?.[2] || 0, -(p?.[1] || 0));
+export const setW = (v, p) => v.set(p?.[0] || 0, p?.[2] || 0, -(p?.[1] || 0));
+
+const NIGHT_BG = new THREE.Color(0x05070c);
+const DAY_BG = new THREE.Color(0x1a2533);
+
+const TURRET_STATE_COLOR = {
+  idle: 0x6b7a8f, slewing: 0xffd166, tracking: 0xff9a3d,
+  firing: 0xff5050, empty: 0x3a4254,
+};
+
+export class SceneView {
+  constructor(container, onPick) {
+    this.onPick = onPick;
+    this.scene = new THREE.Scene();
+    this.scene.background = NIGHT_BG.clone();
+    this.scene.fog = new THREE.Fog(0x0b0e13, 9000, 26000);
+
+    this.camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 80000);
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setSize(innerWidth, innerHeight);
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    container.appendChild(this.renderer.domElement);
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.maxPolarAngle = Math.PI / 2.05;
+
+    this.amb = new THREE.AmbientLight(0xffffff, 0.45);
+    this.sun = new THREE.DirectionalLight(0xfff2d9, 0.8);
+    this.sun.position.set(3000, 6000, 2000);
+    this.scene.add(this.amb, this.sun);
+
+    this.staticRoot = new THREE.Group();
+    this.coverageGroup = new THREE.Group();   // sensor domes (layer)
+    this.ringsGroup = new THREE.Group();      // turret range rings (layer)
+    this.scene.add(this.staticRoot, this.coverageGroup, this.ringsGroup);
+
+    this.turrets = new Map();   // id -> { group, yaw, barrel, body }
+    this.pickables = [];        // meshes with userData.pick (static side: turrets)
+    this.ground = null;
+    this._groundMats = null;
+
+    addEventListener('resize', () => {
+      this.camera.aspect = innerWidth / innerHeight;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // click-to-pick (ignore drags)
+    this._ray = new THREE.Raycaster();
+    this._down = null;
+    const dom = this.renderer.domElement;
+    dom.addEventListener('pointerdown', (e) => { this._down = [e.clientX, e.clientY]; });
+    dom.addEventListener('pointerup', (e) => {
+      if (!this._down) return;
+      const moved = Math.hypot(e.clientX - this._down[0], e.clientY - this._down[1]);
+      this._down = null;
+      if (moved > 5) return;
+      this._pick(e);
+    });
+  }
+
+  _pick(e) {
+    const ndc = new THREE.Vector2(
+      (e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    this._ray.setFromCamera(ndc, this.camera);
+    const all = this.pickables.concat(this.extraPickables ? this.extraPickables() : []);
+    const hits = this._ray.intersectObjects(all, true);
+    for (const h of hits) {
+      let o = h.object;
+      while (o && !o.userData.pick) o = o.parent;
+      if (o && o.userData.pick) { this.onPick?.(o.userData.pick); return; }
+    }
+    this.onPick?.(null);
+  }
+
+  // ----- static scene -------------------------------------------------------
+  buildStatic(sc) {
+    // wipe previous
+    for (const g of [this.staticRoot, this.coverageGroup, this.ringsGroup]) g.clear();
+    this.turrets.clear();
+    this.pickables.length = 0;
+    if (!sc || !sc.bounds) return;
+
+    const [x0, y0, x1, y1] = sc.bounds;
+
+    // zone raster ground
+    if (sc.grid && sc.grid.length) {
+      const ny = sc.grid.length, nx = sc.grid[0].length;
+      const cnv = document.createElement('canvas');
+      cnv.width = nx; cnv.height = ny;
+      const ctx = cnv.getContext('2d');
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        ctx.fillStyle = ZONE_COLORS[sc.grid[j][i]] || ZONE_COLORS[1];
+        ctx.fillRect(i, ny - 1 - j, 1, 1);            // grid row j = south -> north
+      }
+      const tex = new THREE.CanvasTexture(cnv);
+      tex.magFilter = THREE.NearestFilter;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this._groundMats = {
+        zones: new THREE.MeshLambertMaterial({ map: tex }),
+        plain: new THREE.MeshLambertMaterial({ color: 0x141a22 }),
+      };
+      this.ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(x1 - x0, y1 - y0), this._groundMats.zones);
+      this.ground.rotation.x = -Math.PI / 2;
+      this.ground.position.set((x0 + x1) / 2, -1, -(y0 + y1) / 2);
+      this.staticRoot.add(this.ground);
+    }
+
+    // buildings
+    const bmat = new THREE.MeshLambertMaterial({ color: 0x39455c });
+    for (const b of sc.buildings || []) {
+      const [bx0, by0, bx1, by1] = b.rect;
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(bx1 - bx0, b.height, by1 - by0), bmat);
+      m.position.set((bx0 + bx1) / 2, b.height / 2, -(by0 + by1) / 2);
+      this.staticRoot.add(m);
+    }
+
+    // protected assets
+    const ageo = new THREE.CylinderGeometry(28, 28, 60, 16);
+    const amat = new THREE.MeshLambertMaterial({ color: 0x4fc3f7, emissive: 0x10405c });
+    for (const a of sc.assets || []) {
+      const m = new THREE.Mesh(ageo, amat);
+      m.position.copy(W(a.pos)); m.position.y = 30;
+      this.staticRoot.add(m);
+      this.staticRoot.add(makeGroundRing(W(a.pos), 90, 0x4fc3f7, 0.35));
+    }
+
+    // sensors: mast + translucent coverage dome + ground circle
+    for (const s of sc.sensors || []) {
+      const col = SENSOR_COLOR[s.type] ?? 0x4fc3f7;
+      const mast = new THREE.Mesh(
+        new THREE.CylinderGeometry(8, 12, 90, 8),
+        new THREE.MeshLambertMaterial({ color: col, emissive: col, emissiveIntensity: 0.25 }));
+      mast.position.copy(W(s.pos)); mast.position.y += 45;
+      this.staticRoot.add(mast);
+
+      const r = Math.max(1, s.range || 0);
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(r, 28, 14, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshBasicMaterial({
+          color: col, transparent: true, opacity: 0.05,
+          depthWrite: false, side: THREE.DoubleSide,
+        }));
+      dome.position.copy(W(s.pos)); dome.position.y = 0;
+      this.coverageGroup.add(dome);
+      this.coverageGroup.add(makeGroundRing(W(s.pos), r, col, 0.3));
+    }
+
+    // turrets: base box + yaw pivot + barrel, range ring
+    for (const t of sc.turrets || []) {
+      const group = new THREE.Group();
+      group.position.copy(W(t.pos));
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(40, 26, 40),
+        new THREE.MeshLambertMaterial({ color: 0x6b7a8f }));
+      body.position.y = 13;
+      const yaw = new THREE.Group(); yaw.position.y = 30;
+      const pitch = new THREE.Group();
+      const barrel = new THREE.Mesh(
+        new THREE.CylinderGeometry(4, 5, 70, 8),
+        new THREE.MeshLambertMaterial({ color: 0x9aa4b0 }));
+      barrel.rotation.z = -Math.PI / 2;     // along +x of pitch group
+      barrel.position.x = 35;
+      pitch.add(barrel);
+      yaw.add(pitch);
+      group.add(body, yaw);
+      group.userData.pick = { kind: 'turret', id: t.id };
+      this.staticRoot.add(group);
+      this.pickables.push(group);
+      this.ringsGroup.add(makeGroundRing(W(t.pos), Math.max(1, t.range || 0), 0xff9a3d, 0.35));
+      this.turrets.set(t.id, { group, yaw, pitch, body });
+    }
+
+    // UAV home pads
+    const pgeo = new THREE.CylinderGeometry(34, 34, 4, 20);
+    const pmat = new THREE.MeshLambertMaterial({ color: 0x1f6f9c, emissive: 0x0a2a3c });
+    for (const h of sc.homes || []) {
+      const pad = new THREE.Mesh(pgeo, pmat);
+      pad.position.copy(W(h.pos)); pad.position.y = 2;
+      this.staticRoot.add(pad);
+      this.staticRoot.add(makeGroundRing(W(h.pos), 46, 0x39d2ff, 0.3));
+    }
+
+    // camera framing
+    const cx = (x0 + x1) / 2, cz = -(y0 + y1) / 2;
+    const span = Math.max(x1 - x0, y1 - y0);
+    this.camera.position.set(cx, span * 0.38, cz + span * 0.46);
+    this.controls.target.set(cx, 0, cz);
+  }
+
+  // dynamic turret state from frame.turrets
+  updateTurret(tu) {
+    const rec = this.turrets.get(tu.id);
+    if (!rec) return;
+    // az: compass degrees (0 = north, cw). barrel along +x of pitch group:
+    // yaw theta about Y st direction = (sin az, -cos az) in three xz.
+    rec.yaw.rotation.y = THREE.MathUtils.degToRad(90 - (tu.az || 0));
+    rec.pitch.rotation.z = THREE.MathUtils.degToRad(clamp(tu.el || 0, -10, 89));
+    const col = TURRET_STATE_COLOR[tu.state] ?? 0x6b7a8f;
+    rec.body.material.color.setHex(col);
+  }
+
+  setLayer(name, on) {
+    if (name === 'coverage') this.coverageGroup.visible = on;
+    else if (name === 'rings') this.ringsGroup.visible = on;
+    else if (name === 'grid' && this.ground && this._groundMats)
+      this.ground.material = on ? this._groundMats.zones : this._groundMats.plain;
+  }
+
+  // SRS HMI-MAP-006: lighting + fog respond to frame.env
+  applyEnv(env) {
+    if (!env) return;
+    const d = clamp(env.daylight ?? 0.35, 0, 1);
+    const p = clamp(env.precip ?? 0, 0, 1);
+    this.amb.intensity = 0.16 + 0.55 * d * (1 - 0.3 * p);
+    this.sun.intensity = 0.12 + 1.05 * d * (1 - 0.4 * p);
+    const bg = NIGHT_BG.clone().lerp(DAY_BG, d);
+    this.scene.background.copy(bg);
+    const f = clamp(env.fog ?? 0, 0, 1);
+    this.scene.fog.color.copy(bg);
+    this.scene.fog.near = 9000 * (1 - f) + 220 * f;
+    this.scene.fog.far = 26000 * (1 - f) + 2800 * f;
+  }
+
+  focus(pos3) {
+    if (!pos3) return;
+    const off = this.camera.position.clone().sub(this.controls.target);
+    if (off.length() > 6500) off.setLength(6500);
+    this.controls.target.copy(pos3).setY(0);
+    this.camera.position.copy(this.controls.target).add(off);
+  }
+
+  start(beforeRender) {
+    this.renderer.setAnimationLoop(() => {
+      beforeRender?.(performance.now());
+      this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+    });
+  }
+}
+
+export function makeGroundRing(center, radius, color, opacity = 0.35) {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(Math.max(0.5, radius - radius * 0.012 - 2), radius, 64),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false,
+    }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(center.x, 1.5, center.z);
+  return ring;
+}
