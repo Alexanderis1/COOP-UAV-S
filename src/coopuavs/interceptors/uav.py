@@ -370,6 +370,16 @@ class InterceptorUav(UavAirframe):
             )
         return self._tracks.get(self._task.track_id)
 
+    def seeker_cue(self) -> Track | None:
+        """Cue source for an onboard gimballed seeker (P2-4
+        ``GimbaledSeeker``): the engaged target's fused picture, or None
+        when untasked. Estimate-only by construction — the same picture
+        guidance and fire control fly on — so the seeker gimbal is slewed
+        on track data, never ground truth (SIM-GT-001). P4 moves this call
+        onto the modeled FCU<->MC link as the MC's gimbal-cue command; this
+        method is that seam."""
+        return self._target_picture() if self._task else None
+
     def _peer_position(self, uav_id: str) -> np.ndarray:
         if uav_id == self.uav_id:
             return self.body.position

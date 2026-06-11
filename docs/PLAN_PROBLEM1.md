@@ -89,6 +89,12 @@ per task — gates are never loosened silently.*
   pole-pair conversion is the driver's), baro sigma comment 0.25 m.
   Stopped for user review per cadence; next: P3 (CoopFC, critical path);
   P6 lane B remains unblocked.
+- 2026-06-11 — **P2 open questions resolved** (user delegated to
+  fidelity-optimal): gimbal cue = engaged target's fused track
+  (`InterceptorUav.seeker_cue()` additive seam, estimate-only; the interim
+  nearest-truth auto-cue was a SIM-GT-001 truth leak and is gone); N=30
+  sensor-stack perf gated at the same 0.1 s/sim-s as N=20 (0.15
+  budget-table figure informational). See Resolved questions 2-3.
 
 ## Context
 
@@ -273,15 +279,16 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       2-axis servo (deadbeat for dt>tau, never overshoots), travel limits, closed FOV cone;
       `GimbaledSeeker` adapter (additive — OnboardSeeker untouched; detections byte-identical
       when every observed enemy is in-cone, FOV-skip shifts later draws same scan [pinned];
-      servo advances by elapsed sim time; interim nearest-threat auto-cue until P4 MC cueing)
-      (2026-06-11)
+      servo advances by elapsed sim time; cued by the engaged target's fused track via
+      `InterceptorUav.seeker_cue` — estimate-only, untasked = caged hold, P4 moves the call
+      onto the FCU<->MC link) (2026-06-11)
 - [x] P2-5 `hw/esc_telem.py` (BLHeli32-class rpm/V/A frames off Powertrain outputs, exact rpm
       conversion pin, quantization, powertrain-in-envelope smoke) + determinism/stream-uniqueness
       suite (run-twice, extra-consumer order-independence, removed-device invariance, fleet-growth
       prefix, shared-parent hazard pin) + `@perf` stack gate (2026-06-11)
-- GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s — measured **0.020 s/sim-s
-  at N=20, 0.027 at N=30** (N=30 gated 0.15 per budget table; 4 sim-s reps, resolved above the
-  Windows timer quantum)
+- GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s — measured **0.020-0.023
+  s/sim-s at N=20, 0.027 at N=30** (N=30 gated at the SAME 0.1, P1 precedent; budget-table 0.15
+  informational; 4 sim-s reps, resolved above the Windows timer quantum)
 
 ### P3 — CoopFC flight stack in isolation (XL — largest phase)
 `sil/bench.py` harness: physics + hw + one FCU, no tactical stack. Import fence enforced.
@@ -400,3 +407,11 @@ DESIGN_REVIEW 1.1/1.6/5.1/5.2/5.3 marked resolved as they close.
 
 ## Resolved questions
 1. Tier-F fixed-wing interceptor out of Problem-1 scope — **CONFIRMED out** (user, 2026-06-11).
+2. P2 gimbal cue source (user delegated "optimal for fidelity", 2026-06-11): **engaged target's
+   fused track** via additive `InterceptorUav.seeker_cue()` seam (estimate-only, SIM-GT-001;
+   untasked = caged hold). The earlier interim nearest-truth-threat auto-cue was a truth leak
+   into tactical logic (plan risk #5) and was removed same day; P4 moves the call onto the
+   modeled FCU<->MC link.
+3. P2 perf gate at N=30 (user delegated, 2026-06-11): gated at the **same 0.1 s/sim-s as N=20**
+   (P1 same-bound-both-N precedent); the 0.15 budget-table figure stays informational. Tight
+   sensor gates protect the fidelity budget from the degrading fallback levers.

@@ -12,7 +12,7 @@ suite/golden files).
 import numpy as np
 import pytest
 
-from coopuavs.core.messages import ThreatClass
+from coopuavs.core.messages import EngagementTask, Header, ThreatClass, Track
 from coopuavs.hw.params import load_devices
 from coopuavs.hw.seeker_gimbal import SeekerGimbal, SeekerGimbalParams
 from coopuavs.interceptors.effectors import projectile_gun
@@ -174,10 +174,21 @@ def _uav(world):
                           effector=projectile_gun(), max_speed=80.0)
 
 
+def _assign_track(uav, track_id, pos):
+    """Steer the UAV's tactical picture directly (unit-test idiom, like
+    test_kill_bookkeeping steering adj._rng): a fused track estimate plus
+    a shooter task on it — the inputs seeker_cue() is defined over."""
+    uav._tracks[track_id] = Track(header=Header(stamp=0.0), track_id=track_id,
+                                  position=np.asarray(pos, dtype=float))
+    uav._task = EngagementTask(header=Header(stamp=0.0), task_id=1,
+                               track_id=track_id, shooter_id=uav.uav_id)
+
+
 def test_target_behind_is_blind_until_the_gimbal_slews_onto_it():
     world, _ = _world_with_enemy([-300.0, 0.0, 0.0])     # dead astern
     uav = _uav(world)
     seeker = GimbaledSeeker("skr", world, uav, gimbal=SeekerGimbal(_params(), 1))
+    _assign_track(uav, 7, [-300.0, 0.0, 0.0])            # MC cue on the target
     dets = []
     world.bus.subscribe("detections", dets.append)
     first_at = None
@@ -230,9 +241,8 @@ def test_fov_skipped_enemy_shifts_later_draws_in_the_scan():
         skr.update(0.0, 0.05)                    # single scan
         return dets
 
-    # Auto-cue goes to the NEAREST enemy — the one ahead (300 m vs 400 m
-    # astern) — so the boresight stays forward: ahead in the cone, astern
-    # FOV-gated out (slew rate irrelevant; pinned slow anyway).
+    # Untasked: the gimbal stays caged forward — ahead enemy in the cone,
+    # astern enemy FOV-gated out (slew rate irrelevant; pinned slow anyway).
     plain = run(OnboardSeeker)
     gimbaled = run(GimbaledSeeker,
                    gimbal=SeekerGimbal(_params(slew_max_dps=1.0), 1))
@@ -248,23 +258,27 @@ def test_fov_skipped_enemy_shifts_later_draws_in_the_scan():
     np.testing.assert_array_equal(gimbaled[0].position, again[0].position)
 
 
-def test_auto_cue_picks_the_nearest_alive_threat():
-    world, near = _world_with_enemy([100.0, 50.0, 0.0])
-    far = EnemyDrone("owa-2", ThreatClass.OWA_STRATEGIC,
-                     np.array([400.0, -200.0, 0.0]), np.zeros(3),
-                     world.rng, world=world)
-    world.enemies["owa-2"] = far
+def test_cue_follows_assigned_track_estimate_and_holds_when_untasked():
+    """The gimbal is cued by the engaged target's fused TRACK — pure
+    estimate: no enemy exists in this test at all, so the cue path
+    provably reads no ground truth (SIM-GT-001). Retasking swings the
+    boresight to the new estimate; untasked, the gimbal holds its pose
+    (caged) instead of falling back to any truth-derived target."""
+    world = World(Environment.from_config(ENV_CFG), dt=0.05, seed=2)
     uav = _uav(world)
     seeker = GimbaledSeeker("skr", world, uav, gimbal=SeekerGimbal(_params(), 1))
+    _assign_track(uav, 7, [100.0, 50.0, 0.0])
     for k in range(40):
         seeker.update(k * 0.1, 0.05)
-    los = near.position - seeker.position
-    expect_az = np.arctan2(los[1], los[0])
-    np.testing.assert_allclose(seeker.gimbal.az[0], expect_az, atol=1e-6)
-    # nearest dies -> cue swings to the survivor
-    near.alive = False
+    np.testing.assert_allclose(seeker.gimbal.az[0],
+                               np.arctan2(50.0, 100.0), atol=1e-6)
+    _assign_track(uav, 8, [400.0, -200.0, 0.0])          # retasked
     for k in range(40, 80):
         seeker.update(k * 0.1, 0.05)
-    los = far.position - seeker.position
     np.testing.assert_allclose(seeker.gimbal.az[0],
-                               np.arctan2(los[1], los[0]), atol=1e-6)
+                               np.arctan2(-200.0, 400.0), atol=1e-6)
+    uav._task = None                                     # untasked: hold
+    held = seeker.gimbal.az[0]
+    for k in range(80, 120):
+        seeker.update(k * 0.1, 0.05)
+    assert seeker.gimbal.az[0] == held

@@ -96,15 +96,16 @@ pinned by the hw tests. Validation per model:
 | `hw/gps.py` GNSS fixes | PHY-UAV-011 (GNSS), SIM-SEN-001; P3 EKF input | high (timing); representative error magnitudes | fix arrival ticks exactly sample-lattice + 96 ticks @ 800 Hz (120 ms; non-integral tick ratios fail construction); delivered pos == truth of stamp time; white h/v stds; GM wander variance + fix-to-fix autocorr; fix_type uint8 == 3; run-twice + fleet-growth |
 | `hw/baro.py` static pressure | PHY-UAV-011 (barometer) | high (ISA chain); representative noise | `altitude_from_pressure(pressure(h)) == h` to 1e-9; quiet sample == ISA exactly; sigma_h == sigma_p/(rho g0) hydrostatic pin; GM drift variance/autocorr; >11 km / NaN altitude ValueError |
 | `hw/mag.py` 3-axis field | PHY-UAV-011 (magnetometer) | representative | theater field decl/incl/norm geometry pins; body reading == `quat_to_rotmat^T B` and norm-preserving; yaw moves bearing by exactly -psi; hard iron per-power-up repeatable + sigma; GM bias + white stds |
-| `hw/seeker_gimbal.py` + `sensors/seeker.py GimbaledSeeker` | PHY-UAV-012 (gimballed seeker) | representative | slew exactly rate-limited; first-order settle (1-dt/tau)^k exact; deadbeat (no overshoot) for dt > tau; travel-limit clamp incl. initial pose clipped into the el band; closed FOV edge inclusive; batch==scalar; adapter: blind astern until slew-on (first detection on the exact predicted scan); detections byte-identical to `OnboardSeeker` when every observed enemy is in-cone, and an FOV-skipped enemy shifts later draws in the same scan (the base class's range/occlusion-skip behavior — multi-enemy pin); servo advances by elapsed sim time (no time-warp under scheduler overload); deterministic nearest-threat auto-cue (interim until P4 MC cueing) |
+| `hw/seeker_gimbal.py` + `sensors/seeker.py GimbaledSeeker` | PHY-UAV-012 (gimballed seeker) | representative | slew exactly rate-limited; first-order settle (1-dt/tau)^k exact; deadbeat (no overshoot) for dt > tau; travel-limit clamp incl. initial pose clipped into the el band; closed FOV edge inclusive; batch==scalar; adapter: blind astern until slew-on (first detection on the exact predicted scan); detections byte-identical to `OnboardSeeker` when every observed enemy is in-cone, and an FOV-skipped enemy shifts later draws in the same scan (the base class's range/occlusion-skip behavior — multi-enemy pin); servo advances by elapsed sim time (no time-warp under scheduler overload); cued by the engaged target's FUSED TRACK via `InterceptorUav.seeker_cue` (estimate-only — pinned with no enemy present at all; untasked = caged hold; P4 moves the call onto the FCU<->MC link) |
 | `hw/esc_telem.py` telemetry frames | PHY-UAV-013 (ESC telemetry) | representative | exact 60/(2 pi) rpm conversion; protocol quantization grids; noise stds; running-Powertrain frames stay in 3.0-4.2 V/cell and i_bus_max envelope. Pack-level V/I only (per-cell arrives with P5 CELL_IMBALANCE work); no temperature channel (no thermal model) |
 
 Perf: the full 20-vehicle device stack (IMU 400 Hz + FIFO drain, GPS
 clocked at 800 Hz, baro/mag 50 Hz, ESC telemetry + gimbal 10 Hz) is gated
-at 0.1 s CPU/sim-s and the 30-vehicle design envelope at the 0.15 s/sim-s
-budget-table figure (`pytest -m perf`; 4 sim-s reps so readings resolve
-above the 15.625 ms Windows process_time quantum). Measured 2026-06-11:
-0.020 s/sim-s at N=20, 0.027 at N=30.
+at 0.1 s CPU/sim-s for **both** N=20 and the N=30 design envelope (the P1
+same-bound-both-N precedent; the 0.15 s/sim-s N=30 budget-table figure is
+informational only — printed, never asserted). `pytest -m perf`; 4 sim-s
+reps so readings resolve above the 15.625 ms Windows process_time
+quantum. Measured 2026-06-11: 0.020-0.023 s/sim-s at N=20, 0.027 at N=30.
 
 ## Coverage summary
 

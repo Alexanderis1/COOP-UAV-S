@@ -80,14 +80,18 @@ class GimbaledSeeker(OnboardSeeker):
     same skip-shifts-draws behavior the base class's range and occlusion
     gates already have (pinned by the multi-enemy companion test).
 
-    Interim auto-cue: each scan the gimbal slews toward the nearest alive
-    in-range threat (deterministic: distance then id tie-break); the MC
-    takes over cueing in P4. Legacy point-mass bodies carry no attitude, so
-    the gimbal works in world axes (identity attitude) until the SITL
-    plants land (P4). The servo advances by the elapsed sim time between
-    fires (bootstrapped at one scan period), so a scheduler that misses
-    deadlines slews the gimbal through real elapsed time instead of
-    time-warping it.
+    Cueing: each scan the gimbal slews toward the platform's engaged
+    target's FUSED TRACK position (``InterceptorUav.seeker_cue`` — the same
+    estimate guidance and fire control fly on), so track staleness and
+    extrapolation error are faithful cueing error and the cue path never
+    reads ground truth (SIM-GT-001). Untasked, or tasked with no track
+    picture, the gimbal holds its pose (caged) — P4 replaces the direct
+    call with the MC's cue command over the modeled FCU<->MC link. Legacy
+    point-mass bodies carry no attitude, so the gimbal works in world axes
+    (identity attitude) until the SITL plants land (P4). The servo advances
+    by the elapsed sim time between fires (bootstrapped at one scan
+    period), so a scheduler that misses deadlines slews the gimbal through
+    real elapsed time instead of time-warping it.
     """
 
     def __init__(self, name, world, uav: InterceptorUav,
@@ -101,9 +105,9 @@ class GimbaledSeeker(OnboardSeeker):
 
     def update(self, t: float, dt: float) -> None:
         self.position = self.uav.body.position
-        cue = self._cue_target()
+        cue = self.uav.seeker_cue()
         if cue is not None:
-            los = cue.position - self.position
+            los = np.asarray(cue.position, dtype=float) - self.position
             if float(np.linalg.norm(los)) > 0.0:
                 self.gimbal.point_at(los[None, :])
         elapsed = (1.0 / self.rate_hz if self._last_fire_t is None
@@ -112,20 +116,6 @@ class GimbaledSeeker(OnboardSeeker):
         if elapsed > 0.0:
             self.gimbal.step(elapsed)
         super().update(t, dt)
-
-    def _cue_target(self) -> EnemyDrone | None:
-        max_range = self.effective_range()
-        best, best_key = None, None
-        for eid, enemy in self.world.enemies.items():
-            if not enemy.alive:
-                continue
-            dist = float(np.linalg.norm(enemy.position - self.position))
-            if dist > max_range:
-                continue
-            key = (dist, eid)
-            if best_key is None or key < best_key:
-                best, best_key = enemy, key
-        return best
 
     def observe(self, enemy: EnemyDrone, t: float,
                 trans: float = 1.0) -> Detection | None:

@@ -4,8 +4,10 @@ Gate (plan P2): the 20-vehicle device stack — IMU 400 Hz (+ 25 Hz FIFO
 drain), GPS clocked at 800 Hz (10 Hz fixes, 120 ms latency), baro 50 Hz,
 mag 50 Hz, ESC telemetry 10 Hz, seeker gimbal servo/FOV 10 Hz — within
 0.1 s CPU per simulated second. The 30-vehicle design-envelope run is
-gated at the budget-table sensors figure (0.15 s/sim-s at N=30, plan
-"Performance budget"). Each measured rep spans 4 sim-s so the reading
+gated at the SAME 0.1 bound (the P1 same-bound-both-N precedent; the
+budget-table sensors figure 0.15 s/sim-s at N=30 is informational only —
+tight sensor gates protect the fidelity budget from the fallback levers).
+Each measured rep spans 4 sim-s so the reading
 resolves well above the Windows process_time quantum (15.625 ms — a
 1 sim-s rep here reads as exactly one quantum, gate-review finding).
 Run with `pytest -m perf`.
@@ -89,8 +91,8 @@ def test_perf_sensor_stack_under_budget():
     cpu = _cpu_per_sim_s(20)
     cpu30 = _cpu_per_sim_s(30)
     print(f"\nsensor stack CPU/sim-s: N=20 {cpu:.4f} s (gate 0.1), "
-          f"N=30 {cpu30:.4f} s (gate 0.15)")
+          f"N=30 {cpu30:.4f} s (gate 0.1; budget-table 0.15 informational)")
     assert cpu <= 0.1, (
         f"20-vehicle sensor stack used {cpu:.4f} s CPU/sim-s (> 0.1)")
-    assert cpu30 <= 0.15, (
-        f"30-vehicle sensor stack used {cpu30:.4f} s CPU/sim-s (> 0.15)")
+    assert cpu30 <= 0.1, (
+        f"30-vehicle sensor stack used {cpu30:.4f} s CPU/sim-s (> 0.1)")
