@@ -1,8 +1,11 @@
 """ESC telemetry model, batched over vehicles (PHY-UAV-013).
 
-BLHeli32/KISS-style telemetry: per-rotor electrical rpm plus pack bus
-voltage and current, quantized to the protocol granularities, at the
-configured frame rate (PHY-UAV-013 wants health data northbound at
+BLHeli32/KISS-style telemetry: per-rotor mechanical shaft rpm plus pack
+bus voltage and current, quantized to the protocol granularities, at the
+configured frame rate. (The wire protocols transmit eRPM = shaft rpm x
+pole pairs; this model carries the already-converted shaft rpm — the
+pole-pair division is a driver constant, so `rpm_lsb` models the
+granularity AFTER that conversion.) (PHY-UAV-013 wants health data northbound at
 >= 1 Hz; the FCU consumes these frames in P3 and the MC republishes the
 UavHealth digest in P5). Inputs are the Powertrain step outputs
 (omega, v_bus, i_bus) — the telemetry chain adds only measurement noise
@@ -71,7 +74,7 @@ class EscTelemParams:
 class EscTelemFrame:
     """One telemetry frame batch."""
 
-    rpm: np.ndarray       # (n, rotors)
+    rpm: np.ndarray       # (n, rotors) mechanical shaft rpm
     voltage: np.ndarray   # (n,) pack bus V
     current: np.ndarray   # (n,) pack bus A
 

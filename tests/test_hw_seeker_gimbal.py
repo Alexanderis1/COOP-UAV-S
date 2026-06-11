@@ -125,6 +125,17 @@ def test_batch_matches_scalar():
         assert batch.az[i] == s.az[0] and batch.el[i] == s.el[0]
 
 
+def test_initial_pose_is_clipped_into_the_travel_band():
+    # An el band excluding 0 must not leave the boresight parked outside
+    # the mechanical limits (gate-review finding).
+    g = SeekerGimbal(_params(el_min_deg=10.0, el_max_deg=20.0), 2)
+    np.testing.assert_allclose(g.el, np.radians(10.0), atol=1e-15)
+    np.testing.assert_array_equal(g.az, 0.0)
+    for _ in range(50):                          # idle stepping holds pose
+        g.step(0.05)
+    np.testing.assert_allclose(g.el, np.radians(10.0), atol=1e-15)
+
+
 def test_params_validation_and_yaml():
     with pytest.raises(ValueError):
         _params(fov_half_deg=0.0)
@@ -198,6 +209,43 @@ def test_in_fov_detections_match_plain_onboard_seeker_exactly():
     for a, b in zip(plain, gimbaled):
         np.testing.assert_array_equal(a.position, b.position)
         assert a.class_likelihoods == b.class_likelihoods
+
+
+def test_fov_skipped_enemy_shifts_later_draws_in_the_scan():
+    """Scopes the equivalence claim (gate-review finding): an in-range
+    enemy OUTSIDE the cone is skipped before its noise draw, so a later
+    in-FOV enemy sees different draws than under the plain seeker — the
+    same skip-shifts-draws behavior the base class's range and occlusion
+    gates already have. Pinned here so the behavior is contractual."""
+    def run(cls, **extra):
+        world, _ = _world_with_enemy([-400.0, 0.0, 0.0], seed=4)   # astern
+        ahead = EnemyDrone("owa-2", ThreatClass.OWA_STRATEGIC,
+                           np.array([300.0, 0.0, 0.0]), np.zeros(3),
+                           world.rng, world=world)
+        world.enemies["owa-2"] = ahead
+        uav = _uav(world)
+        skr = cls("skr", world, uav, **extra)
+        dets = []
+        world.bus.subscribe("detections", dets.append)
+        skr.update(0.0, 0.05)                    # single scan
+        return dets
+
+    # Auto-cue goes to the NEAREST enemy — the one ahead (300 m vs 400 m
+    # astern) — so the boresight stays forward: ahead in the cone, astern
+    # FOV-gated out (slew rate irrelevant; pinned slow anyway).
+    plain = run(OnboardSeeker)
+    gimbaled = run(GimbaledSeeker,
+                   gimbal=SeekerGimbal(_params(slew_max_dps=1.0), 1))
+    assert len(plain) == 2                       # both enemies detected
+    assert len(gimbaled) == 1                    # astern one FOV-gated out
+    # the in-FOV enemy's detection used DIFFERENT draws (astern enemy's
+    # skipped draw shifted the stream) — deterministically pinned
+    in_fov_plain = [d for d in plain if np.linalg.norm(
+        d.position - [300.0, 0.0, 0.0]) < 50.0][0]
+    assert not np.array_equal(in_fov_plain.position, gimbaled[0].position)
+    again = run(GimbaledSeeker,
+                gimbal=SeekerGimbal(_params(slew_max_dps=1.0), 1))
+    np.testing.assert_array_equal(gimbaled[0].position, again[0].position)
 
 
 def test_auto_cue_picks_the_nearest_alive_threat():

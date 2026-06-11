@@ -78,20 +78,22 @@ class SeekerGimbalParams:
 
 
 class SeekerGimbal:
-    """n identical gimbals; boresight starts forward (az = el = 0)."""
+    """n identical gimbals; boresight starts at the zero pose clipped into
+    the travel band (az = el = 0 when the band contains it)."""
 
     def __init__(self, params: SeekerGimbalParams, n: int):
         _require(isinstance(n, int) and not isinstance(n, bool) and n >= 1,
                  f"n must be an int >= 1, got {n!r}")
         self.params = params
         self.n = n
-        self.az = np.zeros(n)
-        self.el = np.zeros(n)
-        self._az_cmd = np.zeros(n)
-        self._el_cmd = np.zeros(n)
         self._az_lim = np.radians(params.az_max_deg)
         self._el_lim = (np.radians(params.el_min_deg),
                         np.radians(params.el_max_deg))
+        el0 = float(np.clip(0.0, *self._el_lim))
+        self.az = np.zeros(n)
+        self.el = np.full(n, el0)
+        self._az_cmd = np.zeros(n)
+        self._el_cmd = np.full(n, el0)
         self._slew = np.radians(params.slew_max_dps)
         self._cos_fov = np.cos(np.radians(params.fov_half_deg))
 

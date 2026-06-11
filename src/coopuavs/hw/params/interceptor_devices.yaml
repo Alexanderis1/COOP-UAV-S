@@ -36,7 +36,7 @@ gps:                            # multi-band GNSS, u-blox F9-class
   sigma_vel: 0.1                # m/s white, per axis (Doppler velocity)
 baro:                           # MS5611-class static pressure sensor
   rate_hz: 50.0
-  sigma_pa: 3.0                 # Pa white (~0.26 m at sea level)
+  sigma_pa: 3.0                 # Pa white (~0.25 m at sea level)
   gm_sigma_pa: 15.0             # Pa slow drift (temperature/weather lumped)
   gm_tau_s: 600.0               # s
   lsb_pa: 1.2                   # Pa (0.012 mbar conversion resolution)
@@ -59,9 +59,10 @@ seeker_gimbal:                  # 2-axis EO/IR terminal-seeker gimbal
   el_max_deg: 30.0              # deg above the nose
 esc_telem:                      # BLHeli32-class per-ESC telemetry frames
   rate_hz: 10.0                 # Hz (PHY-UAV-013 needs >= 1 Hz northbound)
-  sigma_rpm: 5.0                # rpm white
+  sigma_rpm: 5.0                # rpm white (mechanical shaft rpm)
   sigma_v: 0.02                 # V white (pack bus; per-cell arrives P5)
   sigma_i: 0.1                  # A white
-  rpm_lsb: 10.0                 # rpm (erpm/pole-pair protocol granularity)
+  rpm_lsb: 10.0                 # rpm; protocol eRPM granularity after the
+                                # driver's pole-pair division
   v_lsb: 0.01                   # V
   i_lsb: 0.1                    # A

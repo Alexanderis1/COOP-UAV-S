@@ -73,15 +73,21 @@ class OnboardSeeker(Sensor):
 class GimbaledSeeker(OnboardSeeker):
     """OnboardSeeker behind a hw/seeker_gimbal FOV/slew constraint (P2-4):
     closes the PHY-UAV-012 "no gimbal FOV constraint" deviation at device
-    level. The observation model is untouched — inside the cone the
-    detections are exactly OnboardSeeker's (pinned).
+    level. The observation model is untouched: when every in-range,
+    non-occluded enemy in the scan is inside the cone, the detections are
+    byte-identical to OnboardSeeker's (pinned). An enemy skipped by the FOV
+    gate shifts the *later* enemies' noise draws within that scan — the
+    same skip-shifts-draws behavior the base class's range and occlusion
+    gates already have (pinned by the multi-enemy companion test).
 
     Interim auto-cue: each scan the gimbal slews toward the nearest alive
     in-range threat (deterministic: distance then id tie-break); the MC
     takes over cueing in P4. Legacy point-mass bodies carry no attitude, so
     the gimbal works in world axes (identity attitude) until the SITL
-    plants land (P4). The servo advances one scan period (1/rate_hz) per
-    update — the node scheduler fires updates at exactly that rate.
+    plants land (P4). The servo advances by the elapsed sim time between
+    fires (bootstrapped at one scan period), so a scheduler that misses
+    deadlines slews the gimbal through real elapsed time instead of
+    time-warping it.
     """
 
     def __init__(self, name, world, uav: InterceptorUav,
@@ -91,6 +97,7 @@ class GimbaledSeeker(OnboardSeeker):
             raise ValueError(
                 f"GimbaledSeeker rides one airframe; gimbal has n={gimbal.n}")
         self.gimbal = gimbal
+        self._last_fire_t: float | None = None
 
     def update(self, t: float, dt: float) -> None:
         self.position = self.uav.body.position
@@ -99,7 +106,11 @@ class GimbaledSeeker(OnboardSeeker):
             los = cue.position - self.position
             if float(np.linalg.norm(los)) > 0.0:
                 self.gimbal.point_at(los[None, :])
-        self.gimbal.step(1.0 / self.rate_hz)
+        elapsed = (1.0 / self.rate_hz if self._last_fire_t is None
+                   else t - self._last_fire_t)
+        self._last_fire_t = t
+        if elapsed > 0.0:
+            self.gimbal.step(elapsed)
         super().update(t, dt)
 
     def _cue_target(self) -> EnemyDrone | None:

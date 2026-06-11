@@ -3,8 +3,11 @@
 Measurement model per axis, body FLU (citations in docs/RESEARCH.md,
 section "P2 hardware device models"):
 
-    gyro  = omega_body + b0 + b_rw + b_gm + n_white  -> clip(range) -> quantize
-    accel = f_body     + b0 + b_rw + b_gm + n_white  -> clip(range) -> quantize
+    gyro  = omega_body + b0 + b_rw + b_gm + n_white  -> clip(full scale) -> quantize
+    accel = f_body     + b0 + b_rw + b_gm + n_white  -> clip(full scale) -> quantize
+
+(full scale = floor(range/lsb)*lsb, the top quantizer code inside the
+configured range, so a saturated reading never rounds outside it.)
 
 with the specific force f_body = q^-1 (a_world - g_world) — what a strapped
 accelerometer triad reads: +g up at rest, zero in free fall. Error-budget
@@ -46,6 +49,17 @@ from coopuavs.physics import rigid_body as rb
 
 _INIT_DRAWS = 12
 _TICK_DRAWS = 18
+_CHUNK_BUDGET_ELEMS = 4_718_592   # generate() transient cap (~36 MB float64)
+
+
+def _full_scale(range_: float, lsb: float) -> float:
+    """Largest representable reading: the top quantizer code inside the
+    configured range (floor(range/lsb) counts), so a saturated reading can
+    never round to a grid point outside full scale — a real ADC's max code
+    lies within full scale. lsb == 0 keeps the raw range."""
+    if lsb == 0.0 or not np.isfinite(range_):
+        return range_
+    return np.floor(range_ / lsb) * lsb
 
 
 def _require(cond: bool, msg: str) -> None:
@@ -142,6 +156,8 @@ class Imu:
         self._rw_accel = stoch.RandomWalk(params.accel_rw_sigma, self.dt, (n, 3))
         self._wn_gyro = params.gyro_noise_density / np.sqrt(self.dt)
         self._wn_accel = params.accel_noise_density / np.sqrt(self.dt)
+        self._fs_gyro = _full_scale(params.gyro_range, params.gyro_lsb)
+        self._fs_accel = _full_scale(params.accel_range, params.accel_lsb)
         self._g_world = np.array([0.0, 0.0, -GRAVITY])
         self._eps = np.empty((n, _TICK_DRAWS))
         self._fifo = np.empty((params.fifo_depth, n, 6))
@@ -164,7 +180,7 @@ class Imu:
         gyro += self._rw_gyro.step(eps[:, 6:9])
         gyro += self._gm_gyro.step(eps[:, 12:15])
         gyro += eps[:, 0:3] * self._wn_gyro
-        np.clip(gyro, -p.gyro_range, p.gyro_range, out=gyro)
+        np.clip(gyro, -self._fs_gyro, self._fs_gyro, out=gyro)
         gyro = stoch.quantize(gyro, p.gyro_lsb)
 
         f_body = rb.quat_rotate_inv(quat, accel_world - self._g_world)
@@ -172,7 +188,7 @@ class Imu:
         accel += self._rw_accel.step(eps[:, 9:12])
         accel += self._gm_accel.step(eps[:, 15:18])
         accel += eps[:, 3:6] * self._wn_accel
-        np.clip(accel, -p.accel_range, p.accel_range, out=accel)
+        np.clip(accel, -self._fs_accel, self._fs_accel, out=accel)
         accel = stoch.quantize(accel, p.accel_lsb)
 
         self._fifo_push(gyro, accel)
@@ -184,7 +200,7 @@ class Imu:
         truth-dependent). Bit-exact with the sample() loop and advances the
         same state/streams — analysis use (Allan suite), not a fast path."""
         out = np.empty((steps, self.n, 6))
-        chunk = max(1, 4_718_592 // (self.n * _TICK_DRAWS))
+        chunk = max(1, _CHUNK_BUDGET_ELEMS // (self.n * _TICK_DRAWS))
         done = 0
         while done < steps:
             c = min(chunk, steps - done)

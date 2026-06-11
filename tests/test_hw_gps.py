@@ -49,7 +49,8 @@ def test_fix_arrives_exactly_96_ticks_after_each_sample_at_800_hz():
     gps = Gps(_params(), 2, np.random.default_rng(1), clock_hz)
     arrivals = _run(gps, clock_hz, 2000, 2)
     ticks = [k for k, _ in arrivals]
-    assert ticks == [96 + 80 * i for i in range(len(ticks))]   # sample lattice + latency
+    assert len(ticks) == 24                # fails closed: fixes MUST arrive
+    assert ticks == [96 + 80 * i for i in range(24)]   # sample lattice + latency
     for k, fix in arrivals:
         assert fix.stamp_ticks == k - 96                       # measured 120 ms ago, exact
         assert fix.stamp_s == fix.stamp_ticks / clock_hz
@@ -70,7 +71,9 @@ def test_quiet_gps_delivers_truth_of_120_ms_ago():
     clock_hz = 800
     n = 3
     gps = Gps(_params(), n, np.random.default_rng(3), clock_hz)
-    for k, fix in _run(gps, clock_hz, 4000, n):
+    arrivals = _run(gps, clock_hz, 4000, n)
+    assert len(arrivals) == 49             # fails closed: fixes MUST arrive
+    for k, fix in arrivals:
         pos_then, vel_then = _truth(fix.stamp_ticks / clock_hz, n)
         np.testing.assert_allclose(fix.pos, pos_then, atol=1e-12)
         np.testing.assert_array_equal(fix.vel, vel_then)

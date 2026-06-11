@@ -1,11 +1,14 @@
 """P2 perf gate: full per-vehicle sensor stack CPU budget.
 
-Gate (plan P2): the 20-vehicle device stack — IMU 400 Hz (+ 50 Hz FIFO
+Gate (plan P2): the 20-vehicle device stack — IMU 400 Hz (+ 25 Hz FIFO
 drain), GPS clocked at 800 Hz (10 Hz fixes, 120 ms latency), baro 50 Hz,
 mag 50 Hz, ESC telemetry 10 Hz, seeker gimbal servo/FOV 10 Hz — within
 0.1 s CPU per simulated second. The 30-vehicle design-envelope run is
 gated at the budget-table sensors figure (0.15 s/sim-s at N=30, plan
-"Performance budget"). Run with `pytest -m perf`.
+"Performance budget"). Each measured rep spans 4 sim-s so the reading
+resolves well above the Windows process_time quantum (15.625 ms — a
+1 sim-s rep here reads as exactly one quantum, gate-review finding).
+Run with `pytest -m perf`.
 """
 
 from __future__ import annotations
@@ -59,7 +62,7 @@ def _tick_range(devs, n, truth, start: int, ticks: int) -> None:
             devs["gimbal"].in_fov(los)
 
 
-def _cpu_per_sim_s(n: int, sim_seconds: float = 1.0) -> float:
+def _cpu_per_sim_s(n: int, sim_seconds: float = 4.0) -> float:
     devs = _build(n)
     rng = np.random.default_rng(11)
     quat = np.zeros((n, 4))

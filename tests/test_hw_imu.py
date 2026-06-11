@@ -103,6 +103,23 @@ def test_saturation_clips_to_range_before_quantization():
     assert accel[0, 2] == 20.0
 
 
+def test_saturated_reading_never_exceeds_range_when_lsb_does_not_divide_it():
+    # Shipped-yaml shape: 34.9 / 1.06e-3 = 32924.53 counts — a plain
+    # clip-then-round would emit 32925 lsb = 34.9005 > range (gate-review
+    # finding). Full scale must be the top code INSIDE the range.
+    rg, lsb = 34.9, 1.06e-3
+    imu = Imu(_params(gyro_range=rg, gyro_lsb=lsb), 1,
+              np.random.default_rng(13))
+    quat, _, a = _hover_truth(1)
+    gyro, _ = imu.sample(quat, np.array([[99.0, -99.0, 0.0]]), a)
+    fs = np.floor(rg / lsb) * lsb
+    np.testing.assert_array_equal(gyro[0, :2], [fs, -fs])
+    assert np.abs(gyro).max() <= rg
+    # also proves the order is clip-then-quantize: quantize-before-clip
+    # would emit exactly +-34.9 (a non-grid value)
+    assert gyro[0, 0] != rg
+
+
 # -------------------------------------------------------------- stochastic
 
 def test_turn_on_bias_repeats_per_seed_and_differs_across_seeds_and_vehicles():
@@ -168,7 +185,13 @@ def test_bias_random_walk_variance_grows():
 
 # ------------------------------------------------ vectorized == per-tick
 
-def test_generate_is_bitexact_with_sample_loop():
+def test_generate_is_bitexact_with_sample_loop(monkeypatch):
+    # Force tiny internal chunks (chunk = 100 steps for n=3) so the pin
+    # actually crosses generate()'s internal chunk boundaries — at the
+    # default budget a 1500-step run is single-chunk and the boundary
+    # path would go untested (gate-review finding).
+    from coopuavs.hw import imu as imu_mod
+    monkeypatch.setattr(imu_mod, "_CHUNK_BUDGET_ELEMS", 3 * 18 * 100)
     n, steps = 3, 1500
     imu_a = Imu(_noisy(), n, np.random.default_rng(10))
     imu_b = Imu(_noisy(), n, np.random.default_rng(10))
