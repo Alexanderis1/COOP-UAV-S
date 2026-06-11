@@ -26,6 +26,10 @@ battery:                         # 6S 2.0 Ah
   r0: 0.030                      # ohm
   r1: 0.015                      # ohm
   c1: 1000.0                     # F (tau1 = 15 s)
+powertrain:                      # Powertrain implicit bus solve (own block:
+  i_bus_max_a: 125.0             #   battery: is splatted into BatteryEcm).
+                                 # A; ESC/BMS bus limit ~1.5x the 83 A
+                                 # self-consistent steady full-throttle draw
 drag:
   linear_diag: [0.08, 0.08, 0.02]   # N/(m/s), body FLU
   cda_iso: 0.0030                   # m^2

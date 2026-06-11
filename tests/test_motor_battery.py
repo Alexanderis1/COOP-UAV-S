@@ -9,14 +9,24 @@ batch==scalar.
 Battery: V_t = OCV(SOC) - I R0 - V1, V1' = -V1/(R1 C1) + I/C1 with the exact
 zero-order-hold discrete update. Pins: instant sag = I*R0, recovery follows
 exp(-t/tau1), coulomb integral exact, OCV monotone in SOC.
+
+Powertrain: closed-form implicit solve of the motor-battery algebraic bus
+loop (one-step-lag composition has loop gain R0 sum(theta^2)/R_w > 1 above
+~hover throttle and diverges at any dt). Pins: explicit composition diverges
+while Powertrain stays bounded, fixed point satisfies both component
+equations, inrush clamped at i_bus_max_a, bus voltage held to 3.0-4.2 V/cell,
+10 s closed loop finite with SOC monotone, batch==scalar, YAML limit values.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from coopuavs.physics.battery import BatteryEcm
 from coopuavs.physics.motor import MotorEsc
+from coopuavs.physics.params import load_airframe
+from coopuavs.physics.powertrain import V_CELL_MAX, V_CELL_MIN, Powertrain
 
 # Interceptor-class motor (invented-but-self-consistent, pinned here and in P1-4):
 # 320 KV, 12S, ~14" prop. Ke = 60/(2 pi 320) ~ 0.0298 V s/rad.
@@ -172,3 +182,215 @@ def test_soc_clamped_at_zero():
         batt.step(1.0, np.array([50.0]))
     assert batt.soc[0] == 0.0
     assert np.isfinite(batt.step(0.05, np.array([50.0]))[0])
+
+
+def test_soc_charge_side_clamped_at_full():
+    """Regen (negative current) into a full pack must not push SOC above 1.
+
+    Mutation pin: the upper bound of the SOC clip (battery.py) was previously
+    exercised by no test because no test applied charge current.
+    """
+    batt = make_batt(soc0=1.0)
+    v = batt.step(0.05, np.array([-30.0]))
+    for _ in range(200):
+        v = batt.step(0.05, np.array([-30.0]))
+    assert batt.soc[0] == 1.0
+    assert v[0] > batt.ocv(np.array([1.0]))[0]   # charging raises terminal V
+
+
+def test_throttle_clipped_to_unit_interval():
+    """Mutation pin: np.clip(throttle, 0, 1) at both motor.step() sites.
+
+    throttle > 1 must behave exactly like 1.0 (ESC duty saturates) and
+    throttle < 0 exactly like 0.0; previously no test left [0, 1].
+    """
+    over, one = make_motor(), make_motor()
+    v_bus = np.array([V_BUS])
+    for _ in range(300):
+        w_over, i_over = over.step(1e-4, np.full((1, 4), 1.2), v_bus)
+        w_one, i_one = one.step(1e-4, np.ones((1, 4)), v_bus)
+    np.testing.assert_array_equal(w_over, w_one)
+    np.testing.assert_array_equal(i_over, i_one)
+
+    neg, zero = make_motor(), make_motor()
+    settle(neg, np.full((1, 4), 0.7), v_bus)
+    settle(zero, np.full((1, 4), 0.7), v_bus)
+    for _ in range(300):
+        w_neg, i_neg = neg.step(1e-4, np.full((1, 4), -0.3), v_bus)
+        w_zero, i_zero = zero.step(1e-4, np.zeros((1, 4)), v_bus)
+    np.testing.assert_array_equal(w_neg, w_zero)
+    np.testing.assert_array_equal(i_neg, i_zero)
+
+
+# ------------------------------------------------------------------- powertrain
+#
+# Quasi-static armature + instantaneous R0 feedthrough form an algebraic loop
+# with gain R0 sum(theta^2)/R_w = 3.6 theta^2 for this motor/pack set: any
+# one-step-lag composition of MotorEsc and BatteryEcm diverges above
+# theta ~ 0.53 at ANY dt. Powertrain solves the loop in closed form and
+# enforces the bus current limit and the 3.0/4.2 V-per-cell bounds.
+
+I_BUS_MAX = 350.0    # A, pinned == params/interceptor_quad.yaml powertrain block
+
+
+def make_powertrain(n=1, soc0=1.0):
+    return Powertrain(make_motor(n), make_batt(n, soc0=soc0),
+                      i_bus_max_a=I_BUS_MAX)
+
+
+def powertrain_from_yaml(name, n=1):
+    cfg = load_airframe(name)
+    motor_kwargs = dict(cfg["motor"])
+    motor_kwargs["k_q"] = float(cfg["rotors"]["km"])
+    motor = MotorEsc(n, int(cfg["rotors"]["count"]), **motor_kwargs)
+    batt = BatteryEcm(n, **cfg["battery"])
+    return Powertrain(motor, batt, **cfg["powertrain"])
+
+
+def test_explicit_lagged_composition_diverges_powertrain_does_not():
+    """The naive wiring the module docstrings describe is algebraically
+    unstable: at theta = 0.6 the loop gain is 1.296 > 1, so v_bus/i_bus
+    oscillate with geometric growth regardless of dt. Documents WHY the
+    implicit solve exists; the same condition through Powertrain is bounded.
+    """
+    throttle = np.full((1, 4), 0.6)
+    motor, batt = make_motor(), make_batt(soc0=1.0)
+    v_bus = np.array([V_BUS])
+    diverged = False
+    for _ in range(2000):                          # 0.2 s at dt = 1e-4
+        _, i_bus = motor.step(1e-4, throttle, v_bus)
+        v_bus = batt.step(1e-4, i_bus)
+        if not np.all(np.isfinite(v_bus)) or abs(v_bus[0]) > 1e3:
+            diverged = True
+            break
+    assert diverged, "explicit one-step-lag composition unexpectedly stable"
+
+    pt = make_powertrain()
+    for _ in range(2000):
+        omega, v, i = pt.step(1e-4, throttle)
+    assert np.all(np.isfinite(omega))
+    assert pt.v_bus_min <= v[0] <= pt.v_bus_max
+    assert 40.0 <= v[0] <= 50.4                    # mild sag, not rail-pinned
+    assert 0.0 < i[0] < I_BUS_MAX
+
+
+def test_bus_fixed_point_satisfies_both_component_equations():
+    """solve_bus() output satisfies the armature/chopper equation AND the
+    battery terminal equation simultaneously (rtol 1e-12): the loop is solved
+    implicitly, not iterated.
+    """
+    pt = make_powertrain()
+    theta = np.full((1, 4), 0.6)
+    for _ in range(5000):                          # settle 0.5 s (tau ~ 30 ms)
+        pt.step(1e-4, theta)
+    v, i = pt.solve_bus(theta)
+    s = np.sum(theta * theta, axis=1)
+    bemf = KE * np.sum(theta * pt.motor.omega, axis=1)
+    np.testing.assert_allclose(i, (s * v - bemf) / R_W, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(
+        v, pt.battery.ocv(pt.battery.soc) - i * 0.036 - pt.battery.v1,
+        rtol=1e-12, atol=0)
+    # unclamped step applies exactly the solved pair
+    _, v_step, i_step = pt.step(1e-4, theta)
+    np.testing.assert_allclose(v_step, v, rtol=1e-12)
+    np.testing.assert_allclose(i_step, i, rtol=1e-12)
+
+
+def test_closed_loop_10s_bounded_and_soc_monotone():
+    """10 s closed loop at dt = 1e-4 for theta in {0.3, 0.6, 1.0} (batched):
+    no NaN/inf ever, v_bus inside the cell-voltage bounds every step, SOC
+    monotone non-increasing, pack draw monotone in throttle.
+    """
+    theta = np.array([[0.3] * 4, [0.6] * 4, [1.0] * 4])
+    pt = make_powertrain(n=3)
+    v_lo = np.full(3, np.inf)
+    v_hi = np.full(3, -np.inf)
+    soc_hist = [pt.battery.soc.copy()]
+    for k in range(100_000):                       # 10 s
+        omega, v_bus, i_bus = pt.step(1e-4, theta)
+        v_lo = np.minimum(v_lo, v_bus)
+        v_hi = np.maximum(v_hi, v_bus)
+        if k % 2000 == 1999:
+            assert np.all(np.isfinite(omega))
+            assert np.all(np.isfinite(v_bus)) and np.all(np.isfinite(i_bus))
+            soc_hist.append(pt.battery.soc.copy())
+    assert np.all(v_lo >= V_CELL_MIN * 12) and np.all(v_hi <= V_CELL_MAX * 12)
+    soc = np.array(soc_hist)
+    assert np.all(np.diff(soc, axis=0) <= 0.0)     # monotone non-increasing
+    assert np.all(soc[-1] < soc[0])                # actually discharging
+    assert 0.0 < i_bus[0] < i_bus[1] < i_bus[2] < I_BUS_MAX
+    assert 150.0 < i_bus[2]                        # near the steady ~230 A draw
+
+
+def test_inrush_clamped_at_spinup_from_rest():
+    """Full-throttle spin-up from rest: the unconstrained algebraic solution
+    is ~1090 A (would be 4440 A on a rigid bus); the bus limit clamps it and
+    v_bus = OCV - V1 - R0 * i_clamped.
+    """
+    pt = make_powertrain()
+    _, i_star = pt.solve_bus(np.ones((1, 4)))
+    assert i_star[0] > 1000.0                      # unconstrained inrush
+    ocv0 = pt.battery.ocv(pt.battery.soc)[0]       # V1 = 0 at rest
+    _, v_bus, i_bus = pt.step(1e-4, np.ones((1, 4)))
+    assert i_bus[0] == I_BUS_MAX
+    assert abs(v_bus[0] - (ocv0 - 0.036 * I_BUS_MAX)) < 1e-9
+    assert v_bus[0] >= pt.v_bus_min
+
+
+def test_bus_voltage_floor_and_ceiling():
+    # Floor: near-empty pack under clamped full-throttle load would sag to
+    # ~29 V; the powertrain holds the bus at the 3.0 V/cell cutoff.
+    pt = make_powertrain(soc0=0.05)
+    _, v_bus, i_bus = pt.step(1e-4, np.ones((1, 4)))
+    assert i_bus[0] == I_BUS_MAX
+    assert v_bus[0] == V_CELL_MIN * 12
+
+    # Ceiling: throttle chop at speed regenerates into a near-full pack; the
+    # raw terminal voltage exceeds 4.2 V/cell and is clamped.
+    pt = make_powertrain(soc0=1.0)
+    for _ in range(10_000):                        # settle at full throttle
+        pt.step(1e-4, np.ones((1, 4)))
+    _, v_bus, i_bus = pt.step(1e-4, np.full((1, 4), 0.05))
+    assert i_bus[0] < -50.0                        # regen into the pack
+    assert v_bus[0] == V_CELL_MAX * 12
+    assert pt.battery.soc[0] <= 1.0
+
+
+def test_powertrain_batch_equals_scalar():
+    rng = np.random.default_rng(7)
+    theta = rng.uniform(0.2, 1.0, size=(3, 4))
+    pt = make_powertrain(n=3)
+    for _ in range(500):
+        _, v, i = pt.step(1e-4, theta)
+    for k in range(3):
+        single = make_powertrain()
+        for _ in range(500):
+            _, v1, i1 = single.step(1e-4, theta[k:k + 1])
+        np.testing.assert_allclose(pt.motor.omega[k], single.motor.omega[0],
+                                   rtol=0, atol=1e-12)
+        np.testing.assert_allclose(v[k], v1[0], rtol=0, atol=1e-12)
+        np.testing.assert_allclose(i[k], i1[0], rtol=0, atol=1e-12)
+        np.testing.assert_allclose(pt.battery.soc[k], single.battery.soc[0],
+                                   rtol=0, atol=1e-15)
+
+
+def test_powertrain_yaml_limits_pinned_and_sized():
+    """i_bus_max_a in both airframe YAMLs is pinned and sized ~1.5x the
+    self-consistent steady full-throttle pack draw (steady draw lands around
+    2/3 of the limit for both airframes).
+    """
+    for name, limit, n_series in (("interceptor_quad", 350.0, 12),
+                                  ("fpv_quad", 125.0, 6)):
+        pt = powertrain_from_yaml(name)
+        assert pt.i_bus_max_a == limit
+        assert pt.v_bus_min == V_CELL_MIN * n_series
+        assert pt.v_bus_max == V_CELL_MAX * n_series
+        for _ in range(10_000):                    # 1 s >> motor tau
+            _, v_bus, i_bus = pt.step(1e-4, np.ones((1, 4)))
+        assert 0.55 * limit < i_bus[0] < 0.80 * limit
+        assert pt.v_bus_min <= v_bus[0] <= pt.v_bus_max
+
+
+def test_powertrain_rejects_mismatched_batch_size():
+    with pytest.raises(ValueError):
+        Powertrain(make_motor(2), make_batt(1), i_bus_max_a=I_BUS_MAX)

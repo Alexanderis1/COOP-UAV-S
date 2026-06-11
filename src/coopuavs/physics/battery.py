@@ -19,6 +19,15 @@ and the coulomb integral carries no integration error by construction.
 OCV(SOC) is a per-cell LiPo open-circuit-voltage table (typical discharge
 curve, interpolated linearly and clamped at the ends) scaled by the series
 cell count. SOC is clamped to [0, 1].
+
+The model is pure and unbounded by design: the returned terminal voltage is
+NOT clamped to a physical envelope (V_t < 0 under extreme discharge, or
+above 4.2 V/cell under forced charge, if the prescribed current demands it)
+and R0 is an instantaneous feedthrough, which makes a one-step-lag coupling
+with the quasi-static motor model algebraically unstable. Envelope
+enforcement — the bus current limit and the 3.0/4.2 V-per-cell bounds — and
+the closed-form implicit solve of the motor-battery loop live in
+physics/powertrain.py.
 """
 
 from __future__ import annotations

@@ -16,11 +16,22 @@ tracks a sagging bus voltage (battery coupling).
 
 Bus current drawn through the chopper: i_bus = sum_rotors(throttle * i).
 Transient negative current (active braking) is passed through unclipped and
-simply recharges the ECM battery; rotor speed itself is clamped at zero
-(props cannot windmill backwards through the ESC).
+recharges the ECM battery; rotor speed itself is clamped at zero (props
+cannot windmill backwards through the ESC).
+
+WARNING — algebraic bus loop, no current limit at this level: the
+quasi-static armature makes i_bus an instantaneous function of v_bus
+(d i_bus / d v_bus = sum(theta^2) / R_w), and the ECM battery feeds terminal
+voltage back instantaneously through R0, so wiring step()'s i_bus into
+battery.step() and the returned voltage back into v_bus one step late is a
+fixed-point iteration with loop gain R0 sum(theta^2) / R_w — greater than 1
+above ~hover throttle for the shipped params — that diverges at ANY dt.
+Stall/inrush current is likewise unbounded here (V_m / R_w from rest).
+Couple the two models through physics/powertrain.py, which solves the loop
+in closed form and enforces the bus current limit and cell-voltage bounds.
 
 Integration: midpoint RK2 per micro-step (dt << tau, latched before the
-plant RK4 step per the micro-tick contract in docs/ORDERING.md).
+plant RK4 step per the micro-tick contract in docs/ORDERING.md section 6).
 """
 
 from __future__ import annotations

@@ -19,7 +19,14 @@ rotors:
     - [-0.318, -0.318, 0.0]      # back-right
   spin: [1, 1, -1, -1]           # +1 = CCW viewed from above (+z up)
 motor:                           # P1-3 MotorEsc (k_q is injected = rotors.km)
-  kv_rpm_per_v: 320.0
+  kv_rpm_per_v: 320.0            # KNOWN LIMITATION (kept as-is): with r_w/km/12S
+                                 # this implies a full-throttle ceiling ~1400 rad/s
+                                 # = 13.4 krpm -> tip Mach ~0.73 on the 14" prop
+                                 # (stiff 44.4 V bus; ~M 0.59-0.69 with pack sag),
+                                 # ~1.7x class prop rpm ratings; constant kf/km
+                                 # degrades at the 80 m/s dash (helical tip M ~0.8).
+                                 # Hover (M ~0.38) fine. See RESEARCH.md "Known
+                                 # model-validity limitations".
   r_w: 0.040                     # ohm
   j_r: 4.5e-4                    # kg m^2 rotor+prop
 battery:                         # P1-3 BatteryEcm, 12S 16 Ah pack
@@ -28,6 +35,10 @@ battery:                         # P1-3 BatteryEcm, 12S 16 Ah pack
   r0: 0.036                      # ohm
   r1: 0.018                      # ohm
   c1: 833.33                     # F  (tau1 = R1 C1 ~ 15 s)
+powertrain:                      # Powertrain implicit bus solve (own block:
+  i_bus_max_a: 350.0             #   battery: is splatted into BatteryEcm).
+                                 # A; ESC/BMS bus limit ~1.5x the 234 A
+                                 # self-consistent steady full-throttle draw
 drag:
   linear_diag: [0.55, 0.55, 0.10]  # Faessler rotor drag D, N/(m/s), body FLU
   cda_iso: 0.0542                  # m^2, isotropic parasitic 0.5 rho CdA |v| v
