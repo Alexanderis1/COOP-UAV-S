@@ -63,3 +63,26 @@ def test_weather_stream_reproducible_for_seed():
 
     assert gusts(5) == gusts(5)
     assert gusts(5) != gusts(6)
+
+
+# -- comms ---------------------------------------------------------------------
+
+def test_lossy_comms_does_not_consume_the_shared_stream():
+    cfg = {
+        "name": "lossy-comms",
+        "seed": 21,
+        "environment": dict(MINIMAL_ENV),
+        "comms": {"base_loss": 0.5, "latency_s": 0.02},
+        "interceptors": [
+            {"id": "u1", "home": [0.0, 0.0, 0.0], "effector": "projectile"},
+        ],
+        "seekers": False,  # keep the world free of other RNG consumers
+        "threats": [],
+    }
+    sc = scenario_mod.build(cfg)
+    for _ in range(50):
+        sc.world.step()
+    # the lossy link really rolled: delivery stats accumulated some failures
+    stats = sc.world.comms._stats["u1"]
+    assert any(not ok for _, ok in stats)
+    assert _shared_stream_state(sc.world) == _fresh_state(21)
