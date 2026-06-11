@@ -18,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.messages import Detection, ThreatClass
+from ..hw.seeker_gimbal import SeekerGimbal
 from ..interceptors.uav import InterceptorUav
 from ..threats.enemy_drone import EnemyDrone
 from .base import Sensor
@@ -67,3 +68,57 @@ class OnboardSeeker(Sensor):
             cov=np.eye(3) * self.sigma**2,
             class_likelihoods=likelihoods,
         )
+
+
+class GimbaledSeeker(OnboardSeeker):
+    """OnboardSeeker behind a hw/seeker_gimbal FOV/slew constraint (P2-4):
+    closes the PHY-UAV-012 "no gimbal FOV constraint" deviation at device
+    level. The observation model is untouched — inside the cone the
+    detections are exactly OnboardSeeker's (pinned).
+
+    Interim auto-cue: each scan the gimbal slews toward the nearest alive
+    in-range threat (deterministic: distance then id tie-break); the MC
+    takes over cueing in P4. Legacy point-mass bodies carry no attitude, so
+    the gimbal works in world axes (identity attitude) until the SITL
+    plants land (P4). The servo advances one scan period (1/rate_hz) per
+    update — the node scheduler fires updates at exactly that rate.
+    """
+
+    def __init__(self, name, world, uav: InterceptorUav,
+                 gimbal: SeekerGimbal, **kwargs):
+        super().__init__(name, world, uav, **kwargs)
+        if gimbal.n != 1:
+            raise ValueError(
+                f"GimbaledSeeker rides one airframe; gimbal has n={gimbal.n}")
+        self.gimbal = gimbal
+
+    def update(self, t: float, dt: float) -> None:
+        self.position = self.uav.body.position
+        cue = self._cue_target()
+        if cue is not None:
+            los = cue.position - self.position
+            if float(np.linalg.norm(los)) > 0.0:
+                self.gimbal.point_at(los[None, :])
+        self.gimbal.step(1.0 / self.rate_hz)
+        super().update(t, dt)
+
+    def _cue_target(self) -> EnemyDrone | None:
+        max_range = self.effective_range()
+        best, best_key = None, None
+        for eid, enemy in self.world.enemies.items():
+            if not enemy.alive:
+                continue
+            dist = float(np.linalg.norm(enemy.position - self.position))
+            if dist > max_range:
+                continue
+            key = (dist, eid)
+            if best_key is None or key < best_key:
+                best, best_key = enemy, key
+        return best
+
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
+        los = enemy.position - self.position
+        if not self.gimbal.in_fov(los[None, :])[0]:
+            return None
+        return super().observe(enemy, t, trans)

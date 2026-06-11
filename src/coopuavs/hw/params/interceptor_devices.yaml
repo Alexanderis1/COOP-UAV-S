@@ -50,3 +50,10 @@ mag:                            # IST8310-class 3-axis magnetometer
   gm_tau_s: 300.0               # s
   hard_iron_sigma_ut: 2.0       # uT per-power-up calibration residual
   lsb_ut: 0.3                   # uT conversion resolution
+seeker_gimbal:                  # 2-axis EO/IR terminal-seeker gimbal
+  fov_half_deg: 17.5            # deg, combined EO/IR detection cone
+  slew_max_dps: 200.0           # deg/s per axis
+  tau_s: 0.05                   # s, servo first-order time constant
+  az_max_deg: 170.0             # deg, symmetric azimuth travel
+  el_min_deg: -90.0             # deg (straight down)
+  el_max_deg: 30.0              # deg above the nose
