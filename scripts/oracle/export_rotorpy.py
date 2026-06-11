@@ -107,7 +107,6 @@ def run_flight(quad_params: dict, cmd_fn, tilt_y: float) -> np.ndarray:
     vehicle = Multirotor(
         quad_params, aero=False, enable_ground=False,
         integrator_kwargs={"method": "DOP853", "rtol": 1e-10, "atol": 1e-12})
-    w_h = float(cmd_fn(T_END)[0])  # all flights end at hover collective
     # our wxyz tilt about +y -> rotorpy xyzw
     q0_wxyz = np.array([np.cos(tilt_y / 2.0), 0.0, np.sin(tilt_y / 2.0), 0.0])
     state = {
@@ -116,7 +115,9 @@ def run_flight(quad_params: dict, cmd_fn, tilt_y: float) -> np.ndarray:
         "q": np.roll(q0_wxyz, -1),
         "w": np.zeros(3),
         "wind": np.zeros(3),
-        "rotor_speeds": np.full(4, w_h),
+        # start every flight at its t=0 commanded steady state (gate review:
+        # inferring hover from cmd_fn(T_END)[0] was wrong for yaw_spin)
+        "rotor_speeds": np.asarray(cmd_fn(0.0), dtype=float).copy(),
     }
     steps = round(T_END / DT_CTRL)
     rows = np.empty((steps + 1, 22))
