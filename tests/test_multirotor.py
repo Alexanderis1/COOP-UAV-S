@@ -1,0 +1,215 @@
+"""P1-4: batched multirotor plant + interceptor_quad airframe params.
+
+Pins: hover trim sum(kf w^2) = mg within 0.1%; Cheeseman-Bennett ground
+effect exactly 1/(1-(R/4z)^2) at z/R in {0.6, 1, 2}; terminal dash speed
+80 +- 5 m/s at 65 deg tilt (this test pins the invented airframe drag
+numbers); Faessler drag signs (opposes airspeed, zero at rest, dissipative);
+rotor torque allocation signs for quad-X FLU; batch==scalar; params load
+from the packaged YAML with motor-consistent thrust/weight ~ 3.6.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from scipy.optimize import fsolve
+
+from coopuavs.physics import GRAVITY, atmosphere as atm
+from coopuavs.physics import rigid_body as rb
+from coopuavs.physics.motor import MotorEsc
+from coopuavs.physics.battery import BatteryEcm
+from coopuavs.physics.multirotor import MultirotorParams, MultirotorPlant
+from coopuavs.physics.params import load_airframe
+
+
+def make_plant(n=1):
+    params = MultirotorParams.from_dict(load_airframe("interceptor_quad"))
+    return params, MultirotorPlant(params, n)
+
+
+def hover_state(n=1, z=100.0):
+    state = np.zeros((n, rb.STATE_DIM))
+    state[:, 2] = z
+    state[:, rb.QUAT] = [1.0, 0.0, 0.0, 0.0]
+    return state
+
+
+def hover_omega(params):
+    return np.sqrt(params.mass * GRAVITY / (params.n_rotors * params.kf))
+
+
+def motor_omega_max(params, v_bus):
+    """Full-throttle steady state: Kt (V - Ke w)/R_w = km w^2."""
+    ke = 60.0 / (2.0 * np.pi * params.motor["kv_rpm_per_v"])
+    a = params.km * params.motor["r_w"] / ke
+    return (-ke + np.sqrt(ke * ke + 4.0 * a * v_bus)) / (2.0 * a)
+
+
+# ------------------------------------------------------------------ hover trim
+
+
+def test_hover_trim_within_0p1_percent():
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    rotor = np.full((1, params.n_rotors), w_h)
+    force, torque = plant.wrench(hover_state(), rotor, np.zeros((1, 3)), 1.225)
+    assert np.abs(force).max() < 1e-3 * params.mass * GRAVITY
+    assert np.abs(torque).max() < 1e-9
+
+
+def test_hover_omega_headroom():
+    params, _ = make_plant()
+    ratio = hover_omega(params) / motor_omega_max(params, 44.4)
+    assert 0.4 < ratio < 0.7, ratio
+
+
+def test_thrust_to_weight_about_3p6():
+    params, _ = make_plant()
+    w_max = motor_omega_max(params, 44.4)
+    t_w = params.n_rotors * params.kf * w_max**2 / (params.mass * GRAVITY)
+    assert 3.3 < t_w < 3.9, t_w
+
+
+# --------------------------------------------------------------- ground effect
+
+
+def test_cheeseman_bennett_ground_effect_curve():
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    rotor = np.full((1, params.n_rotors), w_h)
+    oge_force, _ = plant.wrench(hover_state(z=1000.0), rotor, np.zeros((1, 3)), 1.225)
+    thrust_oge = oge_force[0, 2] + params.mass * GRAVITY
+    for z_over_r in (0.6, 1.0, 2.0):
+        z = z_over_r * params.rotor_radius
+        force, _ = plant.wrench(hover_state(z=z), rotor, np.zeros((1, 3)), 1.225)
+        thrust = force[0, 2] + params.mass * GRAVITY
+        expected = 1.0 / (1.0 - (1.0 / (4.0 * z_over_r)) ** 2)
+        np.testing.assert_allclose(thrust / thrust_oge, expected, rtol=1e-6)
+
+
+def test_ground_effect_gain_clamped_near_ground():
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    rotor = np.full((1, params.n_rotors), w_h)
+    force, _ = plant.wrench(hover_state(z=0.01), rotor, np.zeros((1, 3)), 1.225)
+    thrust = force[0, 2] + params.mass * GRAVITY
+    assert thrust <= params.ground_effect_max_gain * params.mass * GRAVITY * 1.001
+    assert np.isfinite(force).all()
+
+
+# ------------------------------------------------------------ terminal speed pin
+
+
+def test_terminal_speed_80ms_at_65deg_tilt():
+    """Force equilibrium at fixed 65 deg tilt pins the airframe drag numbers."""
+    params, plant = make_plant()
+    tilt = np.deg2rad(65.0)
+    q = rb.quat_from_axis_angle(np.array([[0.0, 1.0, 0.0]]), np.array([tilt]))
+    rho = float(atm.density(200.0))
+
+    def residual(x):
+        w_rot, v = x
+        state = hover_state(z=200.0)
+        state[0, rb.QUAT] = q[0]
+        state[0, 3] = v
+        rotor = np.full((1, params.n_rotors), w_rot)
+        force, _ = plant.wrench(state, rotor, np.zeros((1, 3)), rho)
+        return [force[0, 0], force[0, 2]]
+
+    (w_sol, v_sol), info, ier, _ = fsolve(residual, x0=[1200.0, 75.0], full_output=True)
+    assert ier == 1
+    assert 75.0 <= v_sol <= 85.0, f"terminal speed {v_sol:.1f} m/s"
+    # feasible within the motor envelope at nominal bus voltage
+    assert 0.0 < w_sol < motor_omega_max(params, 44.4)
+
+
+# ----------------------------------------------------------------- drag model
+
+
+def test_faessler_drag_signs_and_dissipation():
+    params, plant = make_plant()
+    no_rotor = np.zeros((1, params.n_rotors))
+    grav = np.array([0.0, 0.0, -params.mass * GRAVITY])
+
+    state = hover_state()
+    drag0, _ = plant.wrench(state, no_rotor, np.zeros((1, 3)), 1.225)
+    np.testing.assert_allclose(drag0[0], grav, atol=1e-12)  # no airspeed -> no drag
+
+    for v_world in ([5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0], [-3.0, 4.0, -2.0]):
+        state = hover_state()
+        state[0, rb.VEL] = v_world
+        force, _ = plant.wrench(state, no_rotor, np.zeros((1, 3)), 1.225)
+        drag = force[0] - grav
+        assert drag @ np.asarray(v_world) < 0.0  # dissipative
+
+    # wind only: drag pushes the hovering vehicle downwind
+    state = hover_state()
+    force, _ = plant.wrench(state, no_rotor, np.array([[8.0, 0.0, 0.0]]), 1.225)
+    assert (force[0] - grav)[0] > 0.0
+
+
+def test_rotor_torque_allocation_signs():
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    pos, spin = params.rotor_positions, params.rotor_spin
+    state = hover_state()
+
+    def torque(boost_mask):
+        rotor = np.full((1, params.n_rotors), w_h)
+        rotor[0, boost_mask] *= 1.1
+        _, tau = plant.wrench(state, rotor, np.zeros((1, 3)), 1.225)
+        return tau[0]
+
+    tau = torque(pos[:, 1] < 0)        # boost right side (y<0 in FLU)
+    assert tau[0] < -1e-3              # right side up = negative roll about +x fwd
+    tau = torque(pos[:, 0] > 0)        # boost front rotors
+    assert tau[1] < -1e-3              # nose up = negative pitch about +y left
+    tau = torque(spin > 0)             # boost CCW rotors
+    assert tau[2] < -1e-6              # reaction spins body CW (negative yaw)
+
+
+# ------------------------------------------------------------------ batch + io
+
+
+def test_multirotor_batch_equals_scalar():
+    rng = np.random.default_rng(44)
+    n = 5
+    params, plant = make_plant(n)
+    state = rng.normal(size=(n, rb.STATE_DIM))
+    state[:, 2] += 50.0
+    state[:, rb.QUAT] = rb.quat_normalize(state[:, rb.QUAT])
+    rotor = rng.uniform(300.0, 1200.0, size=(n, params.n_rotors))
+    wind = rng.normal(scale=5.0, size=(n, 3))
+    f_b, t_b = plant.wrench(state, rotor, wind, 1.2)
+    for i in range(n):
+        _, single = make_plant(1)
+        f_s, t_s = single.wrench(state[i:i + 1], rotor[i:i + 1], wind[i:i + 1], 1.2)
+        np.testing.assert_allclose(f_b[i], f_s[0], rtol=0, atol=1e-12)
+        np.testing.assert_allclose(t_b[i], t_s[0], rtol=0, atol=1e-12)
+
+
+def test_step_integrates_with_rigid_body():
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    rotor = np.full((1, params.n_rotors), w_h)
+    state = hover_state()
+    for _ in range(800):  # 1 s at 800 Hz, perfect hover trim
+        state = plant.step(state, 1.0 / 800.0, rotor, np.zeros((1, 3)), 1.225)
+    # residual ground effect at z/R ~ 560 leaves ~2e-7 mg excess thrust
+    assert abs(state[0, 2] - 100.0) < 5e-6
+    assert np.abs(state[0, rb.VEL]).max() < 5e-6
+
+
+def test_params_yaml_loads_and_is_consistent():
+    cfg = load_airframe("interceptor_quad")
+    params = MultirotorParams.from_dict(cfg)
+    assert params.mass == 12.0
+    assert params.n_rotors == 4
+    assert params.rotor_positions.shape == (4, 3)
+    assert int(np.sum(params.rotor_spin)) == 0           # balanced CCW/CW
+    assert params.kf > 0 and params.km > 0
+    assert params.motor["k_q"] == params.km          # same prop loads motor and yaw
+    # motor/battery blocks wired for P1-3 models
+    motor = MotorEsc(1, params.n_rotors, **params.motor)
+    batt = BatteryEcm(1, **params.battery)
+    assert motor.omega.shape == (1, 4)
+    assert batt.ocv(np.array([1.0]))[0] > 49.0

@@ -9,3 +9,6 @@ Conventions (frozen, see docs/ORDERING.md for the macro/micro step contract):
 - Body frame: FLU (x forward, y left, z up).
 - Attitude: Hamilton unit quaternion, scalar-first [w, x, y, z], body -> world.
 """
+
+GRAVITY = 9.81  # m/s^2, matches the legacy sim (sim/physics.py); ISA G0 lives in atmosphere.py
+

@@ -29,6 +29,8 @@ where = ["src"]
 # The dashboard frontend ships inside the package: without this, wheel and
 # sdist installs lack viz/web and `coopuavs serve` has nothing to serve.
 "coopuavs.viz" = ["web/*"]
+# Airframe parameter files ship with the physics core (P1).
+"coopuavs.physics" = ["params/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
