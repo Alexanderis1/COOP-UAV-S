@@ -53,6 +53,10 @@ class World:
         # itself when the scenario builds one. None = synchronous bus.
         self.comms = None
 
+        # SITL micro-step scheduler (SIM-SIL-002); installed by the sitl
+        # build path. None = pure macro-step world, the v0.x behavior.
+        self.micro = None
+
         self.enemies: dict[str, EnemyDrone] = {}
         # Friendly truth registry (sim-side only): interceptor airframes by
         # id, used by wind displacement and reactive threat evasion.
@@ -132,6 +136,12 @@ class World:
                 self.log_event("debris_impact", debris_id=deb.debris_id,
                                zone=zone.name)
                 del self.debris[deb.debris_id]
+
+        if self.micro is not None:
+            # K micro-ticks inside this macro step (SIM-SIL-002): the fleet
+            # SITL engine hangs its rate groups here, so the sensors and C2
+            # below see this tick's flown state.
+            self.micro.run_macro_step(self.t, self.dt)
 
         for node in self.nodes:
             node.maybe_update(self.t, self.dt)

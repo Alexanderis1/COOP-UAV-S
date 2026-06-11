@@ -1,0 +1,126 @@
+{
+ "events": [
+  {
+   "enemy_id": "owa_strategic-1",
+   "kind": "enemy_spawn",
+   "t": 10.0,
+   "threat_class": "owa_strategic"
+  },
+  {
+   "enemy_id": "owa_strategic-1",
+   "kind": "acquired",
+   "latency": 3.0,
+   "t": 13.0,
+   "threat_class": "owa_strategic",
+   "track_id": 1
+  },
+  {
+   "enemy_id": "decoy-1",
+   "kind": "enemy_spawn",
+   "t": 16.0,
+   "threat_class": "decoy"
+  },
+  {
+   "enemy_id": "decoy-1",
+   "kind": "acquired",
+   "latency": 1.0,
+   "t": 17.0,
+   "threat_class": "decoy",
+   "track_id": 1
+  },
+  {
+   "enemy_id": "owa_strategic-2",
+   "kind": "enemy_spawn",
+   "t": 24.0,
+   "threat_class": "owa_strategic"
+  },
+  {
+   "enemy_id": "owa_strategic-2",
+   "kind": "acquired",
+   "latency": 4.6,
+   "t": 28.6,
+   "threat_class": "owa_strategic",
+   "track_id": 4
+  },
+  {
+   "enemy_id": "owa_strategic-3",
+   "kind": "enemy_spawn",
+   "t": 31.0,
+   "threat_class": "owa_strategic"
+  },
+  {
+   "enemy_id": "owa_strategic-3",
+   "kind": "acquired",
+   "latency": 3.2,
+   "t": 34.2,
+   "threat_class": "owa_strategic",
+   "track_id": 5
+  },
+  {
+   "enemy_id": "decoy-2",
+   "kind": "enemy_spawn",
+   "t": 38.05,
+   "threat_class": "decoy"
+  },
+  {
+   "enemy_id": "decoy-2",
+   "kind": "acquired",
+   "latency": 0.95,
+   "t": 39.0,
+   "threat_class": "decoy",
+   "track_id": 7
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 43.95,
+   "text": "auto-cleared (unattended) \u2014 hawk-6 requests projectile release on track 8: Pk 0.43, ROE authorized (geometry_safe), expected collateral 0.02; threat owa_strategic at 57 m/s, p_decoy 0.00",
+   "track_id": 8,
+   "uav_id": "hawk-6"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 47.65,
+   "text": "auto-cleared (unattended) \u2014 hawk-12 requests projectile release on track 8: Pk 0.44, ROE authorized (geometry_safe), expected collateral 0.02; threat owa_strategic at 59 m/s, p_decoy 0.00",
+   "track_id": 8,
+   "uav_id": "hawk-12"
+  },
+  {
+   "debris_zone": "SAFE",
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-1",
+   "kind": "kill",
+   "pk": 0.48,
+   "pos": [
+    -4056.5,
+    4243.0,
+    1499.9
+   ],
+   "t": 47.7,
+   "target_kind": "track",
+   "threat_class": "owa_strategic",
+   "uav_id": "hawk-12"
+  },
+  {
+   "debris_id": "deb-owa_strategic-1",
+   "enemy_id": "owa_strategic-1",
+   "kind": "debris_spawn",
+   "t": 47.7,
+   "t_impact": 35.63,
+   "zone": "SAFE"
+  }
+ ],
+ "summary": {
+  "armed_leakers": 0,
+  "debris_intercepted": 0,
+  "enemies_total": 5,
+  "events": 14,
+  "kills": 1,
+  "kills_decoy": 0,
+  "leakers": 0,
+  "strays_by_zone": {},
+  "t_end": 60.05,
+  "wrecks_by_zone": {}
+ }
+}

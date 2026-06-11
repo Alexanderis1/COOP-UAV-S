@@ -91,7 +91,34 @@ def load(path: str | Path, seed: int | None = None) -> Scenario:
     return build(cfg, seed=seed)
 
 
+# Fidelity modes (PLAN_PROBLEM1): pointmass is the v0.x behavior; the
+# alternatives are declared here so scenarios can name them, and refuse
+# loudly until their build paths land (fleet sitl: P4, threats sixdof: P6).
+_FIDELITY_ALLOWED = {"fleet": ("pointmass", "sitl"),
+                     "threats": ("pointmass", "sixdof")}
+
+
+def _parse_fidelity(raw) -> dict:
+    fid = dict(raw or {})
+    unknown = set(fid) - set(_FIDELITY_ALLOWED)
+    if unknown:
+        raise ValueError(f"unknown fidelity keys: {sorted(unknown)}")
+    out = {key: fid.get(key, "pointmass") for key in _FIDELITY_ALLOWED}
+    for key, allowed in _FIDELITY_ALLOWED.items():
+        if out[key] not in allowed:
+            raise ValueError(
+                f"fidelity.{key} must be one of {list(allowed)}, got {out[key]!r}")
+    if out["fleet"] == "sitl":
+        raise NotImplementedError(
+            "fidelity.fleet=sitl lands with the SITL engine (PLAN_PROBLEM1 P4)")
+    if out["threats"] == "sixdof":
+        raise NotImplementedError(
+            "fidelity.threats=sixdof lands with the 6DOF threat batch (PLAN_PROBLEM1 P6)")
+    return out
+
+
 def build(cfg: dict, seed: int | None = None) -> Scenario:
+    fidelity = _parse_fidelity(cfg.get("fidelity"))
     env = Environment.from_config(cfg["environment"])
     run_seed = cfg.get("seed", 0) if seed is None else seed
     world = World(env, dt=cfg.get("dt", 0.05), seed=run_seed)
@@ -249,7 +276,8 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         eval_tracker=tracker,
         orchestrator=orchestrator,
         meta={"seed": run_seed, "speed": 1.0,
-              "posture": cfg.get("posture", "human_confirm"), "eval": True},
+              "posture": cfg.get("posture", "human_confirm"), "eval": True,
+              "fidelity": fidelity},
     )
 
 
