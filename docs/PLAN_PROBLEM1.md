@@ -12,6 +12,9 @@ per task — gates are never loosened silently.*
   stop at each phase GATE for user review.
 - 2026-06-11 — Pre-change baseline on `feature/urban-environment` (clean tree):
   **160 passed in 51.69s** (31 test files). P0 started.
+- 2026-06-11 — **P0 COMPLETE, GATE PASSED**: 211 default + 1 slow, ruff clean.
+  DESIGN_REVIEW 5.1 resolved, 5.2 doc'd, 5.3 resolved. Stopped for user review
+  per cadence decision; next: P1 (physics core, standalone).
 
 ## Context
 
@@ -148,9 +151,14 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
 - [x] P0-7 stochastic re-baseline: `docs/reports/rng_rebaseline.md` (+before/after JSON);
       floors re-affirmed (24→33 kills, 6.708→5.606 spk; floors ≥10 / ≤9.0); 0 CRITICAL
       wrecks all 20 runs; pins re-recorded ONCE; suite fully green (206) (2026-06-11)
-- [ ] P0-8 DebrisReporter own `debris_hz` (fixes DESIGN_REVIEW 5.3) + test
-- [ ] P0-9 `docs/ORDERING.md` bus/step ordering contract + `tests/test_ordering.py` (fixes 5.2 doc-side)
-- GATE: 31 legacy files green; order-independence proves 5.1 fixed
+- [x] P0-8 DebrisReporter own `debris_hz` scenario knob (default 5.0 = no behavior change);
+      rate-decoupling test in `tests/test_debris_live.py` (2026-06-11)
+- [x] P0-9 `docs/ORDERING.md` (step phases, bus semantics, node scheduling, RNG streams,
+      ROS 2 preservation list) + `tests/test_ordering.py` (4 pins). DESIGN_REVIEW 5.1
+      RESOLVED, 5.2 doc'd, 5.3 RESOLVED (2026-06-11)
+- [x] GATE PASSED 2026-06-11: full suite 211 green + 1 `@slow` green (all 31 legacy files
+      incl. hit-rate floors); order-independence capstone proves 5.1 fixed; ruff clean.
+      Awaiting user review before P1.
 
 ### P1 — Physics core, standalone (L) — vectorized `(N,·)` from day one
 - [ ] P1-1 `physics/rigid_body.py` batched quat RK4: free-fall/quat-rotation analytic, energy drift
