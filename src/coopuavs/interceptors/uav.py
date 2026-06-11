@@ -46,8 +46,11 @@ from .airframe import LOW_BATTERY_RTB, UavAirframe
 from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
-MIN_PK_TO_REQUEST = 0.25   # don't waste ammo on envelope-edge shots
 MIN_PK_TO_RELEASE = 0.30   # abort if geometry collapsed while clearing
+# Never below the release floor: a request the release gate would refuse
+# consumes the clearance token, aborts, and re-requests every cycle —
+# operator auth-spam under human_confirm with no shot ever fired.
+MIN_PK_TO_REQUEST = MIN_PK_TO_RELEASE
 # Inside this multiple of effector range, guidance switches from PIP lead
 # pursuit to terminal pure pursuit so own velocity aligns with the sight
 # line — the off-axis Pk gate measures exactly that angle.
