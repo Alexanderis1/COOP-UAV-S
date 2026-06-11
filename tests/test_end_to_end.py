@@ -6,7 +6,6 @@ requiring at least one kill, and that the safety layer keeps wrecks out of
 the CRITICAL zone.
 """
 
-import numpy as np
 
 from coopuavs.sim import scenario as scenario_mod
 

@@ -1,6 +1,5 @@
 """Civilian-presence zoning derived from building kinds (SIM-ENV-005)."""
 
-import numpy as np
 
 from coopuavs.core.messages import ZoneClass
 from coopuavs.sim.environment import Environment

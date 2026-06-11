@@ -6,7 +6,7 @@ from coopuavs.c2 import assignment
 from coopuavs.core.messages import (
     EffectorType, Header, ThreatAssessment, Track, UavState, ZoneClass,
 )
-from coopuavs.risk.debris import TERMINAL_FALL_SPEED, fall_time
+from coopuavs.risk.debris import fall_time
 from coopuavs.sim.debris_objects import FallingDebris
 from coopuavs.sim.environment import Environment
 from coopuavs.sim.world import World

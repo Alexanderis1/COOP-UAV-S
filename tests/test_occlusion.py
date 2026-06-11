@@ -1,6 +1,5 @@
 """Building LOS occlusion (SIM-SEN-005 / SIM-EFF-006)."""
 
-import numpy as np
 
 from coopuavs.sim.environment import Building, BuildingKind, Material
 from coopuavs.sim.occlusion import OcclusionGrid
