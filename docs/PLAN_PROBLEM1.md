@@ -292,7 +292,12 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
 
 ### P3 — CoopFC flight stack in isolation (XL — largest phase)
 `sil/bench.py` harness: physics + hw + one FCU, no tactical stack. Import fence enforced.
-- [ ] P3-1 `core/vec.py` (vs scipy Rotation) + `core/topics.py` + `params.py` CRC overlay
+- [x] P3-1 `coopfc/core/vec.py` plain-float quat/vec math (validated vs scipy Rotation AND
+      physics helpers; ZYX euler w/ gimbal-pole branch; exact-map quat_integrate) +
+      `core/topics.py` uORB-style latest-value store + `params.py` CRC-checked overlay
+      (bool≠int pinned) + import fence: AST walk, no `coopuavs.*` escapes coopfc (relative
+      imports resolved), numpy only under `estimation/`. 42 tests `test_coopfc_{vec,topics,
+      params,fence}.py` (2026-06-11)
 - [ ] P3-2 `sched.py` rate groups: exact fire counts over 10 s, overrun→fault, deterministic order
 - [ ] P3-3 `hal/` + `drivers/`: staleness flags, unit round-trips
 - [ ] P3-4 `estimation/alignment.py` (leveling accuracy, variance gate) + `ekf.py`: Sola F/Q
