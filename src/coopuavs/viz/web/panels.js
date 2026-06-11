@@ -39,6 +39,7 @@ export class Panels {
     this._spdDrag = false;
     this._lastMetricsRender = 0;
     this._lastEngageRender = 0;
+    this._engageTimer = null;
     this._toastTimer = null;
     // client-side engagement tally (works live, replay and mock); the
     // /eval metrics override it when present (HMI-EVAL-006)
@@ -506,7 +507,17 @@ export class Panels {
 
   renderEngagements(force = false) {
     const now = performance.now();
-    if (!force && now - this._lastEngageRender < 400) return;
+    if (!force && now - this._lastEngageRender < 400) {
+      // trailing render: without it the last shot of a burst (often the
+      // kill that ends the run) stays off the table forever
+      if (!this._engageTimer) {
+        this._engageTimer = setTimeout(() => {
+          this._engageTimer = null;
+          this.renderEngagements(true);
+        }, 400 - (now - this._lastEngageRender));
+      }
+      return;
+    }
     this._lastEngageRender = now;
     $('engage-empty').style.display = this.engage.size ? 'none' : 'block';
     if (!this.engage.size) { $('engage-body').innerHTML = ''; return; }

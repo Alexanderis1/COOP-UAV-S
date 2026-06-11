@@ -33,6 +33,7 @@ function baseMats(bodyColor, accentColor = 0xffffff) {
 function finish(group, parts) {
   const proxy = new THREE.Mesh(G.proxy, new THREE.MeshBasicMaterial({ visible: false }));
   group.add(proxy);
+  parts.mats.push(proxy.material);           // freed with the model
   return { group, accent: parts.accent, mats: parts.mats };
 }
 
@@ -249,12 +250,25 @@ export function makeGhostModel(cls) {
   const wire = new THREE.MeshBasicMaterial({
     color: 0x9aa4b0, wireframe: true, transparent: true, opacity: 0.4,
   });
+  const mats = [wire];
+  const replaced = new Set();
   group.traverse((o) => {
-    if (o.isMesh && o.material?.visible !== false) o.material = wire;
+    if (!o.isMesh) return;
+    if (o.material?.visible === false) { mats.push(o.material); return; }   // pick proxy
+    replaced.add(o.material);
+    o.material = wire;
   });
-  return { group, accent: wire, mats: [wire] };
+  for (const m of replaced) m.dispose();     // swapped out, never rendered
+  return { group, accent: wire, mats };
 }
 
+const SHARED_GEOS = new Set(Object.values(G));
+
 export function disposeModel(model) {
+  // Per-model geometries (fuselages, wings, boxes) are freed; the shared
+  // G.* primitives are not.
+  model.group?.traverse((o) => {
+    if (o.geometry && !SHARED_GEOS.has(o.geometry)) o.geometry.dispose();
+  });
   for (const m of model.mats || []) m.dispose?.();
 }

@@ -55,6 +55,21 @@ export function esc(s) {
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// Free every GPU resource under a three.js subtree (geometries, materials,
+// their textures). Only for trees whose resources are owned per-build —
+// never call it over shared module-level geometries.
+export function disposeGroup(root) {
+  root.traverse((o) => {
+    o.geometry?.dispose();
+    if (!o.material) return;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      m.map?.dispose();
+      m.emissiveMap?.dispose();
+      m.dispose();
+    }
+  });
+}
+
 export function dist3(a, b) {
   const dx = (a[0] || 0) - (b[0] || 0), dy = (a[1] || 0) - (b[1] || 0), dz = (a[2] || 0) - (b[2] || 0);
   return Math.hypot(dx, dy, dz);

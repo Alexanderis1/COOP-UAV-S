@@ -83,7 +83,9 @@ function buildScene(seed, duration) {
       let z = 0;
       for (const b of buildings) {
         const k = b.kind;
-        if ((k === 'residential_low' || k === 'commercial') && overlaps(x, y, b, 60)) z = Math.max(z, 1);
+        // buffers mirror risk/zones._DANGEROUS_BUFFER
+        if (k === 'residential_low' && overlaps(x, y, b, 60)) z = Math.max(z, 1);
+        if (k === 'commercial' && overlaps(x, y, b, 40)) z = Math.max(z, 1);
         if ((k === 'residential_high') && overlaps(x, y, b, 150)) z = Math.max(z, 1);
         if ((k === 'hospital' || k === 'school') && overlaps(x, y, b, 200)) z = Math.max(z, 1);
       }
@@ -514,20 +516,25 @@ export class MockServer {
       d.t_impact = Math.max(0, d.pos[2] / 45);
       d.impact = [d.pos[0] + d.vel[0] * d.t_impact, d.pos[1] + d.vel[1] * d.t_impact, 0];
       d.zone = zoneAt(this.scene, d.impact[0], d.impact[1]);
-      // a turret intercepts red/yellow-bound debris mid-fall (kinetic only)
+      // a turret intercepts red/yellow-bound debris mid-fall (kinetic only,
+      // in range, with rounds left — like the real adjudicator)
       if (d.zone !== 'SAFE' && d.pos[2] < 500 && d.pos[2] > 120 && this.rng() < 0.06) {
-        const tu = this.turrets.find((x) => x.ammo > 0) || this.turrets[0];
-        this.m.shots++;
-        this._tally(tu.id, 'projectile', 'debris');
-        this._event({
-          kind: 'debris_neutralized', uav_id: tu.id, debris_id: d.id,
-          effector: 'projectile', saved_zone: d.zone, pk: +(0.5 + this.rng() * 0.3).toFixed(2),
-          pos: d.pos.map((v) => +v.toFixed(1)), target_kind: 'debris',
-        });
-        this.m2.debrisInt++;
-        this.m2.debrisSaved += d.zone === 'CRITICAL' ? 25 : 1;
-        this.debris.splice(i, 1);
-        continue;
+        const tu = this.turrets.find((x) => x.ammo > 0
+          && Math.hypot(d.pos[0] - x.pos[0], d.pos[1] - x.pos[1], d.pos[2]) < x.range);
+        if (tu) {
+          tu.ammo = Math.max(0, tu.ammo - 12);
+          this.m.shots++;
+          this._tally(tu.id, 'turret_gun', 'debris');
+          this._event({
+            kind: 'debris_neutralized', uav_id: tu.id, debris_id: d.id,
+            effector: 'turret_gun', saved_zone: d.zone, pk: +(0.5 + this.rng() * 0.3).toFixed(2),
+            pos: d.pos.map((v) => +v.toFixed(1)), target_kind: 'debris',
+          });
+          this.m2.debrisInt++;
+          this.m2.debrisSaved += d.zone === 'CRITICAL' ? 25 : 1;
+          this.debris.splice(i, 1);
+          continue;
+        }
       }
       if (d.pos[2] <= 0) {
         this.wrecks.push({ pos: [d.pos[0], d.pos[1], 0], zone: d.zone, mechanism: d.mechanism });
@@ -579,13 +586,13 @@ export class MockServer {
           tu.ammo = Math.max(0, tu.ammo - 12);
           this.m.shots++;
           if (best.cls === 'decoy') this.m.decoyShots++;
-          this._tally(tu.id, 'projectile');
-          if (this.rng() < 0.3) this._kill(best, 'projectile', tu.id);
+          this._tally(tu.id, 'turret_gun');
+          if (this.rng() < 0.3) this._kill(best, 'projectile', tu.id, 'turret_gun');
           else {
             this._event({
-              kind: 'miss', uav_id: tu.id, enemy_id: best.id, track_id: best.track_id,
-              effector: 'projectile', pk: +(0.15 + this.rng() * 0.25).toFixed(2),
-              pos: best.pos.map((v) => +v.toFixed(1)),
+              kind: 'miss', uav_id: tu.id, enemy_id: best.id,
+              effector: 'turret_gun', pk: +(0.15 + this.rng() * 0.25).toFixed(2),
+              pos: best.pos.map((v) => +v.toFixed(1)), target_kind: 'track',
             });
             if (this.rng() < 0.55) {
               const over = 1.5 + this.rng();
@@ -627,10 +634,11 @@ export class MockServer {
       this._kill(e, mech, u.id);
       this._uavIdle(u);
     } else {
+      // miss events match the real adjudicator: enemy_id, no track_id
       this._event({
-        kind: 'miss', uav_id: u.id, enemy_id: e.id, track_id: e.track_id,
+        kind: 'miss', uav_id: u.id, enemy_id: e.id,
         effector: mech, pk: +(eff.p_kill * (0.4 + this.rng() * 0.5)).toFixed(2),
-        pos: e.pos.map((v) => +v.toFixed(1)),
+        pos: e.pos.map((v) => +v.toFixed(1)), target_kind: 'track',
       });
       if (mech === 'projectile' && this.rng() < 0.5) {
         const sx = e.pos[0] + (this.rng() - 0.5) * 700, sy = e.pos[1] + (this.rng() - 0.5) * 700;
@@ -641,7 +649,7 @@ export class MockServer {
     }
   }
 
-  _kill(e, mechanism, shooter) {
+  _kill(e, mechanism, shooter, weapon = mechanism) {
     e.alive = false; e.killed = true;
     this.m.kills++;
     const r = this.engage[shooter];
@@ -656,10 +664,13 @@ export class MockServer {
     deb.impact = [e.pos[0] + deb.vel[0] * deb.t_impact, e.pos[1] + deb.vel[1] * deb.t_impact, 0];
     deb.zone = zoneAt(this.scene, deb.impact[0], deb.impact[1]);
     this.debris.push(deb);
+    // kill events match the real adjudicator: enemy_id + ICD weapon name
+    // (turret bursts log turret_gun), no track_id
     this._event({
-      kind: 'kill', uav_id: shooter, enemy_id: e.id, track_id: e.track_id,
-      effector: mechanism, pk: +(0.4 + this.rng() * 0.4).toFixed(2),
+      kind: 'kill', uav_id: shooter, enemy_id: e.id,
+      effector: weapon, pk: +(0.4 + this.rng() * 0.4).toFixed(2),
       debris_zone: deb.zone, pos: e.pos.map((v) => +v.toFixed(1)),
+      target_kind: 'track',
     });
     this._event({ kind: 'debris_spawn', debris_id: deb.id, zone: deb.zone,
       t_impact: +deb.t_impact.toFixed(1) });
@@ -883,9 +894,10 @@ export class MockServer {
       },
       engagements: {
         by_shooter: this.engage,
-        by_weapon: Object.entries(this.engage).reduce((acc, [id, r]) => {
-          const w = id.startsWith('tur') ? 'turret_gun' : r.weapon;
-          const row = acc[w] || (acc[w] = { shots: 0, hits: 0, kills: 0, debris_kills: 0 });
+        // shooter rows already carry the ICD weapon name (turret_gun)
+        by_weapon: Object.values(this.engage).reduce((acc, r) => {
+          const row = acc[r.weapon]
+            || (acc[r.weapon] = { shots: 0, hits: 0, kills: 0, debris_kills: 0 });
           row.shots += r.shots; row.hits += r.hits;
           row.kills += r.kills; row.debris_kills += r.debris_kills;
           return acc;

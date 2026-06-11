@@ -59,6 +59,16 @@ class Trail {
     this.geo.setDrawRange(0, this.count);
   }
   setColor(c) { this.line.material.color.setHex(c); }
+  dispose() {
+    this.geo.dispose();
+    this.line.material.dispose();
+  }
+}
+
+function disposeLabel(label) {
+  if (!label) return;
+  label.tex.dispose();
+  label.spr.material.dispose();
 }
 
 function makeLabel() {
@@ -118,10 +128,12 @@ export class Entities {
     this.ghostSeen = new Map();  // enemy id -> last acquired bool
 
     this.labelsVisible = true;
+    this.debrisVisible = true;
     this.recvWall = 0;
     this.effSpeed = 0;
     this.extrapolate = true;
     this.magFactor = 1;        // model magnification slider (0 = strict 1:1)
+    this._lastTick = 0;        // render-frame dt for animations
 
     // selection ring
     this.selection = null;       // {kind, id}
@@ -137,16 +149,91 @@ export class Entities {
   }
 
   reset() {
-    for (const m of [this.tracks, this.uavs, this.ghosts, this.truthMarks,
-                     this.debris, this.wrecks, this.strays])
+    for (const [m, dispose] of [
+      [this.tracks, (r) => this._disposeTrack(r)],
+      [this.uavs, (r) => this._disposeUav(r)],
+      [this.ghosts, (r) => this._disposeGhost(r)],
+      [this.truthMarks, (r) => this._disposeTruth(r)],
+      [this.debris, (r) => this._disposeDebris(r)],
+      [this.wrecks, (r) => this._disposeBareMesh(this.groups.wrecks, r)],
+      [this.strays, (r) => this._disposeBareMesh(this.groups.strays, r)],
+    ]) {
+      for (const rec of m.values()) dispose(rec);
       m.clear();
+    }
+    this._disposeFx();
     for (const k in this.groups) this.groups[k].clear();
-    this.flashes.length = 0;
-    this.tracers.length = 0;
-    this.killMarks.length = 0;
     this.ghostSeen.clear();
     this.selRing.visible = false;
     this.selection = null;
+  }
+
+  // ---- per-kind GPU disposal (shared module geometries stay alive) ----
+  _disposeTrack(rec) {
+    this.groups.tracks.remove(rec.mesh);
+    disposeModel(rec.model);
+    disposeLabel(rec.label);
+    this.groups.trails.remove(rec.trail.line);
+    rec.trail.dispose();
+    this.groups.impacts.remove(rec.impactRing, rec.impactLine);
+    rec.impactRing.material.dispose();       // geometry is the shared IMPACT_GEO
+    rec.impactLine.geometry.dispose();
+    rec.impactLine.material.dispose();
+  }
+
+  _disposeUav(rec) {
+    this.groups.uavs.remove(rec.mesh);
+    disposeModel(rec.model);
+    disposeLabel(rec.label);
+    this.groups.trails.remove(rec.trail.line);
+    rec.trail.dispose();
+  }
+
+  _disposeDebris(rec) {
+    this.groups.debris.remove(rec.mesh, rec.ring, rec.line);
+    disposeModel(rec.model);
+    rec.ring.material.dispose();             // geometry is shared
+    rec.line.geometry.dispose();
+    rec.line.material.dispose();
+    this.groups.trails.remove(rec.trail.line);
+    rec.trail.dispose();
+  }
+
+  _disposeGhost(rec) {
+    this.groups.ghosts.remove(rec.mesh);
+    disposeModel(rec.model);
+  }
+
+  _disposeTruth(rec) {
+    this.groups.truth.remove(rec.mesh);
+    rec.mesh.material.dispose();
+  }
+
+  _disposeBareMesh(group, rec) {
+    group.remove(rec.mesh);
+    rec.mesh.material.dispose();             // geometry is shared
+  }
+
+  _disposeFx() {
+    for (const f of this.flashes) {
+      this.groups.fx.remove(f.m);
+      f.m.material.dispose();
+    }
+    this.flashes.length = 0;
+    for (const tr of this.tracers) {
+      this.groups.tracers.remove(tr.line, tr.head);
+      tr.line.geometry.dispose();
+      tr.line.material.dispose();
+      tr.head.material.dispose();
+    }
+    this.tracers.length = 0;
+    for (const k of this.killMarks) {
+      this.groups.fx.remove(k.ring, k.spr);
+      k.ring.material.dispose();
+      k.spr.material.map.dispose();
+      k.spr.material.dispose();
+    }
+    this.killMarks.length = 0;
   }
 
   setLayer(name, on) {
@@ -155,8 +242,13 @@ export class Entities {
       this.groups.ghosts.visible = on;
       this.groups.truth.visible = on;
     } else if (name === 'trails') this.groups.trails.visible = on;
-    else if (name === 'debris') this.groups.debris.visible = on;
-    else if (name === 'tracers') this.groups.tracers.visible = on;
+    else if (name === 'debris') {
+      this.groups.debris.visible = on;
+      // debris trails live in the shared trails group: hide them per-line
+      // or the grey streaks keep drawing with no source object
+      this.debrisVisible = on;
+      for (const rec of this.debris.values()) rec.trail.line.visible = on;
+    } else if (name === 'tracers') this.groups.tracers.visible = on;
     else if (name === 'labels') {
       this.labelsVisible = on;
       for (const m of [this.tracks, this.uavs])
@@ -265,12 +357,7 @@ export class Entities {
         p.needsUpdate = true;
       }
     }
-    this._prune(this.tracks, liveT, (rec) => {
-      this.groups.tracks.remove(rec.mesh);
-      disposeModel(rec.model);
-      this.groups.trails.remove(rec.trail.line);
-      this.groups.impacts.remove(rec.impactRing, rec.impactLine);
-    });
+    this._prune(this.tracks, liveT, (rec) => this._disposeTrack(rec));
 
     // ---- friendly UAVs (interceptor gun/net, sentinel)
     const liveU = new Set();
@@ -306,11 +393,7 @@ export class Entities {
       const tag = u.kind === 'sentinel' ? '◉' : (u.effector === 'net' ? '⊞' : '╪');
       setLabel(rec.label, `${tag} ${u.id} ${mode}`, '#9adcff');
     }
-    this._prune(this.uavs, liveU, (rec) => {
-      this.groups.uavs.remove(rec.mesh);
-      disposeModel(rec.model);
-      this.groups.trails.remove(rec.trail.line);
-    });
+    this._prune(this.uavs, liveU, (rec) => this._disposeUav(rec));
 
     // ---- turrets (static meshes owned by SceneView)
     for (const tu of f.turrets || []) this.view.updateTurret(tu);
@@ -328,6 +411,7 @@ export class Entities {
         const model = makeDebrisChunk();
         model.group.userData.pick = { kind: 'debris', id: d.id };
         const trail = new Trail(0x8b9099);
+        trail.line.visible = this.debrisVisible;
         this.groups.trails.add(trail.line);
         const ring = new THREE.Mesh(DEBRIS_IMPACT_GEO, new THREE.MeshBasicMaterial({
           transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false,
@@ -359,11 +443,7 @@ export class Entities {
       p.setXYZ(1, d.impact?.[0] || 0, 2, -(d.impact?.[1] || 0));
       p.needsUpdate = true;
     }
-    this._prune(this.debris, liveD, (rec) => {
-      this.groups.debris.remove(rec.mesh, rec.ring, rec.line);
-      disposeModel(rec.model);
-      this.groups.trails.remove(rec.trail.line);
-    });
+    this._prune(this.debris, liveD, (rec) => this._disposeDebris(rec));
 
     // ---- engagement attribution FX (HMI-MAP-008): weapon tracers + kill marks
     for (const ev of f.events || []) this._engagementFx(ev);
@@ -383,7 +463,8 @@ export class Entities {
       rec.mesh.material.color.setHex(ZONE_TINT[wk.zone] ?? 0x888888);
       rec.mesh.position.set(wk.pos?.[0] || 0, 8, -(wk.pos?.[1] || 0));
     });
-    this._prune(this.wrecks, liveW, (rec) => this.groups.wrecks.remove(rec.mesh));
+    this._prune(this.wrecks, liveW,
+      (rec) => this._disposeBareMesh(this.groups.wrecks, rec));
 
     // ---- stray-round impacts
     const liveS = new Set();
@@ -402,7 +483,8 @@ export class Entities {
       rec.mesh.material.color.setHex(ZONE_TINT[s.zone] ?? 0xff5050);
       rec.mesh.position.set(s.pos?.[0] || 0, 11, -(s.pos?.[1] || 0));
     });
-    this._prune(this.strays, liveS, (rec) => this.groups.strays.remove(rec.mesh));
+    this._prune(this.strays, liveS,
+      (rec) => this._disposeBareMesh(this.groups.strays, rec));
   }
 
   // tracer + kill-mark effects from engagement events
@@ -500,15 +582,14 @@ export class Entities {
         rec.base.vel = e.vel || [0, 0, 0];
       }
     }
-    this._prune(this.ghosts, liveG, (rec) => {
-      this.groups.ghosts.remove(rec.mesh);
-      disposeModel(rec.model);
-    });
-    this._prune(this.truthMarks, liveM, (rec) => this.groups.truth.remove(rec.mesh));
+    this._prune(this.ghosts, liveG, (rec) => this._disposeGhost(rec));
+    this._prune(this.truthMarks, liveM, (rec) => this._disposeTruth(rec));
   }
 
   // production mode / eval drop: remove every eval-only visual
   clearEval() {
+    for (const rec of this.ghosts.values()) this._disposeGhost(rec);
+    for (const rec of this.truthMarks.values()) this._disposeTruth(rec);
     this.ghosts.clear(); this.truthMarks.clear(); this.ghostSeen.clear();
     this.groups.ghosts.clear(); this.groups.truth.clear();
   }
@@ -530,6 +611,9 @@ export class Entities {
 
   // ------------------------------------------------------------- render tick
   tick(now) {
+    // render-frame dt so animation speed is monitor-rate independent
+    const fdt = clamp((now - this._lastTick) / 1000, 0, 0.1);
+    this._lastTick = now;
     // smooth extrapolation between 5 Hz frames (live/mock running only)
     const dt = clamp((now - this.recvWall) / 1000, 0, 0.5) * this.effSpeed;
     if (dt > 0) {
@@ -556,9 +640,9 @@ export class Entities {
           const lw = Math.max(40, LABEL_K * d);
           rec.label.spr.scale.set(lw / s, lw * 0.1875 / s, 1);
         }
-        if (rec.spin) {        // tumbling debris
-          rec.mesh.rotation.x += 0.016 * rec.spin;
-          rec.mesh.rotation.z += 0.011 * rec.spin;
+        if (rec.spin) {        // tumbling debris (rad/s, frame-rate independent)
+          rec.mesh.rotation.x += 0.96 * rec.spin * fdt;
+          rec.mesh.rotation.z += 0.66 * rec.spin * fdt;
         }
       }
     }
@@ -588,7 +672,8 @@ export class Entities {
         tr.head.position.lerpVectors(tr.from, tr.to, a);
       } else {
         tr.head.visible = false;
-        tr.line.material.opacity *= 0.94;
+        // ~0.94/frame at 60 Hz, expressed per-second for any refresh rate
+        tr.line.material.opacity *= Math.pow(0.024, fdt);
       }
     }
     // kill marks: ring expands, label floats up, both fade
@@ -598,13 +683,18 @@ export class Entities {
       if (a >= 1) {
         this.groups.fx.remove(k.ring, k.spr);
         k.ring.material.dispose();
+        k.spr.material.map.dispose();
         k.spr.material.dispose();
         this.killMarks.splice(i, 1);
       } else {
         k.ring.scale.setScalar(1 + a * 2.5);
         k.ring.material.opacity = 0.9 * (1 - a);
-        k.spr.position.y += 0.55;
+        k.spr.position.y += 33 * fdt;        // float rate in m/s, not m/frame
         k.spr.material.opacity = 1 - a * a;
+        // zoom-aware label size: a fixed 420 m sprite buries the view at
+        // true-scale close zoom
+        const lw = Math.max(60, LABEL_K * 1.35 * cam.distanceTo(k.spr.position));
+        k.spr.scale.set(lw, lw * 0.1875, 1);
       }
     }
     // selection ring follows selected entity

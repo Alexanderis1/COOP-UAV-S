@@ -2,7 +2,7 @@
 // sensors/turrets/homes), environment-driven lighting & fog, picking.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { ZONE_COLORS, SENSOR_COLOR, clamp } from './util.js';
+import { ZONE_COLORS, SENSOR_COLOR, clamp, disposeGroup } from './util.js';
 import { City } from './city.js';
 import { makeChargingPad } from './models.js';
 
@@ -86,8 +86,19 @@ export class SceneView {
 
   // ----- static scene -------------------------------------------------------
   buildStatic(sc) {
-    // wipe previous
-    for (const g of [this.staticRoot, this.coverageGroup, this.ringsGroup]) g.clear();
+    // wipe previous — every static resource is rebuilt per scene, so free
+    // the GPU side too (textures/materials/geometries leak across runs
+    // under Group.clear() alone)
+    for (const g of [this.staticRoot, this.coverageGroup, this.ringsGroup]) {
+      disposeGroup(g);
+      g.clear();
+    }
+    if (this._groundMats) {                  // the swapped-out layer material
+      this._groundMats.zones.map?.dispose();
+      this._groundMats.zones.dispose();
+      this._groundMats.plain.dispose();
+      this._groundMats = null;
+    }
     this.turrets.clear();
     this.stations.clear();
     this.city = null;
@@ -190,6 +201,7 @@ export class SceneView {
         group.scale.setScalar(8);
         group.userData.pick = { kind: 'station', id: st.id };
         this.staticRoot.add(group);
+        this.pickables.push(group);          // station inspector (HMI-MAP-004)
         this.staticRoot.add(makeGroundRing(
           new THREE.Vector3(group.position.x, 0, group.position.z), 46, 0x39d2ff, 0.25));
         this.stations.set(st.id, ringMat);

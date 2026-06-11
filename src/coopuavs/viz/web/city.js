@@ -5,7 +5,7 @@
 // civilian-presence zoning stays readable where buildings stand on it,
 // zone border outlines, and parks/water as ground patches.
 import * as THREE from 'three';
-import { ZONE_COLORS } from './util.js';
+import { ZONE_COLORS, disposeGroup } from './util.js';
 
 const KIND_STYLE = {
   residential_high: { wall: '#8e9099', winRows: 12, winCols: 6, accent: null },
@@ -55,6 +55,7 @@ function facadeTexture(style) {
   const tex = new THREE.CanvasTexture(cnv);
   const litTex = new THREE.CanvasTexture(lit);
   tex.colorSpace = THREE.SRGBColorSpace;
+  litTex.colorSpace = THREE.SRGBColorSpace;
   return { tex, litTex };
 }
 
@@ -253,6 +254,7 @@ export class City {
   setRoofTints(on) { if (this.zoneOverlay) this.zoneOverlay.visible = on; }
 
   dispose() {
+    disposeGroup(this.root);                 // textures, materials, geometries
     this.root.parent?.remove(this.root);
   }
 }
