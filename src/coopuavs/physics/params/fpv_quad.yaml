@@ -1,0 +1,34 @@
+# Tier-F FPV multirotor threat: 1.2 kg 7" racing quad, 6S, ~1300 KV.
+# INVENTED-BUT-SELF-CONSISTENT (class-typical hobby numbers); consistency
+# (hover headroom, T/W) pinned by tests/test_fixedwing.py. Body FLU.
+name: fpv_quad
+type: multirotor
+mass: 1.2                        # kg
+inertia_diag: [0.004, 0.004, 0.007]   # kg m^2
+rotors:
+  count: 4
+  radius: 0.0889                 # m (7" prop)
+  kf: 1.15e-6                    # N/(rad/s)^2
+  km: 1.8e-8                     # N m/(rad/s)^2 (= motor k_q)
+  positions:                     # quad-X, body FLU
+    - [0.10, -0.10, 0.0]         # front-right
+    - [-0.10, 0.10, 0.0]         # back-left
+    - [0.10, 0.10, 0.0]          # front-left
+    - [-0.10, -0.10, 0.0]        # back-right
+  spin: [1, 1, -1, -1]           # +1 = CCW viewed from above
+motor:
+  kv_rpm_per_v: 1300.0
+  r_w: 0.060                     # ohm
+  j_r: 2.6e-5                    # kg m^2
+battery:                         # 6S 2.0 Ah
+  n_series: 6
+  capacity_ah: 2.0
+  r0: 0.030                      # ohm
+  r1: 0.015                      # ohm
+  c1: 1000.0                     # F (tau1 = 15 s)
+drag:
+  linear_diag: [0.08, 0.08, 0.02]   # N/(m/s), body FLU
+  cda_iso: 0.0030                   # m^2
+ground_effect:
+  model: cheeseman-bennett
+  max_gain: 1.5
