@@ -225,7 +225,9 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
 - [x] P2-2 `hw/gps.py` noise + GM wander (h/v split), 10 Hz, 120 ms latency exact
       (integer-tick: 96 ticks @ 800 Hz, divisibility validated at build) + fix-type field
       (2026-06-11)
-- [ ] P2-3 `hw/baro.py` (ISA round-trip + drift) + `hw/mag.py` (theater field vector + GM bias)
+- [x] P2-3 `hw/baro.py` ISA round-trip exact (altitude_from_pressure inverse; sigma_h =
+      sigma_p/(rho g0) pinned) + GM drift; `hw/mag.py` theater field (|B|/decl/incl -> ENU),
+      hard-iron per power-up + GM bias + white, rotation pins vs quat_to_rotmat (2026-06-11)
 - [ ] P2-4 `hw/seeker_gimbal.py` FOV/slew/servo (PHY-UAV-012) + adapter into `sensors/seeker.py`
 - [ ] P2-5 `hw/esc_telem.py` + determinism/stream-uniqueness suite
 - GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s

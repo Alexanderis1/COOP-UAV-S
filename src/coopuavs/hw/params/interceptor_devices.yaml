@@ -34,3 +34,19 @@ gps:                            # multi-band GNSS, u-blox F9-class
   gm_sigma_v: 2.4               # m
   gm_tau_s: 60.0                # s
   sigma_vel: 0.1                # m/s white, per axis (Doppler velocity)
+baro:                           # MS5611-class static pressure sensor
+  rate_hz: 50.0
+  sigma_pa: 3.0                 # Pa white (~0.26 m at sea level)
+  gm_sigma_pa: 15.0             # Pa slow drift (temperature/weather lumped)
+  gm_tau_s: 600.0               # s
+  lsb_pa: 1.2                   # Pa (0.012 mbar conversion resolution)
+mag:                            # IST8310-class 3-axis magnetometer
+  rate_hz: 50.0
+  magnitude_ut: 50.0            # uT theater geomagnetic field
+  declination_deg: 4.0          # deg east of true north
+  inclination_deg: 63.0         # deg dip below horizontal (N hemisphere)
+  sigma_ut: 0.3                 # uT white, per axis
+  gm_sigma_ut: 0.5              # uT slow bias (current draw / temperature)
+  gm_tau_s: 300.0               # s
+  hard_iron_sigma_ut: 2.0       # uT per-power-up calibration residual
+  lsb_ut: 0.3                   # uT conversion resolution
