@@ -148,6 +148,34 @@ def test_roll_and_pitch_damping_signs():
     assert -torque1[0, 1] < -torque0[0, 1]  # Cm_q < 0 opposes the nose-up rate
 
 
+def test_control_surface_polarity_pins():
+    """Gate-review pin: da/dr were exercised by no behavioral test and a de
+    sign flip just mirrors the fsolve trim. Finite-difference polarity of
+    every control channel at trim, in B&M FRD terms (l, m, n) =
+    (tau_x, -tau_y, -tau_z); fy_frd = -delta force_y (pitch-only attitude)."""
+    params, plant, va, (alpha, de, dt), _, _ = solve_trim("shahed_fw")
+    state = level_state(va, alpha)
+
+    def wrench_of(controls):
+        force, tau = plant.wrench(state, np.array([controls]),
+                                  np.zeros((1, 3)), 1.225)
+        return force[0], tau[0]
+
+    h = 0.05
+    f0, t0 = wrench_of([de, 0.0, 0.0, dt])
+
+    f1, t1 = wrench_of([de + h, 0.0, 0.0, dt])
+    assert -(t1[1] - t0[1]) < 0.0           # Cm_de < 0: +elevator pitches down
+
+    f1, t1 = wrench_of([de, h, 0.0, dt])
+    assert (t1[0] - t0[0]) > 0.0            # Cl_da > 0: +aileron rolls right (FRD l+)
+    assert -(t1[2] - t0[2]) < 0.0           # Cn_da < 0: adverse yaw
+
+    f1, t1 = wrench_of([de, 0.0, h, dt])
+    assert -(t1[2] - t0[2]) < 0.0           # Cn_dr < 0 with +rudder
+    assert -(f1[1] - f0[1]) > 0.0           # CY_dr > 0: +rudder side force (FRD +y)
+
+
 def test_throttle_thrust_prop_vs_jet():
     _, prop_plant = make_plant("shahed_fw")
     _, jet_plant = make_plant("jet_owa_fw")

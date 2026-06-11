@@ -66,6 +66,20 @@ def test_quat_to_rotmat_matches_scipy():
     np.testing.assert_allclose(rb.quat_to_rotmat(q), expected, atol=1e-12)
 
 
+def test_quat_rotate_inv_matches_scipy_and_roundtrips():
+    """Gate-review pin: quat_rotate_inv was previously verified by nothing —
+    the mutant quat_rotate_inv = quat_rotate survived the whole suite."""
+    rng = np.random.default_rng(14)
+    q = rb.quat_normalize(rng.normal(size=(50, 4)))
+    v = rng.normal(size=(50, 3))
+    expected = Rotation.from_quat(to_scipy(q)).apply(v, inverse=True)
+    np.testing.assert_allclose(rb.quat_rotate_inv(q, v), expected, atol=1e-12)
+    np.testing.assert_allclose(rb.quat_rotate_inv(q, rb.quat_rotate(q, v)), v,
+                               atol=1e-12)
+    np.testing.assert_allclose(rb.quat_rotate_inv(q, v),
+                               rb.quat_rotate(rb.quat_conjugate(q), v), atol=1e-12)
+
+
 def test_quat_multiply_composes_rotations():
     rng = np.random.default_rng(13)
     p = rb.quat_normalize(rng.normal(size=(20, 4)))

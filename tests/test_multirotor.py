@@ -10,6 +10,8 @@ from the packaged YAML with motor-consistent thrust/weight ~ 3.6.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 from scipy.optimize import fsolve
 
@@ -145,6 +147,46 @@ def test_faessler_drag_signs_and_dissipation():
     state = hover_state()
     force, _ = plant.wrench(state, no_rotor, np.array([[8.0, 0.0, 0.0]]), 1.225)
     assert (force[0] - grav)[0] > 0.0
+
+
+def test_faessler_drag_applied_in_body_frame():
+    """Gate-review pin: D = diag(dx, dy, dz) acts in the BODY frame
+    [Faessler 2018] — force - gravity == -(R D R^T) v_air at arbitrary
+    attitude. Kills the world-frame-drag mutant, which survives the
+    terminal-speed band (that equilibrium projects out Dy/Dz/frame)."""
+    base = MultirotorParams.from_dict(load_airframe("interceptor_quad"))
+    params = dataclasses.replace(base, cda_iso=0.0)
+    plant = MultirotorPlant(params, 1)
+    no_rotor = np.zeros((1, params.n_rotors))
+    grav = np.array([0.0, 0.0, -params.mass * GRAVITY])
+    rng = np.random.default_rng(46)
+    for _ in range(5):
+        q = rb.quat_normalize(rng.normal(size=(1, 4)))
+        v_air = rng.normal(scale=15.0, size=3)
+        state = hover_state()
+        state[0, rb.QUAT] = q[0]
+        state[0, rb.VEL] = v_air
+        force, _ = plant.wrench(state, no_rotor, np.zeros((1, 3)), 1.225)
+        r = rb.quat_to_rotmat(q)[0]
+        expected = -(r @ np.diag(params.drag_linear_diag) @ r.T) @ v_air
+        np.testing.assert_allclose(force[0] - grav, expected, atol=1e-12)
+
+    # rolled 90 deg about x: world-z motion must see body-LATERAL dy, not dz
+    q = rb.quat_from_axis_angle(np.array([[1.0, 0.0, 0.0]]), np.array([np.pi / 2]))
+    state = hover_state()
+    state[0, rb.QUAT] = q[0]
+    state[0, rb.VEL] = [0.0, 0.0, 5.0]
+    force, _ = plant.wrench(state, no_rotor, np.zeros((1, 3)), 1.225)
+    np.testing.assert_allclose((force[0] - grav)[2],
+                               -params.drag_linear_diag[1] * 5.0, rtol=1e-9)
+    # and the latched step() path sees the same body-frame drag
+    plant_drag = MultirotorPlant(params, 1)
+    new = plant_drag.step(state, 1e-3, no_rotor, np.zeros((1, 3)), 1.225)
+    dvz_drag = new[0, 5] - state[0, 5] + GRAVITY * 1e-3
+    # drag acts on the within-step mean vz (gravity pulls it down g*dt/2)
+    vz_mean = 5.0 - GRAVITY * 1e-3 / 2.0
+    expected_dvz = -params.drag_linear_diag[1] * vz_mean / params.mass * 1e-3
+    np.testing.assert_allclose(dvz_drag, expected_dvz, rtol=1e-4)
 
 
 def test_rotor_torque_allocation_signs():
