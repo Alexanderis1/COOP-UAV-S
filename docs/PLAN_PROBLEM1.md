@@ -138,9 +138,13 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       NotImplementedError (P4), sixdof→NotImplementedError (P6); unknown keys/values rejected;
       stored in `Scenario.meta["fidelity"]` (recordings untouched until P4-7).
       Tests: `tests/test_fidelity_flags.py` (9) (2026-06-11)
-- [ ] P0-6 `core/rng.py` RngRegistry; migrate weather→comms→sensors→adjudicator/debris→threats
-      off `world.rng` one consumer per task; order-independence test (extra no-op consumer leaves
-      other draws identical)
+- [x] P0-6 `core/rng.py` RngRegistry (streams pure fn of (seed, name), sha256 key);
+      migrated one consumer per commit: weather ("weather") → comms ("comms") → sensors
+      ("sensor/&lt;name&gt;") → adjudicator ("adjudicator") + DebrisModel ("debris") → threats
+      ("threat/&lt;id&gt;"). Shared `world.rng` proven virgin through a full battle; order-independence
+      capstone green (extra consumer, identical outcomes). One legacy test seeding idiom updated
+      (test_kill_bookkeeping steers `adj._rng`, assertions untouched).
+      Tests: `tests/test_rng_registry.py` (6) + `tests/test_rng_streams.py` (7) (2026-06-11)
 - [ ] P0-7 stochastic re-baseline: 10-seed MC before/after report committed; re-record pins ONCE;
       hit-rate floors re-affirmed or user sign-off
 - [ ] P0-8 DebrisReporter own `debris_hz` (fixes DESIGN_REVIEW 5.3) + test
