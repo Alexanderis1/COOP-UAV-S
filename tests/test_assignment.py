@@ -79,3 +79,17 @@ def test_fast_target_gets_support():
     tasks = assignment.allocate([assess(1)], tracks, uavs, speeds, rm, t=0.0)
     assert len(tasks) == 1
     assert len(tasks[0].support_ids) == 2
+
+
+def test_zero_closing_speed_effector_does_not_crash(monkeypatch):
+    """An effector registered with max_closing_speed 0 (disabled/custom) must
+    not raise ZeroDivisionError in the pk proxy; the platform still gets the
+    saturation-corner blocking task."""
+    rm, speeds = setup()
+    monkeypatch.setitem(assignment.EFFECTOR_CAPS, "disabled", (0.5, 0.0))
+    tracks = {1: track(1, [3000, 0, 1000], [-55, 0, 0])}
+    tasks = assignment.allocate(
+        [assess(1)], tracks, [uav("u1", [0, 0, 0])], speeds, rm, t=0.0,
+        uav_effectors={"u1": "disabled"},
+    )
+    assert tasks and tasks[0].shooter_id == "u1"

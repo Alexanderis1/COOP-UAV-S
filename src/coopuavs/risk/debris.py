@@ -38,6 +38,13 @@ def velocity_retention(effector: EffectorType) -> float:
     return _VELOCITY_RETENTION[effector]
 
 
+def retention_jitter(rng: np.random.Generator, size=None) -> np.ndarray:
+    """Multiplicative jitter on velocity retention. Clamped: an unclamped
+    normal tail yields wrecks flying backwards (negative retention) or
+    carrying twice the airframe's horizontal speed."""
+    return np.clip(rng.normal(1.0, 0.25, size=size), 0.0, 2.0)
+
+
 def fall_time(alt: float, v_down0: float = 0.0) -> float:
     """Time for a wreck to fall ``alt`` metres: gravity-accelerated from an
     initial downward speed until the terminal velocity cap, then constant.
@@ -73,8 +80,7 @@ class DebrisModel:
 
         v_xy = np.asarray(target_vel[:2], dtype=float) * retention
         # Per-sample randomness: retention jitter and growing lateral spread.
-        retention_jitter = self.rng.normal(1.0, 0.25, size=(n, 1))
-        carry = v_xy[None, :] * retention_jitter * t_fall
+        carry = v_xy[None, :] * retention_jitter(self.rng, size=(n, 1)) * t_fall
         sigma = 0.15 * alt + 0.5 * np.linalg.norm(v_xy) * t_fall * 0.2 + 5.0
         spread = self.rng.normal(0.0, sigma, size=(n, 2))
         return intercept_pos[None, :2] + carry + spread

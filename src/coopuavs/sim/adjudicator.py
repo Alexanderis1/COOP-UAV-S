@@ -25,7 +25,7 @@ import numpy as np
 from ..core.messages import EngagementResult, FireRequest, Header
 from ..core.node import Node
 from ..interceptors.uav import InterceptorUav
-from ..risk.debris import velocity_retention
+from ..risk.debris import retention_jitter, velocity_retention
 from ..sim.physics import GRAVITY
 from .debris_objects import FallingDebris
 from .world import World
@@ -287,7 +287,7 @@ class EngagementAdjudicator(Node):
         # predictive footprint samples, integrated by the world until it
         # lands or is intercepted.
         retention = velocity_retention(effector_type) \
-            * float(self.world.rng.normal(1.0, 0.25))
+            * float(retention_jitter(self.world.rng))
         vel = np.array([target.velocity[0] * retention,
                         target.velocity[1] * retention, 0.0])
         deb = FallingDebris(

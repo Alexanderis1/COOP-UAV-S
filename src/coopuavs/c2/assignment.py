@@ -188,7 +188,7 @@ def _best_shooter(
             cost = 300.0 + float(np.linalg.norm(lead_point - u.position)) / max(speed, 1.0)
         pk_max, max_closing = EFFECTOR_CAPS.get(
             uav_effectors.get(uav_id, "projectile"), (0.65, 250.0))
-        pk_proxy = pk_max * (1.0 - 0.4 * min(trk.speed / max_closing, 1.0))
+        pk_proxy = pk_max * (1.0 - 0.4 * min(trk.speed / max(max_closing, 1e-6), 1.0))
         cost /= max(pk_proxy, 0.1)
         if incumbents.get(trk.track_id) == uav_id:
             cost *= INCUMBENT_DISCOUNT

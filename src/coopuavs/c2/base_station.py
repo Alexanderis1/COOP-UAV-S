@@ -238,7 +238,9 @@ class BaseStation(Node):
                      if deb.impact_zone == ZoneClass.CRITICAL
                      else DEBRIS_SCORE_DANGEROUS)
             tracks[deb.track_ref] = Track(
-                header=Header(stamp=t),
+                # Preserve the reporter's stamp: the position is up to one
+                # reporter period old, and downstream extrapolates from stamp.
+                header=deb.header,
                 track_id=deb.track_ref,
                 position=np.asarray(deb.position, dtype=float),
                 velocity=np.asarray(deb.velocity, dtype=float),

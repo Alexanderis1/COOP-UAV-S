@@ -173,3 +173,36 @@ def test_adjudicator_kill_spawns_debris_and_intercept_credits():
     assert world.debris_intercepted               # credited
     assert not world.wrecks                       # fragments are negligible
     assert any(e["kind"] == "debris_neutralized" for e in world.events)
+
+
+def test_retention_jitter_clamped_to_physical_range():
+    """The kill-time retention jitter must never go negative (wreck flying
+    backwards) nor past 2x the airframe's horizontal speed."""
+    from coopuavs.risk.debris import retention_jitter
+    rng = np.random.default_rng(0)
+    j = retention_jitter(rng, size=200_000)   # ~6 raw samples fall below 0
+    assert float(j.min()) >= 0.0
+    assert float(j.max()) <= 2.0
+
+
+def test_debris_picture_preserves_reporter_stamp():
+    """The pseudo-track must carry the reporter's stamp, not planning time:
+    downstream extrapolates position from the stamp, and the reported
+    position is up to one reporter period old."""
+    from coopuavs.c2.base_station import BaseStation
+    from coopuavs.core.bus import MessageBus
+    from coopuavs.core.messages import DebrisArray, DebrisState
+    from coopuavs.risk.debris import DebrisModel
+
+    bs = BaseStation(MessageBus(), Environment.from_config(ENV_CFG),
+                     DebrisModel(np.random.default_rng(0)),
+                     uav_speeds={"u1": 60.0})
+    bs._on_debris(DebrisArray(header=Header(stamp=4.8), debris=[DebrisState(
+        header=Header(stamp=4.8), debris_id="deb-x", track_ref=-101,
+        position=np.array([0.0, 0.0, 300.0]),
+        velocity=np.array([10.0, 0.0, -30.0]),
+        predicted_impact=np.array([100.0, 0.0, 0.0]),
+        impact_zone=ZoneClass.CRITICAL, t_impact=8.0,
+    )]))
+    tracks, _, _ = bs._debris_picture(t=5.0)
+    assert tracks[-101].header.stamp == 4.8
