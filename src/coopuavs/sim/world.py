@@ -15,7 +15,7 @@ from typing import Callable
 import numpy as np
 
 from ..core.bus import MessageBus
-from ..core.messages import reset_message_seq
+from ..core.messages import UavMode, reset_message_seq
 from ..core.node import Node
 from ..perception.tracking import reset_track_ids
 from ..risk.debris import DebrisModel
@@ -138,9 +138,11 @@ class World:
 
         if windy:
             # Truth-side wind displacement of friendly airframes (SIM-PHX-003);
-            # the agents fight the drift through their velocity loops.
+            # the agents fight the drift through their velocity loops. A
+            # REARMing airframe is docked to its pad (rooftop stations sit
+            # well above the z>1 altitude gate), not airborne.
             for uav in self.friendlies.values():
-                if uav.position[2] > 1.0:
+                if uav.position[2] > 1.0 and uav.mode != UavMode.REARM:
                     uav.body.position += self.weather.wind_at(uav.position[2]) * self.dt
 
         self.t += self.dt
