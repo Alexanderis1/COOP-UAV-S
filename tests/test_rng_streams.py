@@ -86,3 +86,32 @@ def test_lossy_comms_does_not_consume_the_shared_stream():
     stats = sc.world.comms._stats["u1"]
     assert any(not ok for _, ok in stats)
     assert _shared_stream_state(sc.world) == _fresh_state(21)
+
+
+# -- sensors -------------------------------------------------------------------
+
+def test_sensor_scans_do_not_consume_the_shared_stream():
+    cfg = {
+        "name": "radar-only",
+        "seed": 31,
+        "environment": dict(MINIMAL_ENV),
+        "sensors": [
+            {"type": "radar", "name": "radar-1",
+             "position": [0.0, 0.0, 10.0], "max_range": 9000.0},
+        ],
+        "threats": [
+            {"id": "t1", "time": 0.0, "class": "OWA_STRATEGIC",
+             "spawn": [500.0, 500.0, 300.0], "target": [0.0, 0.0, 0.0]},
+        ],
+    }
+    sc = scenario_mod.build(cfg)
+    detections = []
+    sc.world.bus.subscribe("detections", detections.append)
+
+    sc.world.step()  # spawn tick: EnemyDrone.__init__ still draws shared (P0-6e)
+    state_after_spawn = _shared_stream_state(sc.world)
+    for _ in range(50):
+        sc.world.step()
+
+    assert detections  # the radar really scanned and detected
+    assert _shared_stream_state(sc.world) == state_after_spawn
