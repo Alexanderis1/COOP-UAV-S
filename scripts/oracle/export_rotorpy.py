@@ -6,16 +6,22 @@ Offline tool (RotorPy is an oracle, never a runtime dependency):
 
 writes tests/fixtures/oracle/rotorpy_<flight>.csv consumed by the @oracle
 tests. Re-running overwrites committed traces — do that only as a
-sanctioned re-baseline (same policy as golden pins).
+sanctioned re-baseline (same policy as golden pins). Pass flight names as
+CLI args to re-record a subset, e.g. `... export_rotorpy.py roll_mix_pulse`.
 
 Matched-parameter scoping: both simulators run DRAG-FREE (RotorPy
 aero=False; the test zeroes our Faessler/parasitic terms). The two
 packages model drag with intentionally different forms (Faessler lumped-D
 vs per-rotor H-force), so drag is pinned by our unit tests
 (terminal-speed, dissipation) while the oracle pins what the models share:
-quaternion 6DOF rigid body, rotor thrust/moment allocation, first-order
-motor lag, gravity. Mapping checks (verified numerically): RotorPy body
-frame == our FLU, rotor_directions == -spin, k_eta == kf, k_m == km.
+quaternion 6DOF rigid body, rotor thrust/moment allocation, gravity. The
+first-order motor lag (tau_m) is a shared HARNESS construct: the replay
+applies the exact analytic solution of the same linear ODE RotorPy
+integrates, so rotor speeds agree by construction — the production
+MotorEsc is NOT oracle-pinned; its voltage-driven dynamics are pinned in
+tests/test_motor_battery.py. Mapping checks (verified numerically):
+RotorPy body frame == our FLU, rotor_directions == -spin, k_eta == kf,
+k_m == km.
 
 Flights (10 s each, 100 Hz piecewise-constant motor-speed commands, the
 command columns in the CSV are the single source of truth for replay):
@@ -28,6 +34,14 @@ command columns in the CSV are the single source of truth for replay):
                vehicle airborne -- a one-sided pulse tumbles it through the
                ground plane where our ground-effect model would diverge
                from RotorPy, which has none)
+  roll_mix_pulse  CCW +2% / CW -2% yaw mix for all 10 s, plus a left/right
+               +-0.6% roll doublet (2 x 0.25 s) at t=4 s, when the yaw rate
+               has built to ~0.43 rad/s. The roll pulse riding on the yaw
+               rate makes omega x J omega nonzero (Ixx=0.45 != Izz=0.80;
+               gyro pitch torque ~7% of the roll torque during the pulse)
+               and excites tau_x — the only flight covering the Euler
+               coupling term and the roll allocation channel, which all
+               single-axis flights leave identically zero
 
 CSV columns: t, x, y, z, vx, vy, vz, qw, qx, qy, qz (OUR scalar-first
 order), wx, wy, wz, r1..r4 (true rotor speeds), c1..c4 (command held over
@@ -86,6 +100,9 @@ def flight_set(w_h: float) -> dict:
     front = np.array([1.006, 0.994, 1.006, 0.994])   # r1 FR, r2 BL, r3 FL, r4 BR
     back = np.array([0.994, 1.006, 0.994, 1.006])
     ccw = np.array([1.01, 1.01, 0.99, 0.99])         # our spin=+1 rotors are r1, r2
+    ccw2 = np.array([1.02, 1.02, 0.98, 0.98])        # stronger yaw mix (roll_mix)
+    left = np.array([0.994, 1.006, 1.006, 0.994])    # boost y>0 rotors -> +tau_x
+    right = np.array([1.006, 0.994, 0.994, 1.006])   # (pitch- and yaw-balanced)
 
     def pitch_doublet(t):
         if 1.0 <= t < 1.25:
@@ -94,12 +111,22 @@ def flight_set(w_h: float) -> dict:
             return w_h * back
         return w_h * ones
 
+    def roll_mix_pulse(t):
+        # yaw mix all flight; roll doublet rides on the built-up yaw rate so
+        # omega x J omega != 0 during and after the pulse (Ixx != Izz)
+        if 4.0 <= t < 4.25:
+            return w_h * ccw2 * left
+        if 4.25 <= t < 4.5:
+            return w_h * ccw2 * right
+        return w_h * ccw2
+
     return {
         "hover_hold": (lambda t: w_h * ones, 0.0),
         "climb_step": (lambda t: w_h * (1.02 if t < 2.0 else 1.0) * ones, 0.0),
         "tilt_dash": (lambda t: w_h * ones, np.deg2rad(15.0)),
         "yaw_spin": (lambda t: w_h * ccw, 0.0),
         "pitch_pulse": (pitch_doublet, 0.0),
+        "roll_mix_pulse": (roll_mix_pulse, 0.0),
     }
 
 
@@ -134,7 +161,7 @@ def run_flight(quad_params: dict, cmd_fn, tilt_y: float) -> np.ndarray:
     return rows
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     cfg = load_airframe("interceptor_quad")
     qp = quad_params_from(cfg)
     w_h = float(np.sqrt(qp["mass"] * 9.81 / (4.0 * qp["k_eta"])))
@@ -143,7 +170,14 @@ def main() -> None:
               f"airframe=interceptor_quad drag-free tau_m={TAU_M} dt_ctrl={DT_CTRL} "
               f"z0={Z0} hover_omega={w_h:.6f}\n"
               "t,x,y,z,vx,vy,vz,qw,qx,qy,qz,wx,wy,wz,r1,r2,r3,r4,c1,c2,c3,c4")
-    for name, (cmd_fn, tilt) in flight_set(w_h).items():
+    flights = flight_set(w_h)
+    selected = argv if argv else sorted(flights)
+    unknown = set(selected) - set(flights)
+    if unknown:
+        raise SystemExit(f"unknown flight(s) {sorted(unknown)}; "
+                         f"available: {sorted(flights)}")
+    for name in selected:
+        cmd_fn, tilt = flights[name]
         rows = run_flight(qp, cmd_fn, tilt)
         path = OUT_DIR / f"rotorpy_{name}.csv"
         np.savetxt(path, rows, delimiter=",", header=header, fmt="%.12g")
@@ -151,4 +185,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

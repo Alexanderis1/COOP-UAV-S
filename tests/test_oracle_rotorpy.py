@@ -1,12 +1,21 @@
 """P1-7 @oracle: our multirotor plant vs committed RotorPy traces.
 
 Replays the motor-speed command schedule recorded in each CSV (single
-source of truth) through our plant at 800 Hz with the same first-order
-motor lag (exact exponential, thrust uses the within-step mean speed) and
-compares trajectories over 10 s: position RMSE < 0.5 m, attitude geodesic
-RMSE < 3 deg. Both sides drag-free per the matched-parameter scoping
-documented in scripts/oracle/export_rotorpy.py (drag models differ by
-design and are pinned by our own unit tests). Run with `pytest -m oracle`.
+source of truth) through our plant at 800 Hz and compares trajectories
+over 10 s: position RMSE < 0.005 m, attitude geodesic RMSE < 0.01 deg
+(measured margins and the sanctioned 2026-06-11 tightening are recorded
+in tests/fixtures/oracle/README.md). Both sides drag-free per the
+matched-parameter scoping documented in scripts/oracle/export_rotorpy.py
+(drag models differ by design and are pinned by our own unit tests).
+
+What is pinned here: the production quaternion 6DOF rigid body
+(rb.rk4_step) and rotor thrust/moment allocation via MultirotorPlant.step,
+plus gravity. The first-order motor lag below is a HARNESS construct: the
+exact ZOH exponential of the same linear ODE the exporter fed RotorPy
+(thrust uses the within-step mean speed), so rotor-speed agreement is by
+construction and the production MotorEsc (src/coopuavs/physics/motor.py)
+is NOT exercised by this replay — its voltage-driven dynamics are pinned
+in tests/test_motor_battery.py. Run with `pytest -m oracle`.
 """
 
 from __future__ import annotations
@@ -22,7 +31,8 @@ from coopuavs.physics.multirotor import MultirotorParams, MultirotorPlant
 from coopuavs.physics.params import load_airframe
 
 ORACLE_DIR = Path(__file__).parent / "fixtures" / "oracle"
-FLIGHTS = ["hover_hold", "climb_step", "tilt_dash", "yaw_spin", "pitch_pulse"]
+FLIGHTS = ["hover_hold", "climb_step", "tilt_dash", "yaw_spin", "pitch_pulse",
+           "roll_mix_pulse"]
 TAU_M = 0.05          # must match the exporter
 DT_MICRO = 1.0 / 800.0
 SUBSTEPS = 8          # 100 Hz command rows -> 8 micro-steps each
@@ -80,5 +90,25 @@ def test_rotorpy_trace_match(flight):
     att_err = quat_angle_deg(quat, rows[:, 7:11])
     att_rmse = float(np.sqrt(np.mean(att_err**2)))
 
-    assert pos_rmse < 0.5, f"{flight}: pos RMSE {pos_rmse:.3f} m (max {pos_err.max():.3f})"
-    assert att_rmse < 3.0, f"{flight}: att RMSE {att_rmse:.2f} deg (max {att_err.max():.2f})"
+    # Gates tightened 2026-06-11 (sanctioned, from 0.5 m / 3 deg) to ~25x the
+    # worst measured margin across all six flights -- see fixtures README.
+    assert pos_rmse < 0.005, (
+        f"{flight}: pos RMSE {pos_rmse:.6f} m (max {pos_err.max():.6f})")
+    assert att_rmse < 0.01, (
+        f"{flight}: att RMSE {att_rmse:.6f} deg (max {att_err.max():.6f})")
+
+
+@pytest.mark.oracle
+def test_roll_mix_pulse_excites_gyro_and_roll_channel():
+    """Fixture-integrity pin: the roll_mix_pulse trace must keep exercising
+    the Euler coupling term (omega x J omega != 0) and the roll channel,
+    which the other five flights never do (all are zero- or single-axis
+    rotations with diagonal inertia). Guards future re-baselines against
+    silently dropping the only multi-axis oracle coverage."""
+    rows = np.loadtxt(ORACLE_DIR / "rotorpy_roll_mix_pulse.csv", delimiter=",")
+    inertia = np.asarray(load_airframe("interceptor_quad")["inertia_diag"])
+    omega = rows[:, 11:14]
+    gyro = np.cross(omega, omega * inertia)
+    assert np.abs(gyro).max() > 0.02, "gyro coupling term too weak to pin"
+    assert np.abs(omega[:, 0]).max() > 0.1, "roll rate never excited"
+    assert np.abs(omega[:, 2]).max() > 0.3, "yaw rate never excited"

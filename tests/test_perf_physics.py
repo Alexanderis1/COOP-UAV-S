@@ -1,9 +1,9 @@
 """P1-6 perf gate: batched plant RK4 CPU budget (plan: Performance budget).
 
 Gate (plan P1-6): 20-vehicle multirotor RK4 at 800 Hz <= 0.25 s CPU per
-simulated second. The 30-vehicle design-envelope timing is also measured
-and reported (budget table: batched plant ~0.2 s/sim-s at N=30) but the
-hard gate is the 20-vehicle number. Run with `pytest -m perf`.
+simulated second. The 30-vehicle design-envelope run is gated at the same
+0.25 s/sim-s bound; the tighter budget-table figure (~0.2 s/sim-s at N=30)
+is printed as informational only. Run with `pytest -m perf`.
 """
 
 from __future__ import annotations
@@ -52,3 +52,6 @@ def test_perf_20_vehicle_rk4_800hz_under_0p25s():
     print(f"\nplant RK4 CPU/sim-s: N=20 {cpu:.3f} s (gate 0.25), N=30 {cpu30:.3f} s "
           f"(budget ~0.2 informational)")
     assert cpu <= 0.25, f"20-vehicle RK4 at 800 Hz used {cpu:.3f} s CPU/sim-s (> 0.25)"
+    assert cpu30 <= 0.25, (
+        f"30-vehicle RK4 at 800 Hz used {cpu30:.3f} s CPU/sim-s (> 0.25)"
+    )
