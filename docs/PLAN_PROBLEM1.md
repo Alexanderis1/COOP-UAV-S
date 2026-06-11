@@ -218,9 +218,13 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       equation (TRC-001 same commit) (2026-06-11)
 
 ### P2 — Hardware device models (M)
-- [ ] P2-1 `hw/imu.py`: Allan-variance slope test recovers configured N/B/K ±10% (`@slow`);
-      FIFO/quantization/turn-on-bias-per-seed tests
-- [ ] P2-2 `hw/gps.py` (noise+random walk, 10 Hz, 120 ms latency exact) + fix-type field
+- [x] P2-1 `hw/imu.py`: Allan-variance slope test recovers configured N/B/K ±10% (`@slow`) —
+      measured worst 7.2% over 6 axes (32768 s @ 100 Hz; generate()==sample() pinned bit-exact);
+      FIFO/quantization/turn-on-bias-per-seed tests. `hw/stoch.py` shared primitives
+      (exact-ZOH GM + stationary cold start, bias RW, quantize, analytic AVAR curves) (2026-06-11)
+- [x] P2-2 `hw/gps.py` noise + GM wander (h/v split), 10 Hz, 120 ms latency exact
+      (integer-tick: 96 ticks @ 800 Hz, divisibility validated at build) + fix-type field
+      (2026-06-11)
 - [ ] P2-3 `hw/baro.py` (ISA round-trip + drift) + `hw/mag.py` (theater field vector + GM bias)
 - [ ] P2-4 `hw/seeker_gimbal.py` FOV/slew/servo (PHY-UAV-012) + adapter into `sensors/seeker.py`
 - [ ] P2-5 `hw/esc_telem.py` + determinism/stream-uniqueness suite

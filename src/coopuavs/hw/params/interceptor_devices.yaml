@@ -25,3 +25,12 @@ imu:                            # ICM-42688-class tactical MEMS, 400 Hz
     range: 157.0                # m/s^2 (16 g)
   fifo_depth: 64                # frames (device buffer between 400 Hz device
                                 # rate and the P3 driver drain rate)
+gps:                            # multi-band GNSS, u-blox F9-class
+  rate_hz: 10.0
+  latency_s: 0.120              # s, solution latency (exact ticks: 96 at 800 Hz)
+  sigma_pos_h: 0.4              # m white, per horizontal ENU axis
+  sigma_pos_v: 0.8              # m white, vertical
+  gm_sigma_h: 1.2               # m correlated wander (iono/tropo/multipath)
+  gm_sigma_v: 2.4               # m
+  gm_tau_s: 60.0                # s
+  sigma_vel: 0.1                # m/s white, per axis (Doppler velocity)
