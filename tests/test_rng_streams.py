@@ -115,3 +115,23 @@ def test_sensor_scans_do_not_consume_the_shared_stream():
 
     assert detections  # the radar really scanned and detected
     assert _shared_stream_state(sc.world) == state_after_spawn
+
+
+# -- adjudicator + debris model --------------------------------------------------
+
+def test_engagement_chain_off_the_shared_stream():
+    """Full SMALL_SCENARIO battle: kill rolls, ROE debris footprints and
+    wreck retention jitter must ride their own streams. The only shared
+    draws left are the two EnemyDrone.__init__ weave phases (P0-6f)."""
+    import copy
+
+    from test_end_to_end import SMALL_SCENARIO
+
+    sc = scenario_mod.build(copy.deepcopy(SMALL_SCENARIO))
+    sc.run()
+    assert any(e["kind"] == "kill" for e in sc.world.events)
+
+    expected = np.random.default_rng(SMALL_SCENARIO["seed"])
+    expected.uniform(0.0, 2.0 * np.pi)  # enemy 1 weave phase
+    expected.uniform(0.0, 2.0 * np.pi)  # enemy 2 weave phase
+    assert _shared_stream_state(sc.world) == expected.bit_generator.state

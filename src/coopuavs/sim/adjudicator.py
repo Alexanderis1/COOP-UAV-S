@@ -60,6 +60,9 @@ class EngagementAdjudicator(Node):
         self.turrets = turrets or {}
         self._result_pub = self.create_publisher("engagement/result")
         self.create_subscription("engagement/fire", self._on_fire)
+        # Own stream (DESIGN_REVIEW 5.1): kill rolls and stray dispersion
+        # must not depend on how many draws preceded them in the tick.
+        self._rng = world.rng_registry.stream("adjudicator")
 
     def _event_effector(self, effector, shooter_id: str) -> str:
         """Weapon name on engagement events (ICD: net|projectile|turret_gun):
@@ -99,7 +102,7 @@ class EngagementAdjudicator(Node):
             pk_true = uav.effector.p_kill(rel, uav.velocity, target.velocity)
             result.pk = pk_true
             result.effector = uav.effector.type
-            if self.world.rng.random() < pk_true:
+            if self._rng.random() < pk_true:
                 self._register_kill(result, target, uav.effector.type, msg.uav_id, pk_true)
             else:
                 self.world.log_event(
@@ -151,7 +154,7 @@ class EngagementAdjudicator(Node):
             p_burst = 1.0 - (1.0 - p_round) ** n_rounds
             result.pk = p_burst
             result.effector = msg.effector
-            if self.world.rng.random() < p_burst:
+            if self._rng.random() < p_burst:
                 self._register_kill(result, target, msg.effector, msg.uav_id, p_burst)
                 stray_rounds = max(0, n_rounds - 1)   # the killing round stops
             else:
@@ -192,7 +195,7 @@ class EngagementAdjudicator(Node):
         tof = dist / turret.muzzle_velocity
 
         for _ in range(n):
-            err = self.world.rng.normal(0.0, turret.dispersion_mrad * 1e-3, 2)
+            err = self._rng.normal(0.0, turret.dispersion_mrad * 1e-3, 2)
             d = u + e1 * err[0] + e2 * err[1]
             v0 = d / np.linalg.norm(d) * turret.muzzle_velocity
             # Ballistic time to ground: z0 + v0z t - g t^2 / 2 = 0.
@@ -259,7 +262,7 @@ class EngagementAdjudicator(Node):
             pk = uav.effector.p_kill(rel, uav.velocity, deb.velocity)
 
         result.pk = pk
-        if self.world.rng.random() < pk:
+        if self._rng.random() < pk:
             impact = deb.predicted_impact()
             saved_zone = self.world.env.risk_map.zone_at(impact[0], impact[1])
             del self.world.debris[deb.debris_id]
@@ -302,7 +305,7 @@ class EngagementAdjudicator(Node):
         # predictive footprint samples, integrated by the world until it
         # lands or is intercepted.
         retention = velocity_retention(effector_type) \
-            * float(retention_jitter(self.world.rng))
+            * float(retention_jitter(self._rng))
         vel = np.array([target.velocity[0] * retention,
                         target.velocity[1] * retention, 0.0])
         deb = FallingDebris(
