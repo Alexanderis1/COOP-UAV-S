@@ -49,7 +49,7 @@ class World:
         # time (PLAN_PROBLEM1 P0-6); new randomness must use the registry.
         self.rng_registry = RngRegistry(seed)
         self.debris_model = DebrisModel(self.rng)
-        self.weather = weather or WeatherState(self.rng)
+        self.weather = weather or WeatherState(self.rng_registry.stream("weather"))
         # Building LOS occlusion (SIM-SEN-005/SIM-EFF-006); scenarios may
         # disable it (`occlusion: {enabled: false}` restores v0.1 sensing).
         self.occlusion = OcclusionGrid(env.buildings, env.bounds)

@@ -122,7 +122,8 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
     env = Environment.from_config(cfg["environment"])
     run_seed = cfg.get("seed", 0) if seed is None else seed
     world = World(env, dt=cfg.get("dt", 0.05), seed=run_seed)
-    world.weather = WeatherState.from_config(cfg.get("weather"), world.rng)
+    world.weather = WeatherState.from_config(
+        cfg.get("weather"), world.rng_registry.stream("weather"))
     world.occlusion.enabled = dict(cfg.get("occlusion") or {}).get("enabled", True)
     assets = {a.name: a for a in env.assets}
 
