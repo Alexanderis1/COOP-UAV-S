@@ -17,6 +17,15 @@ per task — gates are never loosened silently.*
   per cadence decision; next: P1 (physics core, standalone).
 - 2026-06-11 — PR [#7](https://github.com/Alexanderis1/COOP-UAV-S/pull/7) opened
   (`feature/problem1-p0-foundations`, stacked on #6 / `feature/urban-environment`).
+- 2026-06-11 — **P1 COMPLETE, GATE PASSED**: physics core standalone, 287 default +
+  1 slow + 5 `@oracle` + 1 `@perf` green, ruff clean. Perf 0.188 s CPU/sim-s at
+  N=20/N=30 (gate 0.25; first measure 0.406 → numpy hot-path work, no numba).
+  RotorPy oracle ≤0.0002 m / ≤1e-4° over 10 s. 41-agent adversarial review (3-lens
+  refutation per finding): 12 raw → 8 upheld → 6 distinct, all fixed same day
+  (3 mutation-killing test pins for quat_rotate_inv / body-frame Faessler drag /
+  control-surface polarity; Dryden v≤0 ValueError; collision closed hi-face bounds;
+  oracle exporter t=0 init + sanctioned trace re-record). Stopped for user review
+  per cadence; next: P2 (hw device models) or P6 lane B (both unblocked by P1).
 
 ## Context
 
