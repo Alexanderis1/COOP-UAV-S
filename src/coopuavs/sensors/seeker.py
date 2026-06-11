@@ -18,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.messages import Detection, ThreatClass
+from ..hw.seeker_gimbal import SeekerGimbal
 from ..interceptors.uav import InterceptorUav
 from ..threats.enemy_drone import EnemyDrone
 from .base import Sensor
@@ -67,3 +68,58 @@ class OnboardSeeker(Sensor):
             cov=np.eye(3) * self.sigma**2,
             class_likelihoods=likelihoods,
         )
+
+
+class GimbaledSeeker(OnboardSeeker):
+    """OnboardSeeker behind a hw/seeker_gimbal FOV/slew constraint (P2-4):
+    closes the PHY-UAV-012 "no gimbal FOV constraint" deviation at device
+    level. The observation model is untouched: when every in-range,
+    non-occluded enemy in the scan is inside the cone, the detections are
+    byte-identical to OnboardSeeker's (pinned). An enemy skipped by the FOV
+    gate shifts the *later* enemies' noise draws within that scan — the
+    same skip-shifts-draws behavior the base class's range and occlusion
+    gates already have (pinned by the multi-enemy companion test).
+
+    Cueing: each scan the gimbal slews toward the platform's engaged
+    target's FUSED TRACK position (``InterceptorUav.seeker_cue`` — the same
+    estimate guidance and fire control fly on), so track staleness and
+    extrapolation error are faithful cueing error and the cue path never
+    reads ground truth (SIM-GT-001). Untasked, or tasked with no track
+    picture, the gimbal holds its pose (caged) — P4 replaces the direct
+    call with the MC's cue command over the modeled FCU<->MC link. Legacy
+    point-mass bodies carry no attitude, so the gimbal works in world axes
+    (identity attitude) until the SITL plants land (P4). The servo advances
+    by the elapsed sim time between fires (bootstrapped at one scan
+    period), so a scheduler that misses deadlines slews the gimbal through
+    real elapsed time instead of time-warping it.
+    """
+
+    def __init__(self, name, world, uav: InterceptorUav,
+                 gimbal: SeekerGimbal, **kwargs):
+        super().__init__(name, world, uav, **kwargs)
+        if gimbal.n != 1:
+            raise ValueError(
+                f"GimbaledSeeker rides one airframe; gimbal has n={gimbal.n}")
+        self.gimbal = gimbal
+        self._last_fire_t: float | None = None
+
+    def update(self, t: float, dt: float) -> None:
+        self.position = self.uav.body.position
+        cue = self.uav.seeker_cue()
+        if cue is not None:
+            los = np.asarray(cue.position, dtype=float) - self.position
+            if float(np.linalg.norm(los)) > 0.0:
+                self.gimbal.point_at(los[None, :])
+        elapsed = (1.0 / self.rate_hz if self._last_fire_t is None
+                   else t - self._last_fire_t)
+        self._last_fire_t = t
+        if elapsed > 0.0:
+            self.gimbal.step(elapsed)
+        super().update(t, dt)
+
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
+        los = enemy.position - self.position
+        if not self.gimbal.in_fov(los[None, :])[0]:
+            return None
+        return super().observe(enemy, t, trans)

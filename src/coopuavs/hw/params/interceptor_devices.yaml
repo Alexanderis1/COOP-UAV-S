@@ -1,0 +1,68 @@
+# Sensor suite of the Tier-P interceptor (P2 hw device models).
+# INVENTED-BUT-REPRESENTATIVE: magnitudes sized to the named device classes
+# (tactical MEMS IMU, multi-band GNSS, baro/mag of the PX4 ecosystem), not
+# copied from any datasheet. Numbers are pinned by the hw tests; edits here
+# intentionally fail those pins until re-baselined.
+# Frames: body FLU / world ENU; SI units unless the key name says otherwise.
+name: interceptor_devices
+imu:                            # ICM-42688-class tactical MEMS, 400 Hz
+  rate_hz: 400.0
+  gyro:
+    noise_density: 8.7e-5       # rad/s/sqrt(Hz) (~0.005 deg/s/sqrt(Hz))
+    gm_sigma: 4.0e-5            # rad/s (~8 deg/h bias-instability class)
+    gm_tau_s: 100.0             # s
+    rw_sigma: 1.0e-5            # rad/s/sqrt(s)
+    turn_on_sigma: 3.5e-3       # rad/s (~0.2 deg/s per power-up)
+    lsb: 1.06e-3                # rad/s (2000 dps full scale / 16 bit)
+    range: 34.9                 # rad/s (2000 dps)
+  accel:
+    noise_density: 2.0e-3       # m/s^2/sqrt(Hz)
+    gm_sigma: 4.0e-4            # m/s^2 (~40 ug class)
+    gm_tau_s: 100.0             # s
+    rw_sigma: 6.0e-5            # m/s^2/sqrt(s)
+    turn_on_sigma: 0.2          # m/s^2 (~20 mg per power-up)
+    lsb: 4.8e-3                 # m/s^2 (16 g full scale / 16 bit)
+    range: 157.0                # m/s^2 (16 g)
+  fifo_depth: 64                # frames (device buffer between 400 Hz device
+                                # rate and the P3 driver drain rate)
+gps:                            # multi-band GNSS, u-blox F9-class
+  rate_hz: 10.0
+  latency_s: 0.120              # s, solution latency (exact ticks: 96 at 800 Hz)
+  sigma_pos_h: 0.4              # m white, per horizontal ENU axis
+  sigma_pos_v: 0.8              # m white, vertical
+  gm_sigma_h: 1.2               # m correlated wander (iono/tropo/multipath)
+  gm_sigma_v: 2.4               # m
+  gm_tau_s: 60.0                # s
+  sigma_vel: 0.1                # m/s white, per axis (Doppler velocity)
+baro:                           # MS5611-class static pressure sensor
+  rate_hz: 50.0
+  sigma_pa: 3.0                 # Pa white (~0.25 m at sea level)
+  gm_sigma_pa: 15.0             # Pa slow drift (temperature/weather lumped)
+  gm_tau_s: 600.0               # s
+  lsb_pa: 1.2                   # Pa (0.012 mbar conversion resolution)
+mag:                            # IST8310-class 3-axis magnetometer
+  rate_hz: 50.0
+  magnitude_ut: 50.0            # uT theater geomagnetic field
+  declination_deg: 4.0          # deg east of true north
+  inclination_deg: 63.0         # deg dip below horizontal (N hemisphere)
+  sigma_ut: 0.3                 # uT white, per axis
+  gm_sigma_ut: 0.5              # uT slow bias (current draw / temperature)
+  gm_tau_s: 300.0               # s
+  hard_iron_sigma_ut: 2.0       # uT per-power-up calibration residual
+  lsb_ut: 0.3                   # uT conversion resolution
+seeker_gimbal:                  # 2-axis EO/IR terminal-seeker gimbal
+  fov_half_deg: 17.5            # deg, combined EO/IR detection cone
+  slew_max_dps: 200.0           # deg/s per axis
+  tau_s: 0.05                   # s, servo first-order time constant
+  az_max_deg: 170.0             # deg, symmetric azimuth travel
+  el_min_deg: -90.0             # deg (straight down)
+  el_max_deg: 30.0              # deg above the nose
+esc_telem:                      # BLHeli32-class per-ESC telemetry frames
+  rate_hz: 10.0                 # Hz (PHY-UAV-013 needs >= 1 Hz northbound)
+  sigma_rpm: 5.0                # rpm white (mechanical shaft rpm)
+  sigma_v: 0.02                 # V white (pack bus; per-cell arrives P5)
+  sigma_i: 0.1                  # A white
+  rpm_lsb: 10.0                 # rpm; protocol eRPM granularity after the
+                                # driver's pole-pair division
+  v_lsb: 0.01                   # V
+  i_lsb: 0.1                    # A

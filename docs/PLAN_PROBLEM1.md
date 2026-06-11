@@ -49,6 +49,53 @@ per task — gates are never loosened silently.*
   RESEARCH.md powertrain equation + windmill/tip-Mach known limitations, this entry.
   No existing pins re-baselined; param values unchanged (comments/keys only).
 
+- 2026-06-11 — **P2 COMPLETE, GATE PASSED**: `hw/` device models standalone
+  (imu, gps, baro, mag, seeker_gimbal + GimbaledSeeker adapter, esc_telem +
+  `hw/stoch.py` shared error processes; `interceptor_devices.yaml`
+  invented-but-representative, pinned). Allan suite green: configured N/B/K
+  recovered ±10% on all 6 IMU axes (worst 7.2%), valid because the
+  vectorized `generate()` path is pinned bit-exact to the `sample()` loop.
+  GPS latency exactly 96 ticks @ 800 Hz (integer-tick design, no float-time
+  compares). Perf gate: full 20-vehicle sensor stack **0.020 s CPU/sim-s**
+  (gate 0.1); N=30 0.027 (gated 0.15 per budget table); reps span 4 sim-s
+  so readings resolve above the 15.625 ms Windows process_time quantum.
+  86 new tests (default suite 416 + 2 slow + 2 perf + 7 oracle; heavy
+  markers run as separate pytest processes — the @slow Allan suite's
+  transient ~400 MB heap measurably degrades a same-process @perf
+  measurement), ruff clean, legacy suite + golden pins untouched. Branch
+  `feature/problem1-p2-hw-devices` stacked on PR #8. One upstream fix
+  folded in: `stoch.avar_gauss_markov` initially transcribed the IEEE-952
+  GM Allan curve a factor 2 low (their q-parameterization vs our
+  stationary sigma) — caught by the Allan Monte-Carlo itself, re-derived
+  from R(u) and documented in RESEARCH.md.
+- 2026-06-11 — **P2 gate review** (69-agent adversarial workflow: 6 find
+  lenses incl. worktree mutation testing, 3-lens refutation per finding):
+  11 confirmed (+5 doc/number nits whose verifiers hit a session cap,
+  re-judged by hand). All fixed same day: (1) saturation now clips to
+  grid-aligned full scale `floor(range/lsb)*lsb` — shipped-yaml 34.9/1.06e-3
+  previously rounded a saturated gyro to 34.9005 > range (non-commensurate
+  pin added); (2) the surviving-mutant class (cross-channel/cross-component
+  draw reuse passes every statistical gate incl. Allan) killed structurally
+  by `tests/test_hw_draw_layout.py` — absolute bit-exact draw-layout pins
+  for all 5 stochastic devices; (3) GimbaledSeeker servo now advances by
+  elapsed sim time (was fixed 1/rate_hz per fire — time-warped under
+  scheduler overload); byte-identical claim scoped to all-in-cone scans +
+  multi-enemy skip-shifts-draws pin; (4) gimbal initial pose clipped into
+  el travel band; (5) generate()==sample() pin now forced across internal
+  chunk boundaries (monkeypatched budget); (6) GPS timing pins fail closed
+  (exact fix counts); (7) perf reps lengthened to 4 sim-s (the recorded
+  0.016 was exactly one Windows timer quantum, unresolved) — resolved
+  figures 0.020/0.027; (8) esc rpm relabelled mechanical shaft rpm (eRPM
+  pole-pair conversion is the driver's), baro sigma comment 0.25 m.
+  Stopped for user review per cadence; next: P3 (CoopFC, critical path);
+  P6 lane B remains unblocked.
+- 2026-06-11 — **P2 open questions resolved** (user delegated to
+  fidelity-optimal): gimbal cue = engaged target's fused track
+  (`InterceptorUav.seeker_cue()` additive seam, estimate-only; the interim
+  nearest-truth auto-cue was a SIM-GT-001 truth leak and is gone); N=30
+  sensor-stack perf gated at the same 0.1 s/sim-s as N=20 (0.15
+  budget-table figure informational). See Resolved questions 2-3.
+
 ## Context
 
 Based on PR #6 (`feature/urban-environment`, SRS v0.3). Simulator today: 20 Hz fixed-step,
@@ -218,13 +265,30 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       equation (TRC-001 same commit) (2026-06-11)
 
 ### P2 — Hardware device models (M)
-- [ ] P2-1 `hw/imu.py`: Allan-variance slope test recovers configured N/B/K ±10% (`@slow`);
-      FIFO/quantization/turn-on-bias-per-seed tests
-- [ ] P2-2 `hw/gps.py` (noise+random walk, 10 Hz, 120 ms latency exact) + fix-type field
-- [ ] P2-3 `hw/baro.py` (ISA round-trip + drift) + `hw/mag.py` (theater field vector + GM bias)
-- [ ] P2-4 `hw/seeker_gimbal.py` FOV/slew/servo (PHY-UAV-012) + adapter into `sensors/seeker.py`
-- [ ] P2-5 `hw/esc_telem.py` + determinism/stream-uniqueness suite
-- GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s
+- [x] P2-1 `hw/imu.py`: Allan-variance slope test recovers configured N/B/K ±10% (`@slow`) —
+      measured worst 7.2% over 6 axes (32768 s @ 100 Hz; generate()==sample() pinned bit-exact);
+      FIFO/quantization/turn-on-bias-per-seed tests. `hw/stoch.py` shared primitives
+      (exact-ZOH GM + stationary cold start, bias RW, quantize, analytic AVAR curves) (2026-06-11)
+- [x] P2-2 `hw/gps.py` noise + GM wander (h/v split), 10 Hz, 120 ms latency exact
+      (integer-tick: 96 ticks @ 800 Hz, divisibility validated at build) + fix-type field
+      (2026-06-11)
+- [x] P2-3 `hw/baro.py` ISA round-trip exact (altitude_from_pressure inverse; sigma_h =
+      sigma_p/(rho g0) pinned) + GM drift; `hw/mag.py` theater field (|B|/decl/incl -> ENU),
+      hard-iron per power-up + GM bias + white, rotation pins vs quat_to_rotmat (2026-06-11)
+- [x] P2-4 `hw/seeker_gimbal.py` FOV/slew/servo (PHY-UAV-012): rate-limited first-order
+      2-axis servo (deadbeat for dt>tau, never overshoots), travel limits, closed FOV cone;
+      `GimbaledSeeker` adapter (additive — OnboardSeeker untouched; detections byte-identical
+      when every observed enemy is in-cone, FOV-skip shifts later draws same scan [pinned];
+      servo advances by elapsed sim time; cued by the engaged target's fused track via
+      `InterceptorUav.seeker_cue` — estimate-only, untasked = caged hold, P4 moves the call
+      onto the FCU<->MC link) (2026-06-11)
+- [x] P2-5 `hw/esc_telem.py` (BLHeli32-class rpm/V/A frames off Powertrain outputs, exact rpm
+      conversion pin, quantization, powertrain-in-envelope smoke) + determinism/stream-uniqueness
+      suite (run-twice, extra-consumer order-independence, removed-device invariance, fleet-growth
+      prefix, shared-parent hazard pin) + `@perf` stack gate (2026-06-11)
+- GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s — measured **0.020-0.023
+  s/sim-s at N=20, 0.027 at N=30** (N=30 gated at the SAME 0.1, P1 precedent; budget-table 0.15
+  informational; 4 sim-s reps, resolved above the Windows timer quantum)
 
 ### P3 — CoopFC flight stack in isolation (XL — largest phase)
 `sil/bench.py` harness: physics + hw + one FCU, no tactical stack. Import fence enforced.
@@ -343,3 +407,11 @@ DESIGN_REVIEW 1.1/1.6/5.1/5.2/5.3 marked resolved as they close.
 
 ## Resolved questions
 1. Tier-F fixed-wing interceptor out of Problem-1 scope — **CONFIRMED out** (user, 2026-06-11).
+2. P2 gimbal cue source (user delegated "optimal for fidelity", 2026-06-11): **engaged target's
+   fused track** via additive `InterceptorUav.seeker_cue()` seam (estimate-only, SIM-GT-001;
+   untasked = caged hold). The earlier interim nearest-truth-threat auto-cue was a truth leak
+   into tactical logic (plan risk #5) and was removed same day; P4 moves the call onto the
+   modeled FCU<->MC link.
+3. P2 perf gate at N=30 (user delegated, 2026-06-11): gated at the **same 0.1 s/sim-s as N=20**
+   (P1 same-bound-both-N precedent); the 0.15 budget-table figure stays informational. Tight
+   sensor gates protect the fidelity budget from the degrading fallback levers.

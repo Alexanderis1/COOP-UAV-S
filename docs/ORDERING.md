@@ -70,7 +70,14 @@ Each step, in this frozen order:
 Every consumer draws from its own named stream
 (`core/rng.py RngRegistry`, pure function of `(run_seed, name)`):
 `weather`, `comms`, `sensor/<name>`, `adjudicator`, `debris`,
-`threat/<id>`. Consequences:
+`threat/<id>`. The staged P2 hw device banks (P4 wiring) follow the same
+rule with one parent stream per device type — `sensor/imu`, `sensor/gps`,
+`sensor/baro`, `sensor/mag`, `sensor/esc_telem` — from which each bank
+spawns one child per vehicle (the Dryden pattern: a fleet-size change
+leaves existing vehicles' draw histories identical; suite:
+`tests/test_hw_determinism.py`, including the pin that spawning twice from
+ONE parent is *not* an independent copy — names must be unique).
+Consequences:
 
 - Execution order between consumers **no longer touches randomness** — an
   extra consumer, a removed sensor, or a reordered scan leaves every other
@@ -107,7 +114,11 @@ two-level clock" contract, extended here with where the Dryden gust draw
 and the powertrain bus solve sit. Inside one §1 item-6 macro seam, each of
 the K micro-ticks (BASE_HZ, plan: 800 Hz) runs, in this frozen order:
 
-1. **Devices sample truth** (hw models; per-device RNG streams).
+1. **Devices sample truth** (`hw/` models, P2; per-device-type parent
+   streams with per-vehicle spawned children, §4). Devices are clocked at
+   exact divisors of BASE_HZ and latencies are integer tick counts
+   (`hw/gps.py` validates both at construction; 120 ms = 96 ticks at
+   800 Hz) — a rate pairing that doesn't divide is a scenario error.
 2. **Per-vehicle software scheduler** runs due tasks: drivers → estimator →
    controllers → mixer → PWM → CBIT → link.
 3. **MC tick** if due.
@@ -133,7 +144,8 @@ the K micro-ticks (BASE_HZ, plan: 800 Hz) runs, in this frozen order:
 
 Steps 5 and 6 have no data flow between them and draw from separate
 streams, but the order is frozen anyway — determinism pins replay whole
-ticks. Status: P1 ships the models and their unit pins; the tick order
-itself gets pinned by the P4 SitlEngine tests
-(`tests/test_sitl_end_to_end.py` determinism pins) when the micro-loop
-lands.
+ticks. Status: P1 ships the physics models and their unit pins; P2 ships
+the step-1 device models (imu/gps/baro/mag/seeker_gimbal/esc_telem) and
+their unit/determinism pins; the tick order itself gets pinned by the P4
+SitlEngine tests (`tests/test_sitl_end_to_end.py` determinism pins) when
+the micro-loop lands.

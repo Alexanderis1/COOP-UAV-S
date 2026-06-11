@@ -31,6 +31,8 @@ where = ["src"]
 "coopuavs.viz" = ["web/*"]
 # Airframe parameter files ship with the physics core (P1).
 "coopuavs.physics" = ["params/*.yaml"]
+# Device-suite parameter files ship with the hw models (P2).
+"coopuavs.hw" = ["params/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
