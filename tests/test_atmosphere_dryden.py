@@ -10,6 +10,7 @@ variance check. Stochastic tests use fixed seeds (deterministic).
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy import signal
 
 from coopuavs.physics import atmosphere as atm
@@ -151,6 +152,15 @@ def test_determinism_and_stream_independence():
     c = _generate(dryden.DrydenGusts(*args, np.random.default_rng(8)), 500)
     np.testing.assert_array_equal(a, b)
     assert np.abs(a - c).max() > 0.0
+
+
+def test_dryden_rejects_nonpositive_airspeed():
+    """Gate-review pin: v <= 0 used to silently produce all-NaN gusts."""
+    with pytest.raises(ValueError, match="airspeed"):
+        dryden.DrydenGusts(2, 0.01, 0.0, 50.0, 9.0, np.random.default_rng(1))
+    with pytest.raises(ValueError, match="airspeed"):
+        dryden.DrydenGusts(2, 0.01, np.array([20.0, -1.0]), 50.0, 9.0,
+                           np.random.default_rng(1))
 
 
 def test_zero_wind_zero_gusts():

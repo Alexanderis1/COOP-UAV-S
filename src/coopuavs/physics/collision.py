@@ -48,11 +48,23 @@ def segment_prisms(p0: np.ndarray, p1: np.ndarray, prisms: np.ndarray
         return np.zeros(n, bool), np.full(n, np.inf), p0.copy()
     lo, hi = _bounds(prisms)
     d = p1 - p0
-    d_safe = np.where(np.abs(d) < _EPS_DIR, _EPS_DIR, d)[:, None, :]
+    deg = np.abs(d) < _EPS_DIR                      # (N, 3) degenerate axes
+    d_safe = np.where(deg, _EPS_DIR, d)[:, None, :]
     t0 = (lo[None] - p0[:, None, :]) / d_safe
     t1 = (hi[None] - p0[:, None, :]) / d_safe
-    tlo = np.minimum(t0, t1).max(axis=2)            # (N, M) slab entry
-    thi = np.maximum(t0, t1).min(axis=2)            # (N, M) slab exit
+    tlo_ax = np.minimum(t0, t1)
+    thi_ax = np.maximum(t0, t1)
+    if deg.any():
+        # A degenerate axis is no constraint when p0 lies inside the CLOSED
+        # slab (matches inside_prisms; a signed-epsilon division would make
+        # exact hi-face grazes miss while lo-face grazes hit) and rules the
+        # prism out entirely when outside it.
+        inside0 = (p0[:, None, :] >= lo[None]) & (p0[:, None, :] <= hi[None])
+        deg_m = np.broadcast_to(deg[:, None, :], inside0.shape)
+        tlo_ax = np.where(deg_m, np.where(inside0, -np.inf, np.inf), tlo_ax)
+        thi_ax = np.where(deg_m, np.where(inside0, np.inf, -np.inf), thi_ax)
+    tlo = tlo_ax.max(axis=2)                        # (N, M) slab entry
+    thi = thi_ax.min(axis=2)                        # (N, M) slab exit
     valid = (thi >= np.maximum(tlo, 0.0)) & (tlo <= 1.0) & (thi >= 0.0)
     t_entry = np.where(valid, np.maximum(tlo, 0.0), np.inf)
     t = t_entry.min(axis=1)

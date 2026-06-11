@@ -70,6 +70,11 @@ class DrydenGusts:
         self.dt = float(dt)
         self.rng = rng
         v = np.broadcast_to(np.asarray(airspeed_ms, dtype=float), (self.n,))
+        if np.any(v <= 0.0):
+            raise ValueError(
+                "DrydenGusts requires airspeed_ms > 0 for every vehicle: the "
+                "Dryden frozen-turbulence model is undefined at zero airspeed "
+                "(tau = L/V); pass a representative positive airspeed.")
         sigma, length = mil8785c_low_altitude(altitude_m, wind20_ms)
         self.sigma = np.broadcast_to(sigma, (self.n, 3)).copy()
         self.length = np.broadcast_to(length, (self.n, 3)).copy()

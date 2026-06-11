@@ -67,6 +67,25 @@ def test_segment_axis_parallel_outside_misses():
     assert not hit[0]
 
 
+def test_segment_grazing_hi_face_in_plane_hits():
+    """Gate-review pin: closed bounds on hi faces too — a graze exactly in
+    the y=ymax or z=height plane hits, consistent with inside_prisms (the
+    old signed-epsilon trick hit lo-face grazes but missed hi-face ones)."""
+    hit, t, _ = seg([-5.0, 10.0, 10.0], [5.0, 10.0, 10.0])   # y = ymax plane
+    assert hit[0] and abs(t[0] - 0.5) < 1e-12
+    hit, t, _ = seg([-5.0, 0.0, 10.0], [5.0, 0.0, 10.0])     # y = ymin plane
+    assert hit[0] and abs(t[0] - 0.5) < 1e-12
+    hit, t, _ = seg([-5.0, 5.0, 30.0], [5.0, 5.0, 30.0])     # roof plane
+    assert hit[0] and abs(t[0] - 0.5) < 1e-12
+
+
+def test_stationary_point_queries():
+    hit, t, _ = seg([5.0, 5.0, 10.0], [5.0, 5.0, 10.0])      # hovering inside
+    assert hit[0] and t[0] == 0.0
+    hit, _, _ = seg([20.0, 5.0, 10.0], [20.0, 5.0, 10.0])    # hovering outside
+    assert not hit[0]
+
+
 def test_terrain_crossing():
     hit, t, point = col.segment_terrain(np.array([[0.0, 0.0, 5.0]]),
                                         np.array([[0.0, 0.0, -5.0]]))
