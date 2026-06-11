@@ -163,11 +163,13 @@ class GroundTurret(Node):
         if msg.uav_id != self.turret_id:
             return
         if msg.decision == EngagementDecision.DENIED:
-            if msg.track_id >= 0:
-                self._denied[msg.track_id] = msg.header.stamp
-                if msg.track_id == self.target_track:
-                    self.target_track = None
-                    self._await_until = 0.0
+            # Debris pseudo-tracks (negative ids) start the TTL too: under
+            # weapons_hold the turret otherwise keeps the lay and re-requests
+            # the same falling object every 2 s until it lands.
+            self._denied[msg.track_id] = msg.header.stamp
+            if msg.track_id == self.target_track:
+                self.target_track = None
+                self._await_until = 0.0
             return
         if msg.track_id != self.target_track:
             return                       # stale token for an abandoned lay

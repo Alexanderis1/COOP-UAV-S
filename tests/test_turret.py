@@ -124,6 +124,47 @@ def test_denied_clearance_blacklists_the_track():
     assert 1 in turret._denied
 
 
+def test_denied_debris_lay_respects_denial_ttl():
+    """A DENIED verdict on a debris pseudo-track (negative id) must abandon
+    the lay and start the denial TTL exactly like a track denial — under
+    weapons_hold the turret used to keep the lay and re-request the same
+    falling object every 2 s for its whole fall."""
+    from coopuavs.core.messages import DebrisArray, DebrisState
+
+    world, turret = make_battlefield()
+    requests = []
+    world.bus.subscribe("engagement/fire_request", requests.append)
+
+    def publish_debris():
+        world.bus.publish("debris/state", DebrisArray(
+            header=Header(stamp=world.t), debris=[DebrisState(
+                header=Header(stamp=world.t), debris_id="deb-x", track_ref=-101,
+                position=np.array([500.0, 0.0, 600.0]),
+                velocity=np.array([0.0, 0.0, -10.0]),
+                predicted_impact=np.array([500.0, 0.0, 0.0]),
+                impact_zone=ZoneClass.DANGEROUS, t_impact=60.0,
+            )]))
+
+    for _ in range(200):                       # settle the lay, first request
+        publish_debris()
+        world.step()
+        if requests:
+            break
+    assert requests and requests[0].track_id == -101
+
+    world.bus.publish("engagement/clearance", FireClearance(
+        header=Header(stamp=world.t), task_id=0, uav_id="t1", track_id=-101,
+        decision=EngagementDecision.DENIED,
+    ))
+    assert turret.target_track is None
+    assert -101 in turret._denied
+    n0 = len(requests)
+    for _ in range(int(6.0 / world.dt)):       # well inside DENIAL_TTL_S
+        publish_debris()
+        world.step()
+    assert len(requests) == n0                 # no re-request spam
+
+
 def test_clearance_for_another_track_is_ignored():
     """The token is bound to the track the ROE costed (PHY-TUR-001): an
     AUTHORIZED token for track 9 must not release a burst at track 1, and
