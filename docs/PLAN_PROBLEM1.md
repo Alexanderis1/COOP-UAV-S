@@ -232,8 +232,12 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       2-axis servo (deadbeat for dt>tau, never overshoots), travel limits, closed FOV cone;
       `GimbaledSeeker` adapter (additive — OnboardSeeker untouched, in-FOV detections pinned
       byte-identical; interim nearest-threat auto-cue until P4 MC cueing) (2026-06-11)
-- [ ] P2-5 `hw/esc_telem.py` + determinism/stream-uniqueness suite
-- GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s
+- [x] P2-5 `hw/esc_telem.py` (BLHeli32-class rpm/V/A frames off Powertrain outputs, exact rpm
+      conversion pin, quantization, powertrain-in-envelope smoke) + determinism/stream-uniqueness
+      suite (run-twice, extra-consumer order-independence, removed-device invariance, fleet-growth
+      prefix, shared-parent hazard pin) + `@perf` stack gate (2026-06-11)
+- GATE: Allan suite green; 20-vehicle sensor stack ≤0.1 s CPU/sim-s — measured **0.016 s/sim-s
+  at N=20 AND N=30** (N=30 gated 0.15 per budget table)
 
 ### P3 — CoopFC flight stack in isolation (XL — largest phase)
 `sil/bench.py` harness: physics + hw + one FCU, no tactical stack. Import fence enforced.

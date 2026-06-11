@@ -57,3 +57,11 @@ seeker_gimbal:                  # 2-axis EO/IR terminal-seeker gimbal
   az_max_deg: 170.0             # deg, symmetric azimuth travel
   el_min_deg: -90.0             # deg (straight down)
   el_max_deg: 30.0              # deg above the nose
+esc_telem:                      # BLHeli32-class per-ESC telemetry frames
+  rate_hz: 10.0                 # Hz (PHY-UAV-013 needs >= 1 Hz northbound)
+  sigma_rpm: 5.0                # rpm white
+  sigma_v: 0.02                 # V white (pack bus; per-cell arrives P5)
+  sigma_i: 0.1                  # A white
+  rpm_lsb: 10.0                 # rpm (erpm/pole-pair protocol granularity)
+  v_lsb: 0.01                   # V
+  i_lsb: 0.1                    # A
