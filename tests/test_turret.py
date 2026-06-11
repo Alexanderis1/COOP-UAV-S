@@ -165,6 +165,78 @@ def test_denied_debris_lay_respects_denial_ttl():
     assert len(requests) == n0                 # no re-request spam
 
 
+def test_turret_ignores_safe_bound_debris():
+    """SAFE-bound wreckage never enters turret target selection
+    (PHY-GCS-006): no lay, no clearance request."""
+    from coopuavs.core.messages import DebrisArray, DebrisState
+
+    world, turret = make_battlefield()
+    requests = []
+    world.bus.subscribe("engagement/fire_request", requests.append)
+    for _ in range(100):
+        world.bus.publish("debris/state", DebrisArray(
+            header=Header(stamp=world.t), debris=[DebrisState(
+                header=Header(stamp=world.t), debris_id="deb-safe",
+                track_ref=-101, position=np.array([500.0, 0.0, 600.0]),
+                velocity=np.array([0.0, 0.0, -10.0]),
+                predicted_impact=np.array([2500.0, 2500.0, 0.0]),
+                impact_zone=ZoneClass.SAFE, t_impact=60.0,
+            )]))
+        world.step()
+    assert requests == []
+    assert turret.state == "idle" and turret.target_track is None
+
+
+def test_turret_debris_intercept_end_to_end():
+    """The whole turret debris chain (PHY-GCS-006): pseudo-track selection,
+    clearance interlock, burst adjudication against the live object, credit
+    under debris_intercepted with the turret_gun weapon name."""
+    from coopuavs.core.messages import DebrisArray, DebrisState, EffectorType
+    from coopuavs.sim.debris_objects import FallingDebris
+
+    env = Environment.from_config({
+        "bounds": [-3000.0, -3000.0, 3000.0, 3000.0],
+        "default_zone": "SAFE",
+        "zones": [{"rect": [400.0, -200.0, 1200.0, 200.0], "class": "DANGEROUS"}],
+    })
+    world = World(env, dt=0.05, seed=2)
+    turret = GroundTurret("t1", world, np.array([0.0, 0.0, 5.0]),
+                          dispersion_mrad=3.0, min_pk=0.0)
+    world.turrets["t1"] = turret
+    world.add_node(turret)
+    world.add_node(EngagementAdjudicator(world, {}, {"t1": turret}))
+    deb = FallingDebris("deb-1", "owa-1", np.array([500.0, 0.0, 600.0]),
+                        np.array([0.0, 0.0, 0.0]), EffectorType.PROJECTILE,
+                        track_ref=-101)
+    world.debris[deb.debris_id] = deb
+
+    while world.debris and world.t < 16.0:
+        live = world.debris.get("deb-1")
+        if live is not None:
+            impact = live.predicted_impact()
+            world.bus.publish("debris/state", DebrisArray(
+                header=Header(stamp=world.t), debris=[DebrisState(
+                    header=Header(stamp=world.t), debris_id="deb-1",
+                    track_ref=-101, position=live.position.copy(),
+                    velocity=live.velocity.copy(),
+                    predicted_impact=np.array([impact[0], impact[1], 0.0]),
+                    impact_zone=world.env.risk_map.zone_at(impact[0], impact[1]),
+                    t_impact=live.time_to_impact(),
+                )]))
+            world.bus.publish("engagement/clearance", FireClearance(
+                header=Header(stamp=world.t), task_id=0, uav_id="t1",
+                track_id=-101, decision=EngagementDecision.AUTHORIZED,
+            ))
+        world.step()
+
+    assert world.debris_intercepted, "turret never neutralized the wreck"
+    credit = world.debris_intercepted[0]
+    assert credit["shooter"] == "t1" and credit["effector"] == "turret_gun"
+    neut = [e for e in world.events if e["kind"] == "debris_neutralized"]
+    assert neut and neut[0]["effector"] == "turret_gun"
+    assert not world.wrecks                    # intercepted, never landed
+
+
 def test_clearance_for_another_track_is_ignored():
     """The token is bound to the track the ROE costed (PHY-TUR-001): an
     AUTHORIZED token for track 9 must not release a burst at track 1, and

@@ -42,6 +42,14 @@ def test_derived_zones_show_all_three_colours():
         assert (grid == int(zone)).any()
 
 
+def test_checked_in_urban_raid_matches_generator():
+    """The committed scenario claims `citygen --seed 7` provenance: pin it
+    to the generator so the two cannot drift silently after tuning."""
+    import yaml
+    with open("scenarios/urban_raid.yaml", encoding="utf-8") as f:
+        assert yaml.safe_load(f) == generate(7)
+
+
 def test_generated_scenario_builds_and_runs():
     sc = scenario_mod.build(copy.deepcopy(generate(7)))
     assert len(sc.uavs) == 20 and len(sc.sentinels) == 10 and len(sc.turrets) == 3

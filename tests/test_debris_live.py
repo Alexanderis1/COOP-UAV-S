@@ -185,6 +185,41 @@ def test_retention_jitter_clamped_to_physical_range():
     assert float(j.max()) <= 2.0
 
 
+def test_safe_or_imminent_debris_never_enters_the_queue():
+    """PHY-GCS-006/SIM-DEB-003 negative requirement: SAFE-bound wreckage and
+    debris about to land (no engagement window) must not become tasks."""
+    from coopuavs.c2.base_station import BaseStation, DEBRIS_MIN_WINDOW_S
+    from coopuavs.core.bus import MessageBus
+    from coopuavs.core.messages import DebrisArray, DebrisState
+    from coopuavs.risk.debris import DebrisModel
+
+    bus = MessageBus()
+    published = []
+    bus.subscribe("engagement/tasks", published.append)
+    bs = BaseStation(bus, Environment.from_config(ENV_CFG),
+                     DebrisModel(np.random.default_rng(0)),
+                     uav_speeds={"u1": 60.0})
+    bus.publish("uav/state", UavState(header=Header(stamp=5.0), uav_id="u1",
+                                      position=np.zeros(3), ammo=4))
+    bs._on_debris(DebrisArray(header=Header(stamp=5.0), debris=[
+        DebrisState(header=Header(stamp=5.0), debris_id="deb-safe",
+                    track_ref=-101, position=np.array([0.0, 0.0, 300.0]),
+                    velocity=np.array([10.0, 0.0, -30.0]),
+                    predicted_impact=np.array([1500.0, 0.0, 0.0]),
+                    impact_zone=ZoneClass.SAFE, t_impact=8.0),
+        DebrisState(header=Header(stamp=5.0), debris_id="deb-imminent",
+                    track_ref=-102, position=np.array([100.0, 0.0, 20.0]),
+                    velocity=np.array([0.0, 0.0, -40.0]),
+                    predicted_impact=np.array([100.0, 0.0, 0.0]),
+                    impact_zone=ZoneClass.CRITICAL,
+                    t_impact=DEBRIS_MIN_WINDOW_S / 2.0),
+    ]))
+    tracks, assessments, info = bs._debris_picture(t=5.0)
+    assert tracks == {} and assessments == {} and info == {}
+    bs.update(5.0, 1.0)
+    assert published[-1] == []                 # nothing allocated either
+
+
 def test_debris_picture_preserves_reporter_stamp():
     """The pseudo-track must carry the reporter's stamp, not planning time:
     downstream extrapolates position from the stamp, and the reported
