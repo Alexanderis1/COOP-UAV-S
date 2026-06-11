@@ -969,3 +969,45 @@ as-is by decision, with the same warnings carried in the code):
   (738 rad/s, tip M ~0.38) is fine. No pin is affected (the RotorPy oracle
   shares the constant-coefficient model class); revisit (kf(Mach) rolloff
   or larger/slower props) if dash-regime fidelity becomes load-bearing.
+
+## P2 hardware device models - equation sources (added 2026-06-11)
+
+Per-equation traceability for `src/coopuavs/hw/` (same rule as P1: one
+citation per implemented equation, module docstrings carry the same
+references; every equation is additionally pinned by an analytic unit
+test, so no citation below is load-bearing for correctness).
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| IMU error budget: white noise density N, bias-instability proxy (first-order Gauss-Markov), bias random walk K, turn-on bias | `hw/imu.py` | El-Sheimy, Hou & Niu, *Analysis and modeling of inertial sensors using Allan variance*, IEEE Trans. Instrumentation & Measurement 57(1), 2008; IEEE Std 952-1997 Annex B/C; parameter convention per the Kalibr IMU noise model (noise density / random walk per sqrt(Hz)/sqrt(s)). [standard references] |
+| Discrete white noise sigma_d = N/sqrt(dt); exact-ZOH GM `x[k] = phi x[k-1] + sigma sqrt(1-phi^2) eps` with stationary cold start; RW `b[k] = b[k-1] + K sqrt(dt) eps` | `hw/stoch.py` | Brown & Hwang, *Introduction to Random Signals and Applied Kalman Filtering*, 4th ed., ch. 3 (Gauss-Markov ZOH discretization). [standard reference] |
+| Analytic Allan variances: `AVAR_N = N^2/tau`, `AVAR_K = K^2 tau/3`, `AVAR_GM = sigma^2 (T/tau)[2 - (T/tau)(3 - 4e^(-tau/T) + e^(-2tau/T))]` | `hw/stoch.py avar_*`; estimator `tests/allan_util.py` (fully-overlapping ADEV) | IEEE Std 952-1997 Annex C. NOTE: the GM curve here is re-derived from the autocorrelation `R(u) = sigma^2 e^(-|u|/T)`; IEEE writes the same curve parameterized by the driving noise q with `sigma^2 = q^2 T / 2` (a factor-2 trap when transcribing; the Monte-Carlo Allan suite pins ours). |
+| Specific force `f_b = q^-1 (a_world - g_world)` (accelerometer reads +g up at rest, 0 in free fall) | `hw/imu.py sample` | Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. (2013), ch. 2 strapdown conventions. [standard reference] |
+| GNSS error decomposition: white tracking noise over slowly correlated (GM) iono/tropo/multipath residual, h/v split; Doppler-white velocity | `hw/gps.py` | Groves 2013, ch. 9. [standard reference] |
+| Baro chain: `p = p_ISA(alt) + GM drift + white`, exact inverse `h = (T0/L)(1 - (p/p0)^(R L/g0))` | `hw/baro.py` | U.S. Standard Atmosphere 1976 (same source as `physics/atmosphere.py`); slowly-varying baro bias convention per PX4 EKF2 (which estimates exactly such an offset). [standard reference] |
+| Theater geomagnetic field from magnitude/declination/inclination: `B_ENU = |B| [cos I sin D, cos I cos D, -sin I]` | `hw/mag.py theater_field_enu` | Standard geomagnetic element definitions (e.g. NOAA NCEI / WMM documentation: D east of true north, I dip below horizontal). [standard reference] |
+| Mag error budget: per-power-up hard iron + GM bias + white | `hw/mag.py` | PX4 EKF2 magnetometer bias convention; hard/soft iron taxonomy standard (soft iron neglected - documented deviation). |
+| Rate-limited first-order gimbal servo `delta = clip(err min(dt/tau, 1), +-slew dt)` | `hw/seeker_gimbal.py` | Standard rate-limited actuator form, cf. Beard & McLain 2012 ch. 6 actuator models; `min(dt/tau, 1)` deadbeat discretization is ours (pinned: never overshoots). [standard reference] |
+| ESC telemetry frames: per-rotor rpm + pack bus V/A, protocol quantization | `hw/esc_telem.py` | BLHeli32/KISS ESC telemetry convention (rpm via erpm/pole-pairs, 0.01 V / 0.1 A granularity class). [project knowledge, representative] |
+
+Device parameter file (`hw/params/interceptor_devices.yaml`) is
+invented-but-representative: magnitudes sized to the named device classes
+(tactical MEMS IMU, multi-band GNSS, MS5611/IST8310-class baro/mag,
+BLHeli32-class telemetry), NOT copied from any datasheet, and pinned by
+the hw tests.
+
+Known model-validity limitations (P2, kept as-is by design):
+
+- **Mag soft iron neglected** (`hw/mag.py`): only a hard-iron offset is
+  modelled; attitude-dependent soft-iron distortion is absent. The P3 EKF
+  mag-fusion gates must not be tuned to exploit that absence.
+- **ESC telemetry has no temperature channel and pack-level V/I only**
+  (`hw/esc_telem.py`): no thermal model exists, and `BatteryEcm` carries
+  no per-cell states - per-cell imbalance telemetry arrives with the P5
+  CELL_IMBALANCE fault work.
+- **Gimbal stabilization assumed ideal** (`hw/seeker_gimbal.py`): no
+  coupling of airframe angular rate into the boresight inside the slew
+  budget.
+- **Baro reads the ISA column, not weather** (`hw/baro.py`): the legacy
+  weather model carries no pressure field; if a synoptic pressure offset
+  is added later it must enter the baro truth path explicitly.

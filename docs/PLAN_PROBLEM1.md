@@ -49,6 +49,26 @@ per task — gates are never loosened silently.*
   RESEARCH.md powertrain equation + windmill/tip-Mach known limitations, this entry.
   No existing pins re-baselined; param values unchanged (comments/keys only).
 
+- 2026-06-11 — **P2 COMPLETE, GATE PASSED**: `hw/` device models standalone
+  (imu, gps, baro, mag, seeker_gimbal + GimbaledSeeker adapter, esc_telem +
+  `hw/stoch.py` shared error processes; `interceptor_devices.yaml`
+  invented-but-representative, pinned). Allan suite green: configured N/B/K
+  recovered ±10% on all 6 IMU axes (worst 7.2%), valid because the
+  vectorized `generate()` path is pinned bit-exact to the `sample()` loop.
+  GPS latency exactly 96 ticks @ 800 Hz (integer-tick design, no float-time
+  compares). Perf gate: full 20-vehicle sensor stack **0.016 s CPU/sim-s**
+  (gate 0.1); N=30 0.016 (gated 0.15 per budget table). 71 new tests
+  (default suite 408 + 2 slow + 2 perf + 7 oracle; heavy markers run as
+  separate pytest processes — the @slow Allan suite's transient ~400 MB
+  heap measurably degrades a same-process @perf measurement), ruff clean, legacy
+  suite + golden pins untouched. Branch `feature/problem1-p2-hw-devices`
+  stacked on PR #8. One upstream fix folded in: `stoch.avar_gauss_markov`
+  initially transcribed the IEEE-952 GM Allan curve a factor 2 low (their
+  q-parameterization vs our stationary sigma) — caught by the Allan
+  Monte-Carlo itself, re-derived from R(u) and documented in RESEARCH.md.
+  Stopped for user review per cadence; next: P3 (CoopFC, critical path);
+  P6 lane B remains unblocked.
+
 ## Context
 
 Based on PR #6 (`feature/urban-environment`, SRS v0.3). Simulator today: 20 Hz fixed-step,
