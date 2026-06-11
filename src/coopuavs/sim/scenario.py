@@ -422,6 +422,8 @@ def _preset_threat_axes(cfg: dict, centre: np.ndarray) -> list[float]:
 
 def _enemy_factory(drone_id, threat_class, spawn, target, world, target_name=""):
     def make() -> EnemyDrone:
-        return EnemyDrone(drone_id, threat_class, spawn, target, world.rng,
+        # Per-threat stream (DESIGN_REVIEW 5.1): spawn order stops mattering.
+        rng = world.rng_registry.stream(f"threat/{drone_id}")
+        return EnemyDrone(drone_id, threat_class, spawn, target, rng,
                           world=world, target_name=target_name)
     return make

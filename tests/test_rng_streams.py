@@ -119,10 +119,10 @@ def test_sensor_scans_do_not_consume_the_shared_stream():
 
 # -- adjudicator + debris model --------------------------------------------------
 
-def test_engagement_chain_off_the_shared_stream():
-    """Full SMALL_SCENARIO battle: kill rolls, ROE debris footprints and
-    wreck retention jitter must ride their own streams. The only shared
-    draws left are the two EnemyDrone.__init__ weave phases (P0-6f)."""
+def test_full_battle_leaves_the_shared_stream_untouched():
+    """Full SMALL_SCENARIO battle: weather, sensing, comms, threats, kill
+    rolls, ROE debris footprints and wreck retention jitter all ride named
+    streams — the legacy shared `world.rng` stays virgin end to end."""
     import copy
 
     from test_end_to_end import SMALL_SCENARIO
@@ -130,8 +130,23 @@ def test_engagement_chain_off_the_shared_stream():
     sc = scenario_mod.build(copy.deepcopy(SMALL_SCENARIO))
     sc.run()
     assert any(e["kind"] == "kill" for e in sc.world.events)
+    assert _shared_stream_state(sc.world) == _fresh_state(SMALL_SCENARIO["seed"])
 
-    expected = np.random.default_rng(SMALL_SCENARIO["seed"])
-    expected.uniform(0.0, 2.0 * np.pi)  # enemy 1 weave phase
-    expected.uniform(0.0, 2.0 * np.pi)  # enemy 2 weave phase
-    assert _shared_stream_state(sc.world) == expected.bit_generator.state
+
+# -- order independence (DESIGN_REVIEW 5.1 closure) ------------------------------
+
+def test_extra_noop_consumer_leaves_every_other_draw_identical():
+    """The 5.1 fix, demonstrated: register an extra consumer that drains
+    10k draws from its own stream — every battle outcome stays identical."""
+    import copy
+
+    from test_end_to_end import SMALL_SCENARIO
+
+    def run(extra_consumer: bool):
+        sc = scenario_mod.build(copy.deepcopy(SMALL_SCENARIO))
+        if extra_consumer:
+            sc.world.rng_registry.stream("extra/noop").random(10_000)
+        summary = sc.run()
+        return sc.world.events, summary
+
+    assert run(False) == run(True)
