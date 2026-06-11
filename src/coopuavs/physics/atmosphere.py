@@ -10,7 +10,8 @@ Equations [US Standard Atmosphere 1976 / ICAO ISA; see docs/RESEARCH.md]:
 Altitude is geometric metres above mean sea level (the <= 2 km sim envelope
 makes the geometric/geopotential distinction negligible). Valid for
 h <= 11 000 m; higher altitudes raise ValueError rather than silently
-extrapolating into the (isothermal) stratosphere.
+extrapolating into the (isothermal) stratosphere, and non-finite altitudes
+(NaN/inf) raise too rather than silently propagating NaN.
 """
 
 from __future__ import annotations
@@ -30,8 +31,12 @@ _P_EXP = G0 / (R_AIR * ISA_LAPSE)
 
 def _check(alt_m: np.ndarray) -> np.ndarray:
     alt = np.asarray(alt_m, dtype=float)
-    if np.any(alt > _TROPOPAUSE_M):
-        raise ValueError(f"ISA troposphere model valid only up to {_TROPOPAUSE_M} m")
+    # NaN compares False to every bound, so a plain `any(alt > max)` would
+    # let NaN slip through and silently propagate NaN T/p/rho downstream.
+    if not np.all(np.isfinite(alt)) or np.any(alt > _TROPOPAUSE_M):
+        raise ValueError(
+            f"ISA troposphere model valid only up to {_TROPOPAUSE_M} m "
+            "and requires finite altitude")
     return alt
 
 

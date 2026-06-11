@@ -1,10 +1,13 @@
 """P1-2: ISA atmosphere + MIL-F-8785C low-altitude Dryden turbulence.
 
-Atmosphere pinned against the 1976 ISA table (sea level / 1 km / 11 km).
-Dryden pinned three ways: (a) MIL-F-8785C parameter table (sigma/L vs h, W20),
-(b) closed-form bilinear coefficients vs scipy.signal.bilinear, (c) measured
-Welch PSD of the generated gusts vs the analytic Dryden spectrum, plus a
-variance check. Stochastic tests use fixed seeds (deterministic).
+Atmosphere pinned against the 1976 ISA table (sea level / 1 km / 11 km),
+plus raise-don't-extrapolate pins (> 11 km, NaN). Dryden pinned four ways:
+(a) MIL-F-8785C parameter table as independent hand-computed literals
+(cross-checked against Beard & McLain 2012 Table 4.1), (b) closed-form
+bilinear coefficients vs scipy.signal.bilinear, (c) measured Welch PSD of the
+generated gusts vs the analytic Dryden spectrum, plus a variance check,
+(d) stationary cold-start + per-vehicle stream isolation (fleet-size
+invariance, P0 RNG contract). Stochastic tests use fixed seeds.
 """
 
 from __future__ import annotations
@@ -55,20 +58,58 @@ def test_isa_slightly_negative_altitude_continuous():
     assert t > 288.15 and p > 101325.0 and rho > 1.225
 
 
+def test_isa_rejects_above_tropopause():
+    """Docstring contract: > 11 km raises rather than silently extrapolating."""
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.temperature(11000.1)
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.pressure(np.array([0.0, 12000.0]))
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.isa(20000.0)
+
+
+def test_isa_rejects_nan_altitude():
+    """NaN altitude must raise, not silently propagate NaN T/p/rho."""
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.temperature(np.nan)
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.pressure(np.array([0.0, np.nan]))
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.density(np.nan)
+    with pytest.raises(ValueError, match="ISA troposphere"):
+        atm.isa(np.nan)
+
+
 # ------------------------------------------------- MIL-F-8785C parameter table
 
 
 def test_mil8785c_low_altitude_table():
-    h_m, w20 = 50.0, 9.0  # 164.04 ft AGL, 9 m/s wind at 20 ft
-    sigma, length = dryden.mil8785c_low_altitude(h_m, w20)
-    h_ft = h_m / FT
-    denom = 0.177 + 0.000823 * h_ft
-    assert abs(sigma[2] - 0.1 * w20) < 1e-12                      # sigma_w = 0.1 W20
-    assert abs(sigma[0] - 0.1 * w20 / denom**0.4) < 1e-12          # sigma_u = sigma_v
-    assert abs(sigma[0] - sigma[1]) < 1e-15
-    assert abs(length[2] - h_m) < 1e-9                             # L_w = h
-    assert abs(length[0] - (h_ft / denom**1.2) * FT) < 1e-9        # L_u = L_v
-    assert abs(length[0] - length[1]) < 1e-12
+    """Independent literal pins: NOT re-derived from the implementation formula.
+
+    Hand-computed once from MIL-F-8785C section 3.7.3 low-altitude form
+    (h in ft): sigma_w = 0.1 W20, sigma_u = sigma_v = sigma_w / denom^0.4,
+    L_w = h, L_u = L_v = h / denom^1.2 with denom = 0.177 + 0.000823 h.
+    A transcription error in any of the four constants breaks these literals.
+    """
+    # h = 50 m (164.042 ft), W20 = 7 m/s -> denom = 0.31200656
+    sigma, length = dryden.mil8785c_low_altitude(50.0, 7.0)
+    assert abs(sigma[0] - 1.1154049) < 1e-6
+    assert abs(sigma[1] - 1.1154049) < 1e-6
+    assert abs(sigma[2] - 0.7) < 1e-12
+    assert abs(length[0] - 202.2895886) < 1e-6
+    assert abs(length[1] - 202.2895886) < 1e-6
+    assert abs(length[2] - 50.0) < 1e-9
+    # Beard & McLain 2012 Table 4.1, low altitude / light turbulence
+    # (h = 50 m: sigma_u ~ 1.06 m/s, L_u ~ 200 m), within table rounding.
+    assert abs(sigma[0] - 1.06) / 1.06 < 0.06
+    assert abs(length[0] - 200.0) / 200.0 < 0.02
+
+    # h = 200 ft (60.96 m), W20 = 10 m/s -> denom = 0.3416
+    sigma, length = dryden.mil8785c_low_altitude(200.0 * FT, 10.0)
+    assert abs(sigma[0] - 1.5367133) < 1e-6
+    assert abs(sigma[2] - 1.0) < 1e-12
+    assert abs(length[0] - 221.2195599) < 1e-6
+    assert abs(length[2] - 60.96) < 1e-9
 
 
 def test_mil8785c_altitude_clamped_to_spec_band():
@@ -76,6 +117,14 @@ def test_mil8785c_altitude_clamped_to_spec_band():
     sig_10ft, len_10ft = dryden.mil8785c_low_altitude(10.0 * FT, 5.0)
     np.testing.assert_allclose(sig_low, sig_10ft, rtol=1e-12)
     np.testing.assert_allclose(len_low, len_10ft, rtol=1e-12)
+
+
+def test_mil8785c_upper_clamp_at_1000ft():
+    """Above 1000 ft the low-altitude form is frozen at the 1000 ft values."""
+    sig_hi, len_hi = dryden.mil8785c_low_altitude(500.0, 6.0)        # 1640 ft
+    sig_1k, len_1k = dryden.mil8785c_low_altitude(1000.0 * FT, 6.0)  # exactly 1000 ft
+    np.testing.assert_array_equal(sig_hi, sig_1k)
+    np.testing.assert_array_equal(len_hi, len_1k)
 
 
 # ----------------------------------------------------- discretization coefficients
@@ -163,6 +212,40 @@ def test_dryden_rejects_nonpositive_airspeed():
                            np.random.default_rng(1))
 
 
+def test_dryden_rejects_nonfinite_airspeed():
+    """NaN compares False to <= 0, so it used to bypass the v <= 0 guard and
+    silently reproduce the all-NaN-gusts failure the guard was added for."""
+    for bad in (np.nan, np.inf, np.array([20.0, np.nan])):
+        with pytest.raises(ValueError, match="airspeed"):
+            dryden.DrydenGusts(2, 0.01, bad, 50.0, 9.0, np.random.default_rng(1))
+
+
+def test_dryden_rejects_nonpositive_or_nonfinite_dt():
+    """dt <= 0 gives NaN noise std / sign-flipped Tustin c; NaN dt poisons all."""
+    for bad_dt in (0.0, -0.01, np.nan):
+        with pytest.raises(ValueError, match="dt"):
+            dryden.DrydenGusts(2, bad_dt, 25.0, 50.0, 9.0, np.random.default_rng(1))
+
+
+def test_fleet_size_invariance_per_vehicle_streams():
+    """P0 RNG contract: adding a vehicle leaves existing vehicles' gusts
+    identical (per-vehicle child streams spawned from the parent rng)."""
+    kw = dict(dt=0.01, airspeed_ms=25.0, altitude_m=40.0, wind20_ms=7.0)
+    three = _generate(dryden.DrydenGusts(3, rng=np.random.default_rng(7), **kw), 300)
+    two = _generate(dryden.DrydenGusts(2, rng=np.random.default_rng(7), **kw), 300)
+    np.testing.assert_array_equal(three[:, :2, :], two)
+
+
+def test_first_sample_from_stationary_distribution():
+    """Kills zero-state init: the ensemble variance of the very FIRST sample
+    must already match sigma^2 (no ~3 tau under-dispersed warm-up ramp)."""
+    n, dt, v_air, h_m, w20 = 8000, 0.01, 30.0, 50.0, 9.0
+    model = dryden.DrydenGusts(n, dt, v_air, h_m, w20, np.random.default_rng(2026))
+    first = model.step()
+    np.testing.assert_allclose(first.var(axis=0), model.sigma[0] ** 2, rtol=0.10)
+    assert np.abs(first.mean(axis=0)).max() < 0.05 * model.sigma.max()
+
+
 def test_zero_wind_zero_gusts():
     model = dryden.DrydenGusts(3, 0.01, 20.0, 50.0, 0.0, np.random.default_rng(1))
     series = _generate(model, 100)
@@ -178,3 +261,44 @@ def test_per_vehicle_altitude_broadcast():
     assert model.sigma[0, 0] > model.sigma[2, 0]
     out = model.step()
     assert out.shape == (3, 3)
+
+
+# --------------------------------------------------- body FLU -> world ENU seam
+
+
+def test_gusts_to_world_identity_attitude():
+    model = dryden.DrydenGusts(4, 0.01, 25.0, 50.0, 9.0, np.random.default_rng(3))
+    g = model.step()
+    q = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (4, 1))
+    np.testing.assert_array_equal(dryden.gusts_to_world(q, g), g)
+
+
+def test_gusts_to_world_90deg_yaw():
+    """+90 deg yaw (ENU z): body u_g (forward) lands on world +y (north),
+    body v_g (left) lands on world -x (west)."""
+    model = dryden.DrydenGusts(4, 0.01, 25.0, 50.0, 9.0, np.random.default_rng(4))
+    g = model.step()
+    s = np.sqrt(0.5)
+    q = np.tile(np.array([s, 0.0, 0.0, s]), (4, 1))
+    w = dryden.gusts_to_world(q, g)
+    np.testing.assert_allclose(w[:, 1], g[:, 0], atol=1e-12)
+    np.testing.assert_allclose(w[:, 0], -g[:, 1], atol=1e-12)
+    np.testing.assert_allclose(w[:, 2], g[:, 2], atol=1e-12)
+
+
+def test_gusts_to_world_preserves_anisotropy():
+    """+90 deg pitch about body y maps the strong long-correlation u channel
+    onto world z and the weak w channel onto world x -- the anisotropy that
+    makes feeding body gusts straight into wind_world wrong off-level."""
+    n = 6000
+    model = dryden.DrydenGusts(n, 0.01, 30.0, 50.0, 9.0, np.random.default_rng(5))
+    g = model.step()                       # stationary init -> ensemble stats valid
+    s = np.sqrt(0.5)
+    q = np.tile(np.array([s, 0.0, s, 0.0]), (n, 1))
+    w = dryden.gusts_to_world(q, g)
+    np.testing.assert_allclose(w[:, 2], -g[:, 0], atol=1e-12)  # u_g -> world -z
+    np.testing.assert_allclose(w[:, 0], g[:, 2], atol=1e-12)   # w_g -> world +x
+    sigma2 = model.sigma[0] ** 2
+    assert sigma2[0] > 1.4 * sigma2[2]     # channels really are anisotropic
+    np.testing.assert_allclose(w[:, 2].var(), sigma2[0], rtol=0.12)
+    np.testing.assert_allclose(w[:, 0].var(), sigma2[2], rtol=0.12)
