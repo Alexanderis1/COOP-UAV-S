@@ -917,3 +917,34 @@ A 6-week-shaped learning path for one engineer (parallelizable across teammates 
   ground truth.
 - One relevant MDPI paper (Electronics 12(4):829, ground risk estimation) is flagged
   **RETRACTED** on the publisher page — do not cite it.
+
+---
+
+## P1 physics core - equation sources (added 2026-06-11)
+
+Per-equation traceability for `src/coopuavs/physics/` (plan rule: one
+citation per implemented equation; module docstrings carry the same
+references next to the code). Items marked **[standard reference, URL not
+verified]** follow the convention of the Verification notes above; every
+equation is additionally pinned by an analytic unit test, so no citation
+below is load-bearing for correctness.
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| Quaternion kinematics `q_dot = 1/2 q (x) (0, w)` | `rigid_body.quat_derivative` | J. Sola, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508 (2017), eq. (199). |
+| Euler rotational dynamics `w_dot = J^-1 (tau - w x Jw)` | `rigid_body.derivatives` | Beard & McLain, *Small Unmanned Aircraft* (Princeton UP, 2012), eq. 3.15-3.17. [standard reference] |
+| Classic RK4, per-step quaternion renorm | `rigid_body.rk4_step` | Press et al., *Numerical Recipes*, 3rd ed., sec. 17.1. [standard reference] |
+| ISA troposphere T/p/rho/a | `atmosphere.py` | U.S. Standard Atmosphere 1976 (NOAA-S/T 76-1562); ICAO Doc 7488. [standard reference] |
+| Dryden forming filters + low-altitude sigma/L table | `dryden.py` | MIL-F-8785C, *Flying Qualities of Piloted Airplanes* (1980), sec. 3.7.2; transfer-function forms as in Beard & McLain sec. 4.4. |
+| Rotor thrust `kf w^2`, yaw reaction `km w^2`, allocation | `multirotor.wrench` | Mahony, Kumar & Corke, *Multirotor aerial vehicles*, IEEE Robotics & Automation Magazine 19(3), 2012. [standard reference] |
+| Ground effect `T_IGE/T_OGE = 1/(1-(R/4z)^2)` | `multirotor._ground_effect` | Cheeseman & Bennett, *The effect of the ground on a helicopter rotor in forward flight*, ARC R&M 3021 (1955). [standard reference] |
+| Linear rotor drag `f = -D v_air_body` | `multirotor.wrench` | Faessler, Franchi & Scaramuzza, *Differential flatness of quadrotor dynamics subject to rotor drag...*, IEEE RA-L 3(2), 2018. |
+| Brushless motor/ESC: `i=(dV-Ke w)/Rw`, `J_r w_dot = Kt i - k_q w^2`, `Ke=Kt=60/(2 pi KV)` | `motor.py` | Standard DC-machine model; multirotor application per Mahony et al. 2012. [standard reference] |
+| Thevenin 1-RC battery ECM + OCV(SOC) | `battery.py` | Chen & Rincon-Mora, *Accurate electrical battery model capable of predicting runtime and I-V performance*, IEEE Trans. Energy Conversion 21(2), 2006. |
+| Fixed-wing aero: blended lift 4.9-4.10, induced drag 4.11, lateral set 4.14, prop 4.15, stability->body 4.19 | `fixedwing.py` (FRD verbatim, `M=diag(1,-1,-1)` flip to FLU) | Beard & McLain 2012, ch. 4. [standard reference] |
+| Slab-method segment vs AABB | `collision.py` | Ericson, *Real-Time Collision Detection* (2005), sec. 5.3.3 (Kay-Kajiya). [standard reference] |
+| Oracle simulator | `scripts/oracle/export_rotorpy.py` | Folk, Paulos & Kumar, *RotorPy: a Python-based multirotor simulator...*, arXiv:2306.04485 (2023); rotorpy 2.1.2. |
+
+Airframe parameter files (`physics/params/*.yaml`) are
+invented-but-self-consistent (no public data for these classes) and are
+pinned by trim/terminal/envelope tests - the YAML headers say so explicitly.

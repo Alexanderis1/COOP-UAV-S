@@ -50,6 +50,26 @@
 | PHY-SNT-003 (sentinel endurance/turnaround) | Shared `UavAirframe` battery + RTB/REARM cycle; patrol auto-resume | high | — |
 | PHY-CHG-001 (rooftop/adjacent charging stations) | `ChargingStation` objects in `sim/environment.py`; UAV homes resolved to stations; citygen sites them on rooftops/pads | representative | Charge model is the existing turnaround timer; no power/queueing model. |
 
+## Staged models — physics core (P1, not yet wired into the sim)
+
+P1 delivered `src/coopuavs/physics/` standalone (plan Problem-1; wiring
+arrives in P4 for the fleet and P6 for threats — the PHY rows above keep
+describing the live legacy path until then). Equation citations:
+RESEARCH.md "P1 physics core". Validation per model:
+
+| Model | Will serve | Fidelity | Validation pins |
+|---|---|---|---|
+| `physics/rigid_body.py` batched quat 6DOF RK4 | PHY-UAV-001 dynamics (replaces point-mass via SIM-PHX-005), 6DOF threats | high | free-fall exact; analytic spin; 60 s torque-free energy/momentum drift < 1e-9; order-4 slope; batch==scalar; scipy cross-checks |
+| `physics/atmosphere.py` ISA | PHY-UAV-002 envelope | high | USSA-1976 table values at 0/1/11 km |
+| `physics/dryden.py` MIL-F-8785C | PHY-UAV-002 wind/turbulence (upgrade of `sim/weather.py` displacement) | high | Welch PSD == analytic spectrum; variance; spec param table; coeffs == scipy.signal.bilinear |
+| `physics/motor.py` + `physics/battery.py` | PHY-UAV-013 energy truth, SIM-SIL motor/battery faults | representative | tau in 15-50 ms band; w ceiling tracks sag; sag = I*R0; recovery exp(tau1); coulomb exact |
+| `physics/multirotor.py` + `interceptor_quad.yaml` | PHY-UAV-001 Tier-P plant | representative (invented-but-self-consistent params) | hover trim 0.1%; Cheeseman-Bennett curve exact; 80 m/s terminal at 65 deg pin; drag dissipation; allocation signs; RotorPy oracle <= 0.0002 m / 1e-4 deg over 10 s |
+| `physics/fixedwing.py` + `shahed_fw/jet_owa_fw/fpv_quad.yaml` | 6DOF threat classes (P6) | representative | cruise trim residual < 1e-3 mg; Cm_alpha < 0; stall bounded; damping/weathervane signs |
+| `physics/collision.py` | wreck/impact events for sitl/sixdof modes | high | analytic wall/roof/terrain hits; batch==scalar 1e-12 |
+
+Perf: 20-vehicle (and 30-vehicle) plant RK4 at 800 Hz = 0.188 s CPU/sim-s
+(`pytest -m perf`), under the 0.25 gate and the 0.2 N=30 budget figure.
+
 ## Coverage summary
 
 - **high:** 19 — the interlock chain, middleware shape, sensing layer,
