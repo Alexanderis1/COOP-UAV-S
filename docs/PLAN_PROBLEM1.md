@@ -298,7 +298,13 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       (bool≠int pinned) + import fence: AST walk, no `coopuavs.*` escapes coopfc (relative
       imports resolved), numpy only under `estimation/`. 42 tests `test_coopfc_{vec,topics,
       params,fence}.py` (2026-06-11)
-- [ ] P3-2 `sched.py` rate groups: exact fire counts over 10 s, overrun→fault, deterministic order
+- [x] P3-2 `coopfc/sched.py` rate groups: exact fire counts over 10 s (800/400/100/50/10/1 Hz),
+      registration order = within-tick pipeline, integer-tick derived time, duplicate names
+      rejected. Overruns MODELED not measured (declared `cost_ticks` busy window — wall-clock
+      would be nondeterministic; P5 injects overload by raising cost): due-fire inside busy
+      window skipped+counted, consecutive ≥ `overrun_fault_after` latches fault (CBIT
+      SCHED_OVERRUN seam). Exceptions propagate (VirtualMCU crash fence is the host's, P4).
+      14 tests `test_coopfc_sched.py` (2026-06-11)
 - [ ] P3-3 `hal/` + `drivers/`: staleness flags, unit round-trips
 - [ ] P3-4 `estimation/alignment.py` (leveling accuracy, variance gate) + `ekf.py`: Sola F/Q
       predict, covariance symmetry/PD guard; GPS/baro/mag sequential fusion + chi-square gating +
