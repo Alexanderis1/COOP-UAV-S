@@ -18,6 +18,14 @@ Model content (B&M eq. numbers):
 - Propulsion: prop  T = 1/2 rho S_prop C_prop ((k dt)^2 - Va^2)   (4.15)
               jet   T = T_max dt (throttle-proportional, no washout)
 
+The eq. 4.15 prop model is kept verbatim and produces NEGATIVE (windmill)
+thrust ~ -1/2 rho S_prop C_prop Va^2 at throttle cut BY DESIGN (faithful to
+the book). For shahed_fw at 50 m/s cruise that is ~-643 N, ~2.5x the total
+aero drag (~260 N) -- a known artifact of the simple B&M prop model away
+from its design point. P6 threat behaviors must not model throttle-cut
+glides / engine-out trajectories without revisiting this (e.g. clamp or a
+momentum-theory windmill model).
+
 Controls vector per vehicle: [delta_e, delta_a, delta_r, delta_t] in B&M
 FRD sign conventions, delta_t clipped to [0, 1]. Gravity is applied here
 (world -z), keeping the integrator wrench-pure.
@@ -115,6 +123,8 @@ class FixedwingPlant:
         """Total (force_world (n,3), torque_body_FLU (n,3)) incl. gravity.
 
         controls: (n, 4) [delta_e, delta_a, delta_r, delta_t] (B&M FRD signs).
+        wind_world must already include any Dryden gusts rotated body->world
+        (dryden.gusts_to_world); no frame conversion happens here.
         """
         p = self.params
         a = p.aero
