@@ -145,8 +145,9 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       capstone green (extra consumer, identical outcomes). One legacy test seeding idiom updated
       (test_kill_bookkeeping steers `adj._rng`, assertions untouched).
       Tests: `tests/test_rng_registry.py` (6) + `tests/test_rng_streams.py` (7) (2026-06-11)
-- [ ] P0-7 stochastic re-baseline: 10-seed MC before/after report committed; re-record pins ONCE;
-      hit-rate floors re-affirmed or user sign-off
+- [x] P0-7 stochastic re-baseline: `docs/reports/rng_rebaseline.md` (+before/after JSON);
+      floors re-affirmed (24→33 kills, 6.708→5.606 spk; floors ≥10 / ≤9.0); 0 CRITICAL
+      wrecks all 20 runs; pins re-recorded ONCE; suite fully green (206) (2026-06-11)
 - [ ] P0-8 DebrisReporter own `debris_hz` (fixes DESIGN_REVIEW 5.3) + test
 - [ ] P0-9 `docs/ORDERING.md` bus/step ordering contract + `tests/test_ordering.py` (fixes 5.2 doc-side)
 - GATE: 31 legacy files green; order-independence proves 5.1 fixed

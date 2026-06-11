@@ -184,8 +184,9 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     world.add_node(FusionNode(world.bus, **cfg.get("fusion", {})))
     # Debris-tracking picture (SIM-DEB-002): published before the C2 plans,
-    # so intercept tasking sees this tick's fall state.
-    world.add_node(DebrisReporter(world, rate_hz=cfg.get("record_hz", 5.0)))
+    # so intercept tasking sees this tick's fall state. Own `debris_hz` knob
+    # (DESIGN_REVIEW 5.3): the recording rate must not steer C2 tasking.
+    world.add_node(DebrisReporter(world, rate_hz=cfg.get("debris_hz", 5.0)))
 
     bs_cfg = dict(cfg.get("base_station", {}))
     roe = RoeConfig(**bs_cfg.pop("roe", {}))

@@ -67,7 +67,9 @@ class FallingDebris:
 
 
 class DebrisReporter(Node):
-    """Publishes the live debris picture (SIM-DEB-002) at record rate."""
+    """Publishes the live debris picture (SIM-DEB-002) at its own
+    ``debris_hz`` rate — deliberately not the recording rate, so a display
+    knob can never shift C2 tasking timing (DESIGN_REVIEW 5.3)."""
 
     def __init__(self, world, rate_hz: float = 5.0):
         super().__init__("debris_reporter", world.bus, rate_hz=rate_hz)

@@ -1,5 +1,7 @@
 """Live interceptable debris (SIM-DEB-001..005, PHY-GCS-006)."""
 
+import copy
+
 import numpy as np
 
 from coopuavs.c2 import assignment
@@ -23,6 +25,24 @@ def make_debris(pos=(0, 0, 500), vel=(20, 0, 0)):
     return FallingDebris("deb-x", "owa-1", np.array(pos, float),
                          np.array(vel, float), EffectorType.PROJECTILE,
                          track_ref=-101)
+
+
+def test_debris_reporter_rate_decoupled_from_record_hz():
+    """DESIGN_REVIEW 5.3: the recording knob must not steer C2 tasking
+    timing — the debris picture publishes at its own ``debris_hz``."""
+    from coopuavs.sim import scenario as scenario_mod
+    from test_end_to_end import SMALL_SCENARIO
+
+    def rates(extra):
+        cfg = copy.deepcopy(SMALL_SCENARIO)
+        cfg.update(extra)
+        sc = scenario_mod.build(cfg)
+        reporter = next(n for n in sc.world.nodes if n.name == "debris_reporter")
+        return reporter.rate_hz, sc.recorder.rate_hz
+
+    assert rates({}) == (5.0, 5.0)                    # defaults unchanged
+    assert rates({"record_hz": 2.0}) == (5.0, 2.0)    # knob no longer leaks
+    assert rates({"debris_hz": 10.0}) == (10.0, 5.0)  # own knob works
 
 
 def test_fall_time_matches_integration():
