@@ -26,6 +26,28 @@ per task — gates are never loosened silently.*
   control-surface polarity; Dryden v≤0 ValueError; collision closed hi-face bounds;
   oracle exporter t=0 init + sanctioned trace re-record). Stopped for user review
   per cadence; next: P2 (hw device models) or P6 lane B (both unblocked by P1).
+- 2026-06-11 — **P1 gate review 2** (45-agent deep inspection of PR #8: confirmed
+  findings incl. 1 critical motor↔battery algebraic-loop instability). Fixed in 9
+  WPs, all done: **WP1** `physics/powertrain.py` implicit DC-bus solve + `i_bus_max_a`
+  current clamp (350 A / 125 A new YAML `powertrain:` blocks) + [3.0, 4.2] V/cell
+  bounds, closed-loop pins (explicit lagged loop pinned divergent). **WP2** dryden
+  NaN-airspeed/dt ValueError, per-vehicle spawned RNG streams (fleet-size invariant),
+  stationary cold start (closed-form discrete Lyapunov), MIL-8785C independent
+  literals + 1000 ft upper-clamp pin, ISA non-finite/>11 km pins, `gusts_to_world`
+  body→world converter. **WP3** rigid-body pins: frozen-wrench killer (linear-drag
+  exponential decay), Hamilton-product literals, Jxz tumble invariants + solve_ivp
+  cross-check. **WP4** fixed-wing pins: FRD r channel, c/2V-vs-b/2V + CL_q literals,
+  washout threshold, 5 s closed-loop trim hold, Jxz aileron coupling; windmill-drag
+  docstring note. **WP5** multirotor pins: GE max-gain clip in singular band, literal
+  moment magnitudes, rho scaling. **WP6** collision: sign-preserving eps (negative-t
+  fix), malformed-prism ValueError, `ground_z` threaded as one terrain+prism datum.
+  **WP7** N=30 perf now gated at 0.25 s/sim-s (0.2 stays informational). **WP8** 6th
+  oracle flight `roll_mix_pulse` (gyroscopic coupling), gates tightened 0.5 m/3° →
+  0.005 m/0.01° (measured ≤1.9e-4 m / ≤8.9e-5°). **WP9** docs: TRACEABILITY staged
+  table re-stated (gate-vs-margin, fpv_quad under multirotor, powertrain row, perf
+  wording), ORDERING.md §6 micro-tick contract (gust draw + bus solve placement),
+  RESEARCH.md powertrain equation + windmill/tip-Mach known limitations, this entry.
+  No existing pins re-baselined; param values unchanged (comments/keys only).
 
 ## Context
 
