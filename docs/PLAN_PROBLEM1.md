@@ -305,7 +305,15 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       window skipped+counted, consecutive ≥ `overrun_fault_after` latches fault (CBIT
       SCHED_OVERRUN seam). Exceptions propagate (VirtualMCU crash fence is the host's, P4).
       14 tests `test_coopfc_sched.py` (2026-06-11)
-- [ ] P3-3 `hal/` + `drivers/`: staleness flags, unit round-trips
+- [x] P3-3 `coopfc/hal/` HalIO seq-stamped latest-frame ports (host writes, drivers read —
+      MCU-portable seam) + `coopfc/drivers/` imu/gps/baro/mag/esc + `core/msgs.py` typed
+      NamedTuples. Shared staleness contract (no new seq = stale tick; latches at
+      `stale_after`, clears on fresh frame; GPS default 3 — first fix lands 2 driver ticks
+      after boot at 120 ms latency). Unit round-trips: coopfc-owned ISA inverse pinned
+      bit-near vs `hw.baro.altitude_from_pressure` over 0-10 km; esc rpm→rad/s inverts
+      encoding; baro rejects non-finite/<=0 Pa without publishing (bad_frames tally = CBIT
+      seam); GPS msg carries fix_stamp (OOSM key). 15 tests `test_coopfc_drivers.py`
+      (2026-06-11)
 - [ ] P3-4 `estimation/alignment.py` (leveling accuracy, variance gate) + `ekf.py`: Sola F/Q
       predict, covariance symmetry/PD guard; GPS/baro/mag sequential fusion + chi-square gating +
       0.5 s ring-buffer OOSM; NEES/NIS 25-seed MC consistency (`@slow`); GPS-denied drift <envelope
