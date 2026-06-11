@@ -91,6 +91,7 @@ class MultirotorPlant:
         self.mass = np.full(self.n, params.mass)
         self.inertia = np.repeat(params.inertia[None, :, :], self.n, axis=0)
         self.inertia_inv = np.linalg.inv(self.inertia)
+        self._weight = self.mass * GRAVITY
 
     def _ground_effect(self, z: np.ndarray) -> np.ndarray:
         """Cheeseman-Bennett thrust gain, clamped to [1, max_gain]."""
@@ -119,13 +120,15 @@ class MultirotorPlant:
         tau[:, 2] = -(p.km * w2) @ p.rotor_spin
 
         v_air_world = state[:, rb.VEL] - wind_world
-        v_air_body = rb.quat_rotate(rb.quat_conjugate(quat), v_air_world)
+        v_air_body = rb.quat_rotate_inv(quat, v_air_world)
 
-        f_body = -p.drag_linear_diag * v_air_body                        # Faessler
+        f_body = v_air_body
+        f_body *= -p.drag_linear_diag                                    # Faessler
         f_body[:, 2] += thrust.sum(axis=1)
         force = rb.quat_rotate(quat, f_body)
-        speed = np.linalg.norm(v_air_world, axis=1, keepdims=True)
-        force -= 0.5 * np.asarray(rho).reshape(-1, 1) * p.cda_iso * speed * v_air_world
+        speed = np.sqrt(np.einsum("ij,ij->i", v_air_world, v_air_world))[:, None]
+        speed *= 0.5 * np.asarray(rho).reshape(-1, 1) * p.cda_iso
+        force -= speed * v_air_world
         force[:, 2] -= self.mass * GRAVITY
         return force, tau
 
@@ -135,5 +138,38 @@ class MultirotorPlant:
 
     def step(self, state: np.ndarray, dt: float, rotor_omega: np.ndarray,
              wind_world: np.ndarray, rho) -> np.ndarray:
-        return rb.rk4_step(state, dt, self.wrench_fn(rotor_omega, wind_world, rho),
+        """One RK4 step with rotor thrust/moments latched across the step.
+
+        Per the micro-tick contract (actuators latch before the single
+        batched RK4) rotor speeds are step inputs, so thrust, ground-effect
+        gain and the rotor moments are evaluated once at the pre-step state;
+        drag and attitude terms stay live per RK4 stage. At one 800 Hz step
+        the within-step ground-effect variation is negligible (z moves
+        < 0.1 m); the fully-live path remains available via wrench_fn().
+        """
+        p = self.params
+        w2 = rotor_omega * rotor_omega
+        thrust = p.kf * w2 * self._ground_effect(state[:, 2])[:, None]
+        thrust_sum = thrust.sum(axis=1)
+        tau = np.empty((self.n, 3))
+        tau[:, 0] = thrust @ p.rotor_positions[:, 1]
+        tau[:, 1] = -(thrust @ p.rotor_positions[:, 0])
+        tau[:, 2] = -(p.km * w2) @ p.rotor_spin
+        half_rho_cda = 0.5 * np.asarray(rho).reshape(-1, 1) * p.cda_iso
+        neg_drag = -p.drag_linear_diag
+
+        def wrench_latched(s: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            quat = s[:, rb.QUAT]
+            v_air_world = s[:, rb.VEL] - wind_world
+            f_body = rb.quat_rotate_inv(quat, v_air_world)
+            f_body *= neg_drag
+            f_body[:, 2] += thrust_sum
+            force = rb.quat_rotate(quat, f_body)
+            speed = np.sqrt(np.einsum("ij,ij->i", v_air_world, v_air_world))[:, None]
+            speed *= half_rho_cda
+            force -= speed * v_air_world
+            force[:, 2] -= self._weight
+            return force, tau
+
+        return rb.rk4_step(state, dt, wrench_latched,
                            self.mass, self.inertia, self.inertia_inv)

@@ -199,6 +199,22 @@ def test_step_integrates_with_rigid_body():
     assert np.abs(state[0, rb.VEL]).max() < 5e-6
 
 
+def test_step_latched_matches_live_wrench_path():
+    """step() latches thrust/GE/moments per step; away from ground effect this
+    must match the fully-live wrench integration to integrator round-off."""
+    rng = np.random.default_rng(45)
+    params, plant = make_plant(3)
+    state = rng.normal(size=(3, rb.STATE_DIM))
+    state[:, 2] = rng.uniform(50.0, 150.0, size=3)        # OGE: GE gain ~ 1
+    state[:, rb.QUAT] = rb.quat_normalize(state[:, rb.QUAT])
+    rotor = rng.uniform(400.0, 1200.0, size=(3, params.n_rotors))
+    wind = rng.normal(scale=4.0, size=(3, 3))
+    latched = plant.step(state, 1 / 800, rotor, wind, 1.225)
+    live = rb.rk4_step(state, 1 / 800, plant.wrench_fn(rotor, wind, 1.225),
+                       plant.mass, plant.inertia, plant.inertia_inv)
+    np.testing.assert_allclose(latched, live, rtol=0, atol=1e-10)
+
+
 def test_params_yaml_loads_and_is_consistent():
     cfg = load_airframe("interceptor_quad")
     params = MultirotorParams.from_dict(cfg)

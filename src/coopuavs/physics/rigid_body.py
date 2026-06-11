@@ -39,9 +39,23 @@ OMEGA = slice(10, 13)
 WrenchFn = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
 
+def _cross3(a: np.ndarray, b: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
+    """Component-wise cross product (np.cross has prohibitive overhead at
+    800 Hz x 4 RK4 stages; P1-6 perf gate)."""
+    if out is None:
+        out = np.empty_like(b) if a.shape == b.shape else \
+            np.empty(np.broadcast(a, b).shape)
+    a0, a1, a2 = a[..., 0], a[..., 1], a[..., 2]
+    b0, b1, b2 = b[..., 0], b[..., 1], b[..., 2]
+    out[..., 0] = a1 * b2 - a2 * b1
+    out[..., 1] = a2 * b0 - a0 * b2
+    out[..., 2] = a0 * b1 - a1 * b0
+    return out
+
+
 def quat_normalize(q: np.ndarray) -> np.ndarray:
     """Return unit quaternion(s); last axis is [w, x, y, z]."""
-    return q / np.linalg.norm(q, axis=-1, keepdims=True)
+    return q / np.sqrt((q * q).sum(axis=-1, keepdims=True))
 
 
 def quat_multiply(p: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -73,8 +87,28 @@ def quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """
     qw = q[..., :1]
     qv = q[..., 1:]
-    t = 2.0 * np.cross(qv, v)
-    return v + qw * t + np.cross(qv, t)
+    t = _cross3(qv, v)
+    t *= 2.0
+    out = _cross3(qv, t)
+    out += qw * t
+    out += v
+    return out
+
+
+def quat_rotate_inv(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate world-frame vector(s) into the body frame: v' = q* (x) v (x) q.
+
+    Algebraically identical to quat_rotate(quat_conjugate(q), v) without
+    materializing the conjugate: v' = v - w*t + qv x t, t = 2 qv x v.
+    """
+    qw = q[..., :1]
+    qv = q[..., 1:]
+    t = _cross3(qv, v)
+    t *= 2.0
+    out = _cross3(qv, t)
+    out -= qw * t
+    out += v
+    return out
 
 
 def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
@@ -99,19 +133,18 @@ def quat_from_axis_angle(axis: np.ndarray, angle: np.ndarray) -> np.ndarray:
     return np.concatenate([w, xyz], axis=-1)
 
 
-def quat_derivative(q: np.ndarray, omega_body: np.ndarray) -> np.ndarray:
+def quat_derivative(q: np.ndarray, omega_body: np.ndarray,
+                    out: np.ndarray | None = None) -> np.ndarray:
     """q_dot = 1/2 * q (x) (0, omega_body)  [Sola 2017 eq. 199]."""
+    if out is None:
+        out = np.empty_like(q)
     qw, qx, qy, qz = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
     wx, wy, wz = omega_body[..., 0], omega_body[..., 1], omega_body[..., 2]
-    return 0.5 * np.stack(
-        [
-            -qx * wx - qy * wy - qz * wz,
-            qw * wx + qy * wz - qz * wy,
-            qw * wy - qx * wz + qz * wx,
-            qw * wz + qx * wy - qy * wx,
-        ],
-        axis=-1,
-    )
+    out[..., 0] = -0.5 * (qx * wx + qy * wy + qz * wz)
+    out[..., 1] = 0.5 * (qw * wx + qy * wz - qz * wy)
+    out[..., 2] = 0.5 * (qw * wy - qx * wz + qz * wx)
+    out[..., 3] = 0.5 * (qw * wz + qx * wy - qy * wx)
+    return out
 
 
 def derivatives(
@@ -130,9 +163,10 @@ def derivatives(
     deriv[:, POS] = state[:, VEL]
     deriv[:, VEL] = force_world / mass[:, None]
     omega = state[:, OMEGA]
-    deriv[:, QUAT] = quat_derivative(state[:, QUAT], omega)
+    quat_derivative(state[:, QUAT], omega, out=deriv[:, QUAT])
     j_omega = (inertia @ omega[..., None])[..., 0]
-    gyro = torque_body - np.cross(omega, j_omega)
+    gyro = _cross3(omega, j_omega)
+    np.subtract(torque_body, gyro, out=gyro)
     deriv[:, OMEGA] = (inertia_inv @ gyro[..., None])[..., 0]
     return deriv
 
@@ -159,6 +193,12 @@ def rk4_step(
     k2 = f(state + (0.5 * dt) * k1)
     k3 = f(state + (0.5 * dt) * k2)
     k4 = f(state + dt * k3)
-    out = state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-    out[:, QUAT] = quat_normalize(out[:, QUAT])
-    return out
+    acc = k2
+    acc += k3
+    acc *= 2.0
+    acc += k1
+    acc += k4
+    acc *= dt / 6.0
+    acc += state
+    acc[:, QUAT] = quat_normalize(acc[:, QUAT])
+    return acc
