@@ -17,6 +17,7 @@ import numpy as np
 from ..core.bus import MessageBus
 from ..core.messages import UavMode, reset_message_seq
 from ..core.node import Node
+from ..core.rng import RngRegistry
 from ..perception.tracking import reset_track_ids
 from ..risk.debris import DebrisModel
 from ..threats.enemy_drone import EnemyDrone
@@ -43,6 +44,10 @@ class World:
         reset_message_seq()
         reset_track_ids()
         self.rng = np.random.default_rng(seed)
+        # Name-keyed per-consumer streams (DESIGN_REVIEW 5.1): consumers are
+        # migrating off the shared call-order-coupled `self.rng` one at a
+        # time (PLAN_PROBLEM1 P0-6); new randomness must use the registry.
+        self.rng_registry = RngRegistry(seed)
         self.debris_model = DebrisModel(self.rng)
         self.weather = weather or WeatherState(self.rng)
         # Building LOS occlusion (SIM-SEN-005/SIM-EFF-006); scenarios may
