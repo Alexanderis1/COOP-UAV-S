@@ -1,0 +1,27 @@
+# Sensor suite of the Tier-P interceptor (P2 hw device models).
+# INVENTED-BUT-REPRESENTATIVE: magnitudes sized to the named device classes
+# (tactical MEMS IMU, multi-band GNSS, baro/mag of the PX4 ecosystem), not
+# copied from any datasheet. Numbers are pinned by the hw tests; edits here
+# intentionally fail those pins until re-baselined.
+# Frames: body FLU / world ENU; SI units unless the key name says otherwise.
+name: interceptor_devices
+imu:                            # ICM-42688-class tactical MEMS, 400 Hz
+  rate_hz: 400.0
+  gyro:
+    noise_density: 8.7e-5       # rad/s/sqrt(Hz) (~0.005 deg/s/sqrt(Hz))
+    gm_sigma: 4.0e-5            # rad/s (~8 deg/h bias-instability class)
+    gm_tau_s: 100.0             # s
+    rw_sigma: 1.0e-5            # rad/s/sqrt(s)
+    turn_on_sigma: 3.5e-3       # rad/s (~0.2 deg/s per power-up)
+    lsb: 1.06e-3                # rad/s (2000 dps full scale / 16 bit)
+    range: 34.9                 # rad/s (2000 dps)
+  accel:
+    noise_density: 2.0e-3       # m/s^2/sqrt(Hz)
+    gm_sigma: 4.0e-4            # m/s^2 (~40 ug class)
+    gm_tau_s: 100.0             # s
+    rw_sigma: 6.0e-5            # m/s^2/sqrt(s)
+    turn_on_sigma: 0.2          # m/s^2 (~20 mg per power-up)
+    lsb: 4.8e-3                 # m/s^2 (16 g full scale / 16 bit)
+    range: 157.0                # m/s^2 (16 g)
+  fifo_depth: 64                # frames (device buffer between 400 Hz device
+                                # rate and the P3 driver drain rate)
