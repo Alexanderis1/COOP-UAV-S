@@ -98,6 +98,22 @@ def test_ground_effect_gain_clamped_near_ground():
     assert np.isfinite(force).all()
 
 
+def test_ground_effect_max_gain_clip_in_singular_band():
+    """Deep-inspection pin: for z in (R/4 ~= 0.0445, ~0.077] m the raw
+    Cheeseman-Bennett gain 1/denom is finite but > max_gain (4.81 at
+    z=0.05, 2.22 at z=0.06), so the np.clip upper bound -- not the
+    np.where singularity fallback probed at z=0.01 -- is load-bearing.
+    Kills the np.clip(gain, 1.0, np.inf) mutant that survives the suite."""
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    rotor = np.full((1, params.n_rotors), w_h)
+    expected = params.ground_effect_max_gain * params.kf * np.sum(rotor**2)
+    for z in (0.05, 0.06):
+        force, _ = plant.wrench(hover_state(z=z), rotor, np.zeros((1, 3)), 1.225)
+        thrust = force[0, 2] + params.mass * GRAVITY
+        np.testing.assert_allclose(thrust, expected, rtol=0, atol=1e-12)
+
+
 # ------------------------------------------------------------ terminal speed pin
 
 
@@ -207,6 +223,44 @@ def test_rotor_torque_allocation_signs():
     assert tau[1] < -1e-3              # nose up = negative pitch about +y left
     tau = torque(spin > 0)             # boost CCW rotors
     assert tau[2] < -1e-6              # reaction spins body CW (negative yaw)
+
+
+def test_rotor_moment_magnitudes_pinned():
+    """Deep-inspection pin: literal moment magnitudes from interceptor_quad
+    geometry (kf=5.4e-5, km=1e-6, arms +-0.318 m FLU, spin [1,1,-1,-1]) kill
+    moment-arm scale mutants that the sign-only allocation test admits.
+    z=1e6 m makes the ground-effect gain 1 to <2e-15 so the literals hold.
+
+    omega = [900, 800, 700, 600] rad/s on [FR, BL, FL, BR]:
+      T_i = kf w_i^2          = [43.74, 34.56, 26.46, 19.44] N
+      tau_x = sum(y_i T_i)    = 0.318*(-43.74+34.56+26.46-19.44) = -0.68688
+      tau_y = -sum(x_i T_i)   = -0.318*(43.74-34.56+26.46-19.44) = -5.1516
+      tau_z = -km sum(s w^2)  = -1e-6*(810000+640000-490000-360000) = -0.6
+    """
+    _, plant = make_plant()
+    rotor = np.array([[900.0, 800.0, 700.0, 600.0]])
+    _, tau = plant.wrench(hover_state(z=1.0e6), rotor, np.zeros((1, 3)), 1.225)
+    np.testing.assert_allclose(tau[0], [-0.68688, -5.1516, -0.6],
+                               rtol=0, atol=1e-10)
+
+
+def test_parasitic_drag_scales_with_air_density():
+    """Deep-inspection pin: the rho argument reaches the quadratic parasitic
+    term. The wrench delta between rho=1.225 and rho=0.9 (same state, hover
+    rotor speeds) cancels gravity, thrust and the rho-free Faessler term
+    exactly, leaving -0.5*(rho_hi-rho_lo)*CdA*|v|v; a hardcoded-sea-level-rho
+    mutant makes the delta zero. Kills the mutant the 75-85 m/s terminal
+    band cannot (rho(200 m) is only 2% off 1.225)."""
+    params, plant = make_plant()
+    w_h = hover_omega(params)
+    rotor = np.full((1, params.n_rotors), w_h)
+    v = np.array([30.0, -10.0, 5.0])
+    state = hover_state()
+    state[0, rb.VEL] = v
+    f_hi, _ = plant.wrench(state, rotor, np.zeros((1, 3)), 1.225)
+    f_lo, _ = plant.wrench(state, rotor, np.zeros((1, 3)), 0.9)
+    expected = -0.5 * (1.225 - 0.9) * params.cda_iso * np.linalg.norm(v) * v
+    np.testing.assert_allclose(f_hi[0] - f_lo[0], expected, rtol=0, atol=1e-12)
 
 
 # ------------------------------------------------------------------ batch + io

@@ -107,7 +107,8 @@ class MultirotorPlant:
         """Total (force_world (n,3), torque_body (n,3)) incl. gravity.
 
         rotor_omega: (n, r) rad/s; wind_world: (n, 3) m/s; rho: air density
-        (scalar or (n,)).
+        (scalar or (n,)). wind_world must already include any Dryden gusts
+        rotated body->world (dryden.gusts_to_world); no conversion here.
         """
         p = self.params
         quat = state[:, rb.QUAT]
