@@ -41,7 +41,9 @@ class Sensor(Node):
         self.world = world
         self.position = np.asarray(position, dtype=float)
         self.max_range = max_range
-        self.rng = world.rng
+        # Per-sensor stream (DESIGN_REVIEW 5.1): keyed by node name, so one
+        # sensor's draws never shift another's and scan order is free.
+        self.rng = world.rng_registry.stream(f"sensor/{name}")
         self._pub = self.create_publisher(DETECTIONS_TOPIC)
 
     def update(self, t: float, dt: float) -> None:

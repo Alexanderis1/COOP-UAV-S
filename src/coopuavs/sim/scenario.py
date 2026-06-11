@@ -91,11 +91,39 @@ def load(path: str | Path, seed: int | None = None) -> Scenario:
     return build(cfg, seed=seed)
 
 
+# Fidelity modes (PLAN_PROBLEM1): pointmass is the v0.x behavior; the
+# alternatives are declared here so scenarios can name them, and refuse
+# loudly until their build paths land (fleet sitl: P4, threats sixdof: P6).
+_FIDELITY_ALLOWED = {"fleet": ("pointmass", "sitl"),
+                     "threats": ("pointmass", "sixdof")}
+
+
+def _parse_fidelity(raw) -> dict:
+    fid = dict(raw or {})
+    unknown = set(fid) - set(_FIDELITY_ALLOWED)
+    if unknown:
+        raise ValueError(f"unknown fidelity keys: {sorted(unknown)}")
+    out = {key: fid.get(key, "pointmass") for key in _FIDELITY_ALLOWED}
+    for key, allowed in _FIDELITY_ALLOWED.items():
+        if out[key] not in allowed:
+            raise ValueError(
+                f"fidelity.{key} must be one of {list(allowed)}, got {out[key]!r}")
+    if out["fleet"] == "sitl":
+        raise NotImplementedError(
+            "fidelity.fleet=sitl lands with the SITL engine (PLAN_PROBLEM1 P4)")
+    if out["threats"] == "sixdof":
+        raise NotImplementedError(
+            "fidelity.threats=sixdof lands with the 6DOF threat batch (PLAN_PROBLEM1 P6)")
+    return out
+
+
 def build(cfg: dict, seed: int | None = None) -> Scenario:
+    fidelity = _parse_fidelity(cfg.get("fidelity"))
     env = Environment.from_config(cfg["environment"])
     run_seed = cfg.get("seed", 0) if seed is None else seed
     world = World(env, dt=cfg.get("dt", 0.05), seed=run_seed)
-    world.weather = WeatherState.from_config(cfg.get("weather"), world.rng)
+    world.weather = WeatherState.from_config(
+        cfg.get("weather"), world.rng_registry.stream("weather"))
     world.occlusion.enabled = dict(cfg.get("occlusion") or {}).get("enabled", True)
     assets = {a.name: a for a in env.assets}
 
@@ -156,8 +184,9 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     world.add_node(FusionNode(world.bus, **cfg.get("fusion", {})))
     # Debris-tracking picture (SIM-DEB-002): published before the C2 plans,
-    # so intercept tasking sees this tick's fall state.
-    world.add_node(DebrisReporter(world, rate_hz=cfg.get("record_hz", 5.0)))
+    # so intercept tasking sees this tick's fall state. Own `debris_hz` knob
+    # (DESIGN_REVIEW 5.3): the recording rate must not steer C2 tasking.
+    world.add_node(DebrisReporter(world, rate_hz=cfg.get("debris_hz", 5.0)))
 
     bs_cfg = dict(cfg.get("base_station", {}))
     roe = RoeConfig(**bs_cfg.pop("roe", {}))
@@ -249,7 +278,8 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         eval_tracker=tracker,
         orchestrator=orchestrator,
         meta={"seed": run_seed, "speed": 1.0,
-              "posture": cfg.get("posture", "human_confirm"), "eval": True},
+              "posture": cfg.get("posture", "human_confirm"), "eval": True,
+              "fidelity": fidelity},
     )
 
 
@@ -393,6 +423,8 @@ def _preset_threat_axes(cfg: dict, centre: np.ndarray) -> list[float]:
 
 def _enemy_factory(drone_id, threat_class, spawn, target, world, target_name=""):
     def make() -> EnemyDrone:
-        return EnemyDrone(drone_id, threat_class, spawn, target, world.rng,
+        # Per-threat stream (DESIGN_REVIEW 5.1): spawn order stops mattering.
+        rng = world.rng_registry.stream(f"threat/{drone_id}")
+        return EnemyDrone(drone_id, threat_class, spawn, target, rng,
                           world=world, target_name=target_name)
     return make

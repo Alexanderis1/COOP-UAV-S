@@ -17,6 +17,7 @@ import numpy as np
 from ..core.bus import MessageBus
 from ..core.messages import UavMode, reset_message_seq
 from ..core.node import Node
+from ..core.rng import RngRegistry
 from ..perception.tracking import reset_track_ids
 from ..risk.debris import DebrisModel
 from ..threats.enemy_drone import EnemyDrone
@@ -43,8 +44,12 @@ class World:
         reset_message_seq()
         reset_track_ids()
         self.rng = np.random.default_rng(seed)
-        self.debris_model = DebrisModel(self.rng)
-        self.weather = weather or WeatherState(self.rng)
+        # Name-keyed per-consumer streams (DESIGN_REVIEW 5.1): consumers are
+        # migrating off the shared call-order-coupled `self.rng` one at a
+        # time (PLAN_PROBLEM1 P0-6); new randomness must use the registry.
+        self.rng_registry = RngRegistry(seed)
+        self.debris_model = DebrisModel(self.rng_registry.stream("debris"))
+        self.weather = weather or WeatherState(self.rng_registry.stream("weather"))
         # Building LOS occlusion (SIM-SEN-005/SIM-EFF-006); scenarios may
         # disable it (`occlusion: {enabled: false}` restores v0.1 sensing).
         self.occlusion = OcclusionGrid(env.buildings, env.bounds)
@@ -52,6 +57,10 @@ class World:
         # Simulated network layer (SIM-COM-001); attached by the CommsModel
         # itself when the scenario builds one. None = synchronous bus.
         self.comms = None
+
+        # SITL micro-step scheduler (SIM-SIL-002); installed by the sitl
+        # build path. None = pure macro-step world, the v0.x behavior.
+        self.micro = None
 
         self.enemies: dict[str, EnemyDrone] = {}
         # Friendly truth registry (sim-side only): interceptor airframes by
@@ -132,6 +141,12 @@ class World:
                 self.log_event("debris_impact", debris_id=deb.debris_id,
                                zone=zone.name)
                 del self.debris[deb.debris_id]
+
+        if self.micro is not None:
+            # K micro-ticks inside this macro step (SIM-SIL-002): the fleet
+            # SITL engine hangs its rate groups here, so the sensors and C2
+            # below see this tick's flown state.
+            self.micro.run_macro_step(self.t, self.dt)
 
         for node in self.nodes:
             node.maybe_update(self.t, self.dt)

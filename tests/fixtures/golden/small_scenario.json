@@ -1,0 +1,335 @@
+{
+ "events": [
+  {
+   "enemy_id": "owa_strategic-1",
+   "kind": "enemy_spawn",
+   "t": 5.05,
+   "threat_class": "owa_strategic"
+  },
+  {
+   "enemy_id": "owa_strategic-1",
+   "kind": "acquired",
+   "latency": 2.15,
+   "t": 7.2,
+   "threat_class": "owa_strategic",
+   "track_id": 1
+  },
+  {
+   "enemy_id": "owa_strategic-2",
+   "kind": "enemy_spawn",
+   "t": 15.0,
+   "threat_class": "owa_strategic"
+  },
+  {
+   "enemy_id": "owa_strategic-2",
+   "kind": "acquired",
+   "latency": 2.6,
+   "t": 17.6,
+   "threat_class": "owa_strategic",
+   "track_id": 2
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 54.85,
+   "text": "auto-cleared (unattended) \u2014 u1 requests projectile release on track 1: Pk 0.45, ROE authorized (geometry_safe), expected collateral 0.15; threat owa_strategic at 53 m/s, p_decoy 0.00",
+   "track_id": 1,
+   "uav_id": "u1"
+  },
+  {
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-1",
+   "kind": "miss",
+   "pk": 0.488,
+   "pos": [
+    -1883.7,
+    1875.1,
+    1499.6
+   ],
+   "t": 54.9,
+   "target_kind": "track",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 62.55,
+   "text": "auto-cleared (unattended) \u2014 u2 requests projectile release on track 1: Pk 0.48, ROE authorized (now_or_never), expected collateral 1.08; threat owa_strategic at 52 m/s, p_decoy 0.00",
+   "track_id": 1,
+   "uav_id": "u2"
+  },
+  {
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-1",
+   "kind": "miss",
+   "pk": 0.0,
+   "pos": [
+    -1598.1,
+    1606.1,
+    1389.8
+   ],
+   "t": 62.6,
+   "target_kind": "track",
+   "uav_id": "u2"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 66.75,
+   "text": "auto-cleared (unattended) \u2014 u1 requests projectile release on track 2: Pk 0.55, ROE authorized (now_or_never), expected collateral 0.31; threat owa_strategic at 54 m/s, p_decoy 0.00",
+   "track_id": 2,
+   "uav_id": "u1"
+  },
+  {
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-2",
+   "kind": "miss",
+   "pk": 0.534,
+   "pos": [
+    -1589.2,
+    1731.5,
+    1441.8
+   ],
+   "t": 66.8,
+   "target_kind": "track",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 68.45,
+   "text": "auto-cleared (unattended) \u2014 u1 requests projectile release on track 2: Pk 0.62, ROE authorized (geometry_safe), expected collateral 0.20; threat owa_strategic at 55 m/s, p_decoy 0.00",
+   "track_id": 2,
+   "uav_id": "u1"
+  },
+  {
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-2",
+   "kind": "miss",
+   "pk": 0.596,
+   "pos": [
+    -1535.3,
+    1672.8,
+    1392.9
+   ],
+   "t": 68.5,
+   "target_kind": "track",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 70.15,
+   "text": "auto-cleared (unattended) \u2014 u1 requests projectile release on track 2: Pk 0.60, ROE authorized (now_or_never), expected collateral 0.43; threat owa_strategic at 56 m/s, p_decoy 0.00",
+   "track_id": 2,
+   "uav_id": "u1"
+  },
+  {
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-2",
+   "kind": "miss",
+   "pk": 0.614,
+   "pos": [
+    -1481.4,
+    1614.1,
+    1344.0
+   ],
+   "t": 70.2,
+   "target_kind": "track",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 73.65,
+   "text": "auto-cleared (unattended) \u2014 u2 requests projectile release on track 2: Pk 0.55, ROE authorized (geometry_safe), expected collateral 0.29; threat owa_strategic at 55 m/s, p_decoy 0.00",
+   "track_id": 2,
+   "uav_id": "u2"
+  },
+  {
+   "debris_zone": "DANGEROUS",
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-2",
+   "kind": "kill",
+   "pk": 0.55,
+   "pos": [
+    -1370.4,
+    1493.2,
+    1243.4
+   ],
+   "t": 73.7,
+   "target_kind": "track",
+   "threat_class": "owa_strategic",
+   "uav_id": "u2"
+  },
+  {
+   "debris_id": "deb-owa_strategic-2",
+   "enemy_id": "owa_strategic-2",
+   "kind": "debris_spawn",
+   "t": 73.7,
+   "t_impact": 29.92,
+   "zone": "DANGEROUS"
+  },
+  {
+   "actor": "orc",
+   "kind": "decision",
+   "t": 81.15,
+   "text": "auto-cleared (unattended) \u2014 u1 requests projectile release on track 1: Pk 0.57, ROE authorized (now_or_never), expected collateral 1.84; threat owa_strategic at 59 m/s, p_decoy 0.00",
+   "track_id": 1,
+   "uav_id": "u1"
+  },
+  {
+   "debris_zone": "CRITICAL",
+   "effector": "projectile",
+   "enemy_id": "owa_strategic-1",
+   "kind": "kill",
+   "pk": 0.359,
+   "pos": [
+    -983.0,
+    988.0,
+    854.9
+   ],
+   "t": 81.2,
+   "target_kind": "track",
+   "threat_class": "owa_strategic",
+   "uav_id": "u1"
+  },
+  {
+   "debris_id": "deb-owa_strategic-1",
+   "enemy_id": "owa_strategic-1",
+   "kind": "debris_spawn",
+   "t": 81.2,
+   "t_impact": 21.29,
+   "zone": "CRITICAL"
+  },
+  {
+   "actor": "orc",
+   "by": "orc",
+   "kind": "decision",
+   "t": 86.55,
+   "text": "auto-cleared (debris mitigation) \u2014 u2 requests projectile release on track -102: Pk 0.57, ROE authorized (debris_mitigation), expected collateral 0.00",
+   "track_id": -102,
+   "uav_id": "u2"
+  },
+  {
+   "debris_id": "deb-owa_strategic-1",
+   "effector": "projectile",
+   "kind": "miss",
+   "pk": 0.572,
+   "pos": [
+    -806.2,
+    810.2,
+    714.0
+   ],
+   "t": 86.6,
+   "target_kind": "debris",
+   "uav_id": "u2"
+  },
+  {
+   "actor": "orc",
+   "by": "orc",
+   "kind": "decision",
+   "t": 89.45,
+   "text": "auto-cleared (debris mitigation) \u2014 u1 requests projectile release on track -102: Pk 0.50, ROE authorized (debris_mitigation), expected collateral 0.00",
+   "track_id": -102,
+   "uav_id": "u1"
+  },
+  {
+   "debris_id": "deb-owa_strategic-1",
+   "effector": "projectile",
+   "kind": "miss",
+   "pk": 0.541,
+   "pos": [
+    -711.2,
+    714.7,
+    583.5
+   ],
+   "t": 89.5,
+   "target_kind": "debris",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "by": "orc",
+   "kind": "decision",
+   "t": 91.15,
+   "text": "auto-cleared (debris mitigation) \u2014 u1 requests projectile release on track -102: Pk 0.58, ROE authorized (debris_mitigation), expected collateral 0.00",
+   "track_id": -102,
+   "uav_id": "u1"
+  },
+  {
+   "debris_id": "deb-owa_strategic-1",
+   "effector": "projectile",
+   "kind": "miss",
+   "pk": 0.597,
+   "pos": [
+    -655.5,
+    658.8,
+    507.0
+   ],
+   "t": 91.2,
+   "target_kind": "debris",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "by": "orc",
+   "kind": "decision",
+   "t": 92.85,
+   "text": "auto-cleared (debris mitigation) \u2014 u1 requests projectile release on track -102: Pk 0.63, ROE authorized (debris_mitigation), expected collateral 0.00",
+   "track_id": -102,
+   "uav_id": "u1"
+  },
+  {
+   "debris_id": "deb-owa_strategic-1",
+   "effector": "projectile",
+   "kind": "debris_neutralized",
+   "pk": 0.634,
+   "pos": [
+    -599.8,
+    602.8,
+    430.5
+   ],
+   "saved_zone": "CRITICAL",
+   "t": 92.9,
+   "target_kind": "debris",
+   "uav_id": "u1"
+  },
+  {
+   "actor": "orc",
+   "by": "orc",
+   "kind": "decision",
+   "t": 94.05,
+   "text": "auto-cleared (debris mitigation) \u2014 u2 requests projectile release on track -101: Pk 0.47, ROE authorized (debris_mitigation), expected collateral 0.00",
+   "track_id": -101,
+   "uav_id": "u2"
+  },
+  {
+   "debris_id": "deb-owa_strategic-2",
+   "effector": "projectile",
+   "kind": "debris_neutralized",
+   "pk": 0.521,
+   "pos": [
+    -890.0,
+    969.7,
+    427.5
+   ],
+   "saved_zone": "DANGEROUS",
+   "t": 94.1,
+   "target_kind": "debris",
+   "uav_id": "u2"
+  }
+ ],
+ "summary": {
+  "armed_leakers": 0,
+  "debris_intercepted": 2,
+  "enemies_total": 2,
+  "events": 30,
+  "kills": 2,
+  "kills_decoy": 0,
+  "leakers": 0,
+  "strays_by_zone": {},
+  "t_end": 94.15,
+  "wrecks_by_zone": {}
+ }
+}
