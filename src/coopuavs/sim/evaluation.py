@@ -111,17 +111,15 @@ class EvalTracker(Node):
         ]
 
         # Engagement attribution (SIM-GT-004): who shot what with which
-        # weapon, per shooter and per weapon class. Turret shots report the
-        # projectile effector; the weapon row distinguishes them by the
-        # shooter being a turret.
+        # weapon, per shooter and per weapon class. Events carry the ICD
+        # weapon name directly (turret bursts log "turret_gun").
         by_shooter: dict[str, dict] = {}
         by_weapon: dict[str, dict] = {}
         for ev in events:
             if ev["kind"] not in SHOT_EVENT_KINDS or "uav_id" not in ev:
                 continue
             shooter = ev["uav_id"]
-            weapon = ("turret_gun" if shooter in self.world.turrets
-                      else ev.get("effector", "unknown"))
+            weapon = ev.get("effector", "unknown")
             for row in (
                 by_shooter.setdefault(shooter, {
                     "weapon": weapon, "shots": 0, "hits": 0, "kills": 0,

@@ -61,6 +61,13 @@ class EngagementAdjudicator(Node):
         self._result_pub = self.create_publisher("engagement/result")
         self.create_subscription("engagement/fire", self._on_fire)
 
+    def _event_effector(self, effector, shooter_id: str) -> str:
+        """Weapon name on engagement events (ICD: net|projectile|turret_gun):
+        turret bursts report 'turret_gun'. The wire messages and the wreck
+        mechanism keep the physical EffectorType (a turret round throws the
+        wreck like any projectile)."""
+        return "turret_gun" if shooter_id in self.turrets else effector.value
+
     def _on_fire(self, msg: FireRequest) -> None:
         if msg.target_kind == "debris":
             self._on_debris_fire(msg)
@@ -125,7 +132,8 @@ class EngagementAdjudicator(Node):
             # but the rounds were fired and still land somewhere.
             self.world.log_event(
                 "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
-                effector=msg.effector.value, pos=_pos3(target.position),
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                pos=_pos3(target.position),
             )
             self._stray_rounds(turret, msg.predicted_intercept, n_rounds)
             self._result_pub.publish(result)
@@ -149,13 +157,15 @@ class EngagementAdjudicator(Node):
             else:
                 self.world.log_event(
                     "miss", uav_id=msg.uav_id, enemy_id=target.id,
-                    effector=msg.effector.value, pk=round(p_burst, 3),
+                    effector=self._event_effector(msg.effector, msg.uav_id),
+                    pk=round(p_burst, 3),
                     target_kind="track", pos=_pos3(target.position),
                 )
                 stray_rounds = n_rounds
         else:
             self.world.log_event("fire_no_target", uav_id=msg.uav_id,
-                                 effector=msg.effector.value,
+                                 effector=self._event_effector(msg.effector,
+                                                               msg.uav_id),
                                  target_kind="track")
             stray_rounds = n_rounds
 
@@ -215,6 +225,8 @@ class EngagementAdjudicator(Node):
         if deb is None:
             # Landed or already neutralized while the round was in flight.
             self.world.log_event("fire_no_target", uav_id=msg.uav_id,
+                                 effector=self._event_effector(msg.effector,
+                                                               msg.uav_id),
                                  target_kind="debris", debris_id=msg.debris_id)
             self._result_pub.publish(result)
             return
@@ -224,8 +236,8 @@ class EngagementAdjudicator(Node):
         if not self.world.occlusion.clear(shooter_pos, deb.position):
             self.world.log_event(
                 "fire_blocked_los", uav_id=msg.uav_id, debris_id=deb.debris_id,
-                effector=msg.effector.value, target_kind="debris",
-                pos=_pos3(deb.position),
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                target_kind="debris", pos=_pos3(deb.position),
             )
             if turret is not None:
                 n = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
@@ -253,13 +265,15 @@ class EngagementAdjudicator(Node):
             del self.world.debris[deb.debris_id]
             self.world.debris_intercepted.append({
                 "t": round(self.world.t, 3), "debris_id": deb.debris_id,
-                "shooter": msg.uav_id, "effector": msg.effector.value,
+                "shooter": msg.uav_id,
+                "effector": self._event_effector(msg.effector, msg.uav_id),
                 "saved_zone": saved_zone,
             })
             result.hit = True
             self.world.log_event(
                 "debris_neutralized", uav_id=msg.uav_id,
-                debris_id=deb.debris_id, effector=msg.effector.value,
+                debris_id=deb.debris_id,
+                effector=self._event_effector(msg.effector, msg.uav_id),
                 saved_zone=saved_zone.name, pk=round(pk, 3),
                 target_kind="debris", pos=_pos3(deb.position),
             )
@@ -268,7 +282,8 @@ class EngagementAdjudicator(Node):
         else:
             self.world.log_event(
                 "miss", uav_id=msg.uav_id, debris_id=deb.debris_id,
-                effector=msg.effector.value, pk=round(pk, 3),
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                pk=round(pk, 3),
                 target_kind="debris", pos=_pos3(deb.position),
             )
             stray = (msg.rounds if msg.rounds > 0
@@ -310,7 +325,7 @@ class EngagementAdjudicator(Node):
         self.world.log_event(
             "kill", uav_id=shooter_id, enemy_id=target.id,
             threat_class=target.threat_class.value,
-            effector=effector_type.value,
+            effector=self._event_effector(effector_type, shooter_id),
             debris_zone=zone.name, pk=round(pk, 3),
             target_kind="track", pos=_pos3(target.position),
         )
