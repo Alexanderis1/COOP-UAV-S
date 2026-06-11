@@ -15,6 +15,8 @@ per task — gates are never loosened silently.*
 - 2026-06-11 — **P0 COMPLETE, GATE PASSED**: 211 default + 1 slow, ruff clean.
   DESIGN_REVIEW 5.1 resolved, 5.2 doc'd, 5.3 resolved. Stopped for user review
   per cadence decision; next: P1 (physics core, standalone).
+- 2026-06-11 — PR [#7](https://github.com/Alexanderis1/COOP-UAV-S/pull/7) opened
+  (`feature/problem1-p0-foundations`, stacked on #6 / `feature/urban-environment`).
 
 ## Context
 
