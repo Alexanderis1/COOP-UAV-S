@@ -66,8 +66,11 @@ MSG = {
     # ``stamp``/``issued`` live in the MC clock domain — freshness is
     # release.stamp - token.issued ONLY (the FCU clock is boot-relative,
     # never comparable across domains).
-    10: ("CLEARANCE_TOKEN", "<dId", ("stamp", "track_id", "issued")),
-    11: ("WEAPON_RELEASE", "<dI", ("stamp", "track_id")),
+    # track_id is SIGNED i32: debris pseudo-tracks are negative by
+    # contract (world.next_debris_ref, SIM-DEB-003) and ride the same
+    # clearance/release chain.
+    10: ("CLEARANCE_TOKEN", "<did", ("stamp", "track_id", "issued")),
+    11: ("WEAPON_RELEASE", "<di", ("stamp", "track_id")),
 }
 _BY_NAME = {name: (mid, fmt) for mid, (name, fmt, _) in MSG.items()}
 

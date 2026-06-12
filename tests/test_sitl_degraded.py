@@ -114,6 +114,8 @@ _FAULT_MATRIX = [
     ("gyro_stuck", {}),
     ("motor", {"rotor": 1, "scale": 0.775}),
     ("mc_link_jam", {}),
+    ("cell_imbalance", {"delta": 0.3}),
+    ("batt_r0_scale", {"scale": 3.0}),
 ]
 
 

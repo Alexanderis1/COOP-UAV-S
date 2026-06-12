@@ -24,9 +24,9 @@ from __future__ import annotations
 import numpy as np
 
 from coopuavs.coopfc.cbit import CbitEngine
-from coopuavs.coopfc.cbit.dictionary import word_names
+from coopuavs.coopfc.cbit.dictionary import act_rank, word_names
 
-from ..core.messages import Header, Track, UavMode, UavState
+from ..core.messages import EngagementDecision, Header, Track, UavMode, UavState
 from . import cooperation, guidance
 from .fire_control import ABORT_TASK, PURSUING, TERMINAL_RANGE_FACTOR, FireControl
 from .fcu_client import SitlBody
@@ -125,10 +125,14 @@ class InterceptorApp:
         for msg in self._in_clearance.drain():
             if msg.uav_id == self.uav_id:
                 self._fc.accept_clearance(msg, self._task)
-                if self._fc.clearance is msg:
-                    # Accepted: mirror the token down the wire so the
-                    # FCU hard interlock can correlate the release
-                    # (P5-5). Stamps stay in the MC clock domain.
+                if (self._fc.clearance is msg
+                        and msg.decision == EngagementDecision.AUTHORIZED):
+                    # Accepted AND authorized: mirror the token down the
+                    # wire so the FCU hard interlock can correlate the
+                    # release (P5-5). HOLD/DENIED must NOT arm the FCU —
+                    # the interlock backstops exactly the case where MC
+                    # software misfires on a refused clearance. Stamps
+                    # stay in the MC clock domain.
                     self._client.send_clearance_token(
                         msg.track_id, msg.header.stamp)
         for msg in self._in_command.drain():
@@ -357,13 +361,20 @@ class InterceptorApp:
         the app rate (10 Hz >= the 1 Hz requirement) through the same
         comms layer as everything else."""
         word = self._client.fault_word | self._cbit.word()
+        # EVERY field merges both engines: a future MC-side fault with an
+        # arming inhibit or degraded response must not silently vanish
+        # from the digest while its code shows.
+        deg_fcu = self._client.cbit_degraded
+        deg_mc = self._cbit.degraded_mode()
         return {
             "faults": word,
             "codes": word_names(word),
             "inhibit_fire": bool(self._client.cbit_inhibit_fire
                                  or self._cbit.inhibit_fire),
-            "inhibit_arming": bool(self._client.cbit_inhibit_arming),
-            "degraded": self._client.cbit_degraded,
+            "inhibit_arming": bool(self._client.cbit_inhibit_arming
+                                   or self._cbit.inhibit_arming),
+            "degraded": (deg_fcu if act_rank(deg_fcu) >= act_rank(deg_mc)
+                         else deg_mc),
         }
 
     def _publish_state(self, t: float) -> None:

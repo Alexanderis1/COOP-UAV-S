@@ -443,7 +443,10 @@ class SitlShellUav(InterceptorUav):
         kept = []
         for msg, t0 in self._staged:
             if t - t0 > RELEASE_TIMEOUT_S:
-                self.effector.ammo += 1
+                # Clamp: a REARM restore while a stage was pending must
+                # not overfill the magazine.
+                self.effector.ammo = min(self.effector.ammo + 1,
+                                         self._ammo_capacity)
                 self.release_refused += 1
             else:
                 kept.append((msg, t0))

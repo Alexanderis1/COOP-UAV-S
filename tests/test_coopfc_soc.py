@@ -39,34 +39,65 @@ def test_ocv_inversion_round_trip_and_clamps():
 
 # ------------------------------------------------------------- estimator
 
+class _EcmPack:
+    """ECM-consistent synthetic frames: v_bus = OCV - I*r0 - v1 with the
+    SAME first-order v1 recurrence the estimator integrates — unphysical
+    flat-OCV-under-load frames would test the estimator against data no
+    real pack can produce (the v1 correction is the P5 review fix)."""
+
+    def __init__(self, soc, p: SocParams = SocParams(), drift: bool = False):
+        self.soc = soc
+        self.drift = drift            # coulomb-consistent OCV drift
+        self.p = p
+        self.v1 = 0.0
+        self._stamp = None
+
+    def frame(self, t, i_bus):
+        if self._stamp is not None:
+            dt = t - self._stamp
+            self.v1 += (i_bus * self.p.r1 - self.v1) * min(
+                dt / self.p.tau1_s, 1.0)
+            if self.drift and dt > 0.0:
+                self.soc = min(max(
+                    self.soc - i_bus * dt / (3600.0 * self.p.capacity_ah),
+                    0.0), 1.0)
+        self._stamp = t
+        return (ocv_v_cell(self.soc) * self.p.cells
+                - i_bus * self.p.r0 - self.v1)
+
+
 def test_rest_seed_then_coulomb_count():
     est = SocEstimator(SocParams(capacity_ah=16.0, cells=12))
-    v_rest = ocv_v_cell(0.7) * 12
+    pack = _EcmPack(0.7)
     t = 0.0
-    for _ in range(5):                          # rest window
-        est.update(t, v_rest, 0.5)
+    for _ in range(5):                          # rest window (sub-threshold I)
+        est.update(t, pack.frame(t, 0.5), 0.5)
         t += 0.1
     assert est.soc is not None
-    assert abs(est.soc - 0.7) < 1e-9
+    assert abs(est.soc - 0.7) < 1e-9            # IR + v1 corrected out exactly
     for _ in range(3600):                       # 360 s at 16 A
-        est.update(t, 40.0, 16.0)               # sagged volts: irrelevant now
+        est.update(t, pack.frame(t, 16.0), 16.0)   # sagged volts: irrelevant
         t += 0.1
     assert abs(est.soc - 0.6) < 1e-6            # exactly C/10 consumed
 
 
 def test_no_seed_under_load_and_reset():
     est = SocEstimator(SocParams())
+    pack = _EcmPack(0.9)
     t = 0.0
     for _ in range(50):
-        est.update(t, 40.0, 120.0)              # sagged + loaded
+        est.update(t, pack.frame(t, 120.0), 120.0)   # sagged + loaded
         t += 0.1
     assert est.soc is None                      # never guesses from sag
     for _ in range(5):
-        est.update(t, ocv_v_cell(0.9) * 12, 0.0)
+        # rest right after load: v1 still ~0.6 V relaxed — the estimator
+        # must invert against true OCV anyway (the post-landing case
+        # that used to drag a correct count down by tens of %SOC)
+        est.update(t, pack.frame(t, 0.0), 0.0)
         t += 0.1
     assert abs(est.soc - 0.9) < 1e-9
     est.reset()
-    assert est.soc is None
+    assert est.soc is None and est.v1 == 0.0
 
 
 # ------------------------------------------------------------- monitors
@@ -209,3 +240,58 @@ def test_engine_configures_fcu_per_airframe_pack():
     eng2 = SitlEngine([("i1", (0.0, 0.0, 50.0))], RngRegistry(3),
                       fcu_overlay={"fcu.batt_capacity_ah": 99.0})
     assert eng2.fcus[0].params.get("fcu.batt_capacity_ah") == 99.0
+
+
+# --------------------------------- RC relaxation (P5 review fix, H4)
+
+def test_rest_blend_does_not_drag_a_correct_count_after_load():
+    """Resting right after load: terminal volts sit ~v1 below OCV for
+    ~3*tau1. The uncorrected blend inverted that depression to tens of
+    %SOC and walked a correct coulomb count down after every landing."""
+    est = SocEstimator(SocParams())
+    pack = _EcmPack(0.5, drift=True)
+    t = 0.0
+    for _ in range(5):
+        est.update(t, pack.frame(t, 0.0), 0.0)
+        t += 0.1
+    assert abs(est.soc - 0.5) < 1e-9
+    for _ in range(300):                        # 30 s at 60 A
+        est.update(t, pack.frame(t, 60.0), 60.0)
+        t += 0.1
+    counted = est.soc
+    for _ in range(50):                         # 5 s rest right after
+        est.update(t, pack.frame(t, 0.0), 0.0)
+        t += 0.1
+    assert abs(est.soc - counted) < 1e-6        # was tens of %SOC down
+    assert abs(est.soc - pack.soc) < 1e-6       # and the count is honest
+
+
+def test_sag_anom_quiet_through_dash_then_hover_relaxation():
+    """Sustained dash then throttle back: v1 relaxes over ~tau1 while
+    the settled-sag shortcut i*(r0+r1) predicted instant recovery — a
+    >2 s anomalous window that LATCHED BATT_SAG_ANOM and disabled the
+    SOC veto for the rest of the flight. The tracked-v1 expectation
+    must stay quiet through the whole transient..."""
+    h = rested_armed_host()
+    est = h.fcu.soc_est
+    pack = _EcmPack(est.soc, est.params, drift=True)
+    pack.v1 = est.v1                            # rested boot: both 0
+
+    def fly(i_bus, t_span):
+        for _ in range(round(t_span / 0.1)):
+            h.esc_i = i_bus
+            h.v_cell = pack.frame(h.now, i_bus) / est.params.cells
+            h.run(0.1)
+
+    fly(150.0, 20.0)                            # dash: v1 -> ~2.0 V
+    fly(20.0, 12.0)                             # hover: relaxation window
+    assert not h.fcu.cbit.raised("BATT_SAG_ANOM")
+    assert h.fcu.batt.state == "NORMAL"         # veto chain never poisoned
+    # ...while REAL anomalous sag (beyond what the ECM can explain) on
+    # the same flight still detects.
+    for _ in range(round(3.0 / 0.1)):
+        h.esc_i = 20.0
+        h.v_cell = (pack.frame(h.now, 20.0)
+                    - 0.15 * est.params.cells) / est.params.cells
+        h.run(0.1)
+    assert h.fcu.cbit.raised("BATT_SAG_ANOM")

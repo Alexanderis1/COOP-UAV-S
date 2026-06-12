@@ -266,3 +266,74 @@ def test_faulted_run_twice_is_bitwise():
         return eng.state.copy()
 
     np.testing.assert_array_equal(run(31), run(31))
+
+
+# ------------------------------------------- review fixes: schedule hygiene
+
+def test_schedule_rejects_bad_params_and_linkless_jam_at_schedule_time():
+    """Loud-at-build contract: an accepted schedule must never explode
+    mid-run at its window boundary."""
+    eng = _engine()
+    for bad in (
+        dict(kind="motor", rotor=1, scale=1.5),        # scale out of range
+        dict(kind="motor", rotor=1.5, scale=0.5),      # fractional rotor
+        dict(kind="gps_degraded", scale=-2.0),         # negative scale
+        dict(kind="imu_noise", scale=float("nan")),    # non-finite scale
+        dict(kind="gps_denial", t=float("nan")),       # non-finite time
+        dict(kind="mc_link_jam"),                      # no link attached
+    ):
+        try:
+            eng.schedule_fault(bad.pop("t", 1.0), "u1", bad.pop("kind"), **bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted bad schedule {bad}")
+
+
+def test_overlapping_windows_rejected_independent_keys_allowed():
+    eng = _engine()
+    eng.schedule_fault(1.0, "u1", "sensor_dropout", sensor="baro", until=5.0)
+    try:
+        eng.schedule_fault(4.0, "u1", "sensor_dropout", sensor="baro",
+                           until=8.0)
+        raise AssertionError("accepted overlapping window")
+    except ValueError:
+        pass
+    # different discriminator / kind: independent state, no conflict
+    eng.schedule_fault(4.0, "u1", "sensor_dropout", sensor="mag", until=8.0)
+    eng.schedule_fault(4.0, "u1", "gps_denial", until=8.0)
+
+
+def test_touching_windows_apply_whatever_their_schedule_order():
+    """Same-boundary edges: the clearing edge of [a,b) must apply before
+    the raising edge of [b,c) — scheduled in REVERSE order here (the
+    case where (t, seq) ordering wiped the second window)."""
+    eng, t = _hover()
+    eng.schedule_fault(t + 5.0, "u1", "gps_denial", until=t + 9.0)
+    eng.schedule_fault(t + 1.0, "u1", "gps_denial", until=t + 5.0)
+    t = _run(eng, t, 7.0)                     # inside the SECOND window
+    assert eng.fcus[0].cbit.raised("GPS_LOSS")
+    t = _run(eng, t, 5.0)                     # past until + recovery
+    assert not eng.fcus[0].cbit.raised("GPS_LOSS")
+
+
+# ----------------------------- battery family, physics-level end to end
+
+def test_cell_imbalance_injection_detected_from_real_taps():
+    """Closes the F6 coverage gap: physics ECM -> cell taps -> esc_telem
+    -> FCU monitor -> CELL_IMBALANCE, on a flying engine."""
+    eng, t = _hover()
+    eng.fault_cell_imbalance("u1", 0.3)         # one weak cell, zero-mean
+    t = _run(eng, t, 4.0)                       # 2 s dictionary debounce
+    fcu = eng.fcus[0]
+    assert fcu.cbit.raised("CELL_IMBALANCE")
+    eng.fault_cell_imbalance("u1", 0.0)         # latching: stays up
+    t = _run(eng, t, 2.0)
+    assert fcu.cbit.raised("CELL_IMBALANCE")
+
+
+def test_batt_r0_scale_injection_raises_sag_anom():
+    eng, t = _hover()
+    assert eng.fcus[0].soc_est.soc is not None  # seeded on the stand
+    eng.fault_batt_r0("u1", 3.0)                # aged pack: 3x series R
+    t = _run(eng, t, 4.0)
+    assert eng.fcus[0].cbit.raised("BATT_SAG_ANOM")

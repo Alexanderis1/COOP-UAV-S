@@ -264,3 +264,41 @@ def test_matrix_row_behavior(code):
     eng.clear(code)
     assert not eng.raised(code)
     assert eng.word() == 0
+
+
+# ------------------------------------------- debounce continuity (review)
+
+def test_parked_debounce_does_not_complete_across_a_reporting_gap():
+    """A monitor that went silent (disarm, dropout, realignment) broke
+    the continuous-hold claim: one blip after the gap must restart the
+    debounce, not complete it instantly."""
+    from coopuavs.coopfc.cbit.engine import REPORT_GAP_S
+    eng = CbitEngine()
+    eng.report("MOTOR_RESPONSE", True, 0.0)        # pending (deb 0.5 s)
+    eng.report("MOTOR_RESPONSE", True, 0.2)        # still pending
+    t = 0.2 + REPORT_GAP_S + 1.0                   # monitor silent
+    eng.report("MOTOR_RESPONSE", True, t)          # restart, NOT raise
+    assert not eng.raised("MOTOR_RESPONSE")
+    # held continuously after the gap -> raises on its own debounce
+    eng.report("MOTOR_RESPONSE", True, t + 0.5)
+    assert eng.raised("MOTOR_RESPONSE")
+
+
+def test_slow_cadence_reports_are_gap_free():
+    # 1 Hz monitor cadence sits under REPORT_GAP_S: normal slow-task
+    # debounces are unaffected by the continuity rule.
+    eng = CbitEngine()
+    eng.report("CELL_IMBALANCE", True, 0.0)        # deb 2.0 s
+    eng.report("CELL_IMBALANCE", True, 1.0)
+    eng.report("CELL_IMBALANCE", True, 2.0)
+    assert eng.raised("CELL_IMBALANCE")
+
+
+def test_snapshot_since_survives_condition_flicker_on_latched_fault():
+    eng = CbitEngine()
+    eng.report("GYRO_STUCK", True, 1.0)
+    eng.report("GYRO_STUCK", True, 1.2)            # raised (deb 0.1, latch)
+    assert eng.raised("GYRO_STUCK")
+    eng.report("GYRO_STUCK", False, 1.4)           # condition flickers off
+    assert eng.raised("GYRO_STUCK")                # latched holds
+    assert eng.snapshot()["GYRO_STUCK"]["since"] == 1.0   # onset kept

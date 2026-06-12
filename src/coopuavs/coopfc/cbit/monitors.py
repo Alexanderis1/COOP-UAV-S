@@ -291,8 +291,14 @@ class FcuMonitors:
             return
         p = self.fcu.params.get
         cells = p("fcu.batt_cells")
+        # Full ECM expectation incl. the tracked RC relaxation (the
+        # estimator integrates v1 from every frame; batt_mon runs before
+        # cbit_fast, sched order): the settled-sag shortcut i*(r0+r1)
+        # false-fired for ~3*tau1 after every sustained load DECREASE
+        # (dash -> hover), latching a fault that then disabled the SOC
+        # veto for the rest of the flight.
         expected = (ocv_v_cell(soc) * cells
-                    - msg.i_bus * (p("fcu.batt_r0") + p("fcu.batt_r1")))
+                    - msg.i_bus * p("fcu.batt_r0") - self.fcu.soc_est.v1)
         anom = msg.v_bus < expected - SAG_MARGIN_V_CELL * cells
         eng.report("BATT_SAG_ANOM", anom, now,
                    detail=f"{(expected - msg.v_bus) / cells:.2f} V/cell"
@@ -319,7 +325,9 @@ class FcuMonitors:
             self._rej_at_slow["baro"] = rej["baro"]
             self._rej_at_slow["mag"] = rej["mag"]
             self._rej_at_slow["gps"] = rej["gps_pos"] + rej["gps_vel"]
-        self._baro_recent = baro_rej > 0
+        # Same per-window minimum as BARO_FAULT itself: the chi-gates
+        # reject the odd honest outlier — one must not count a family.
+        self._baro_recent = baro_rej >= BARO_REJ_MIN
         self._mag_recent = mag_rej >= MAG_REJ_MIN
         self._mag_frames_bad = mag_bad > 0
         self._gps_recent = gps_rej >= GPS_REJ_MIN

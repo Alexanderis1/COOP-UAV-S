@@ -27,7 +27,7 @@ import zlib
 import numpy as np
 
 from coopuavs.coopfc.cbit import CbitEngine
-from coopuavs.coopfc.cbit.dictionary import word_names
+from coopuavs.coopfc.cbit.dictionary import act_rank, word_names
 
 from ..core.messages import Header, UavMode, UavState
 from . import guidance
@@ -173,13 +173,17 @@ class SentinelApp:
     def _health(self) -> dict:
         """Northbound UavHealth digest (P5-4; interceptor_app rationale)."""
         word = self._client.fault_word | self._cbit.word()
+        deg_fcu = self._client.cbit_degraded
+        deg_mc = self._cbit.degraded_mode()
         return {
             "faults": word,
             "codes": word_names(word),
             "inhibit_fire": bool(self._client.cbit_inhibit_fire
                                  or self._cbit.inhibit_fire),
-            "inhibit_arming": bool(self._client.cbit_inhibit_arming),
-            "degraded": self._client.cbit_degraded,
+            "inhibit_arming": bool(self._client.cbit_inhibit_arming
+                                   or self._cbit.inhibit_arming),
+            "degraded": (deg_fcu if act_rank(deg_fcu) >= act_rank(deg_mc)
+                         else deg_mc),
         }
 
     def _publish_state(self, t: float) -> None:

@@ -681,6 +681,23 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       unchanged (twins hold as-is); e2e CI kill seeds and @slow floor survived the honest
       transport (~2x link latency + 1 MC tick) UNCHANGED — no re-baseline needed. 8 tests
       test_sitl_release.py (2026-06-12)
+- [x] P5-R review fixes (2026-06-12, PR #12 review): (C1) token/release wire track_id i32 —
+      debris pseudo-tracks are NEGATIVE, u32 pack crashed the MC on its first debris
+      clearance; (H1) only AUTHORIZED clearances mirror a token (HOLD/DENIED must not arm
+      the hard interlock); (H2) HEALTH northbound moved BEFORE the nav gate (bricked-on-pad
+      vehicle reported healthy); (H3) CBIT debounce continuity — a reporting gap >1.5 s
+      restarts a pending debounce (parked half-debounce raised instantly across
+      disarm/dropout/realign windows); (H4) FCU models the pack RC relaxation: SocEstimator
+      tracks v1 (tau1 = r1*c1 per airframe) and inverts rest reads against TRUE OCV
+      (landing rest no longer drags a correct count down), SAG_ANOM expectation uses
+      tracked v1 instead of settled i*(r0+r1) (dash->hover no longer false-latches and
+      kills the SOC veto); (M1/M2) fault schedule: overlap windows rejected, off-edges
+      before on-edges at the same boundary, scale/rotor/finiteness/linkless-jam validated
+      loud at schedule time; (M3) EKF_INNOV baro family uses BARO_REJ_MIN; plus
+      snapshot.since onset contract, ALIGN_FAIL retry reset, full MC-digest merge, ammo
+      refund clamp, RELEASE_TIMEOUT < reload pin, physics-level battery injection kinds
+      (cell_imbalance/batt_r0_scale) closing the F6 end-to-end gap + interlock matrix rows
+      (2026-06-12)
 - GATE: fault matrix 100% test-covered
 
 ### P6 — 6DOF threats + saturation (L; parallel after P1)

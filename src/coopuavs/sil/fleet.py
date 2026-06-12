@@ -236,6 +236,7 @@ class SitlEngine:
                 "fcu.batt_capacity_ah": float(batt["capacity_ah"]),
                 "fcu.batt_r0": float(batt["r0"]),
                 "fcu.batt_r1": float(batt["r1"]),
+                "fcu.batt_tau1_s": float(batt["r1"]) * float(batt["c1"]),
                 "fcu.batt_cells": int(batt["n_series"]),
             }
             if fcu_overlay:
@@ -269,6 +270,10 @@ class SitlEngine:
         # applied at macro boundaries (deterministic, no RNG).
         self._fault_sched: list = []
         self._fault_seq = 0
+        # Accepted windows per (uid, kind, discriminator): overlap is a
+        # schedule-time error (the clearing edge restores the HEALTHY
+        # value — an enclosing window would be silently wiped).
+        self._fault_windows: list = []
 
     @staticmethod
     def _divisor(base_hz: int, rate_hz: float, name: str) -> int:
@@ -383,6 +388,31 @@ class SitlEngine:
         link.up.jammed = on
         link.down.jammed = on
 
+    def _battery_of(self, uid: str):
+        i = self.index[uid]
+        return (self.groups[self._group_of[i]].pt.battery,
+                int(self._local_of[i]))
+
+    def fault_cell_imbalance(self, uid: str, delta: float) -> None:
+        """Weak cell (physics-level, BatteryEcm seam): cell 0 sits
+        ``delta`` SOC below the pack mean, the rest split the excess
+        (zero-mean spread — charge state unchanged). delta 0 clears.
+        Caveat: an imbalance fault switches that battery BANK to the
+        per-cell OCV path (sum of cell curves) — sub-ulp arithmetic
+        difference vs the unfaulted product form, documented in
+        physics/battery.py; never injected = exact pre-P5 path."""
+        batt, li = self._battery_of(uid)
+        n = batt.n_series
+        deltas = np.full(n, delta / (n - 1))
+        deltas[0] = -delta
+        batt.inject_cell_imbalance(li, deltas if delta else np.zeros(n))
+
+    def fault_batt_r0(self, uid: str, scale: float) -> None:
+        """Aged/cold pack: series resistance scaled (1.0 = off) — the
+        physics-level BATT_SAG_ANOM source."""
+        batt, li = self._battery_of(uid)
+        batt.inject_r0_scale(li, scale)
+
     # Scenario `faults:` kinds (P5-2b) -> required parameter keys.
     FAULT_KINDS = {
         "gps_denial": frozenset(),
@@ -392,6 +422,8 @@ class SitlEngine:
         "gyro_stuck": frozenset(),
         "motor": frozenset({"rotor", "scale"}),
         "mc_link_jam": frozenset(),
+        "cell_imbalance": frozenset({"delta"}),
+        "batt_r0_scale": frozenset({"scale"}),
     }
 
     def schedule_fault(self, t: float, uid: str, kind: str,
@@ -410,21 +442,61 @@ class SitlEngine:
                 f"got {sorted(params)}")
         if uid not in self.index:
             raise ValueError(f"unknown vehicle {uid!r} in fault schedule")
+        if not math.isfinite(t) or (until is not None
+                                    and not math.isfinite(until)):
+            raise ValueError(f"fault times must be finite, got t={t!r} "
+                             f"until={until!r}")
         if until is not None and not until > t:
             raise ValueError(f"fault until={until!r} must be > t={t!r}")
         if kind == "sensor_dropout" and params["sensor"] not in self._DROP_KINDS:
             raise ValueError(f"unknown sensor {params['sensor']!r}; "
                              f"one of {self._DROP_KINDS}")
-        if kind == "motor" and not 0 <= params["rotor"] < self._u_buf.shape[1]:
-            raise ValueError(f"rotor {params['rotor']!r} out of range")
+        # Parameter semantics validated HERE (the loud-at-build contract):
+        # an accepted schedule must never explode mid-run at its boundary.
+        if kind == "motor":
+            rotor = params["rotor"]
+            if (isinstance(rotor, bool) or int(rotor) != rotor
+                    or not 0 <= rotor < self._u_buf.shape[1]):
+                raise ValueError(f"rotor {rotor!r} out of range")
+            if not (math.isfinite(params["scale"])
+                    and 0.0 <= params["scale"] <= 1.0):
+                raise ValueError(
+                    f"motor scale must be in [0, 1], got {params['scale']!r}")
+        if kind in ("gps_degraded", "imu_noise", "batt_r0_scale"):
+            if not (math.isfinite(params["scale"]) and params["scale"] > 0.0):
+                raise ValueError(f"{kind} scale must be finite and > 0, "
+                                 f"got {params['scale']!r}")
+        if kind == "cell_imbalance":
+            if not (math.isfinite(params["delta"])
+                    and 0.0 < params["delta"] <= 0.5):
+                raise ValueError(f"cell_imbalance delta must be in (0, 0.5], "
+                                 f"got {params['delta']!r}")
+        if kind == "mc_link_jam" and self.links[self.index[uid]] is None:
+            # Links are attached before faults are scheduled (scenario
+            # build order) — a linkless jam target is a config error now,
+            # not a crash at the window boundary.
+            raise ValueError(f"vehicle {uid!r} has no MC link to jam")
+        key = (uid, kind, params.get("sensor"), params.get("rotor"))
+        t0 = float(t)
+        t1 = float(until) if until is not None else math.inf
+        for wkey, a, b in self._fault_windows:
+            if wkey == key and t0 < b and a < t1:
+                raise ValueError(
+                    f"fault windows overlap for {uid!r} {kind!r}: "
+                    f"[{a}, {b}) and [{t0}, {t1}) — the clearing edge "
+                    "restores the healthy value, so nesting is ill-defined")
+        self._fault_windows.append((key, t0, t1))
         self._fault_sched.append(
-            (float(t), self._fault_seq, kind, uid, dict(params), True))
+            (t0, self._fault_seq, kind, uid, dict(params), True))
         self._fault_seq += 1
         if until is not None:
             self._fault_sched.append(
-                (float(until), self._fault_seq, kind, uid, dict(params), False))
+                (t1, self._fault_seq, kind, uid, dict(params), False))
             self._fault_seq += 1
-        self._fault_sched.sort(key=lambda e: (e[0], e[1]))
+        # Same-boundary edges: clearing edges apply BEFORE raising edges
+        # (touching windows [a,b)+[b,c) work whatever order they were
+        # scheduled in), then schedule order.
+        self._fault_sched.sort(key=lambda e: (e[0], e[5], e[1]))
 
     def _apply_fault(self, kind: str, uid: str, params: dict,
                      on: bool) -> None:
@@ -443,6 +515,10 @@ class SitlEngine:
                              params["scale"] if on else 1.0)
         elif kind == "mc_link_jam":
             self.fault_mc_link_jam(uid, on)
+        elif kind == "cell_imbalance":
+            self.fault_cell_imbalance(uid, params["delta"] if on else 0.0)
+        elif kind == "batt_r0_scale":
+            self.fault_batt_r0(uid, params["scale"] if on else 1.0)
 
     def set_pad(self, uav_id: str, pos, *, recharge_s: float = 90.0,
                 radius: float = 25.0) -> None:
@@ -569,9 +645,19 @@ class SitlEngine:
                     fcu.cmd_clearance_token(v["track_id"], v["issued"])
                 elif name == "WEAPON_RELEASE":
                     fcu.cmd_weapon_release(v["stamp"], v["track_id"])
+        if k % self._health_every == 0:
+            # BEFORE the nav gate: a vehicle bricked pre-alignment (dead
+            # IMU, PARAM_CRC, align retries) is exactly what PHY-UAV-013
+            # must surface — gating HEALTH on nav reported it healthy.
+            cbit = fcu.cbit
+            flags = (int(cbit.inhibit_arming)
+                     | (int(cbit.inhibit_fire) << 1))
+            link.down.send(encode_msg(
+                "HEALTH", now, cbit.word(), flags,
+                DEGRADED_CODES[cbit.degraded_mode()]), now)
         nav = fcu.nav
         if nav is None:
-            return    # nothing worth telemetering until alignment
+            return    # nav/status telemetry needs an aligned estimator
         if k % self._nav_every == 0:
             q, p, vel = nav.q, nav.pos, nav.vel
             link.down.send(encode_msg(
@@ -582,13 +668,6 @@ class SitlEngine:
                 "STATUS", now, STATE_CODES[fcu.state], MODE_CODES[fcu.mode],
                 FAILSAFE_CODES[fcu.failsafe], BATT_CODES[fcu.batt.state],
                 nav.sigma_pos_h, fcu.battery_fraction()), now)
-        if k % self._health_every == 0:
-            cbit = fcu.cbit
-            flags = (int(cbit.inhibit_arming)
-                     | (int(cbit.inhibit_fire) << 1))
-            link.down.send(encode_msg(
-                "HEALTH", now, cbit.word(), flags,
-                DEGRADED_CODES[cbit.degraded_mode()]), now)
 
     def _tick(self, now: float) -> None:
         # 1. devices sample truth (pre-step state, ZOH inputs)

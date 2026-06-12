@@ -15,15 +15,26 @@ from __future__ import annotations
 
 from .dictionary import ACT_NONE, FAULTS, act_rank
 
+# Debounce continuity allowance: a silence between two reports of the
+# same code longer than this means the monitor was NOT observing (vehicle
+# disarmed, source sensor dropped, estimator rebuilding) — the "condition
+# held continuously" claim is broken and the debounce restarts. Above the
+# slowest monitor cadence (1 Hz slow task), below the shortest real
+# observation gaps (post-touchdown realignment ~2 s, disarm windows).
+REPORT_GAP_S = 1.5
+
 
 class _FaultState:
-    __slots__ = ("pending_since", "raised", "raised_at", "detail")
+    __slots__ = ("pending_since", "raised", "raised_at", "detail",
+                 "onset", "last_report")
 
     def __init__(self):
         self.pending_since: float | None = None
         self.raised = False
         self.raised_at: float | None = None
         self.detail = ""
+        self.onset: float | None = None        # condition onset (snapshot)
+        self.last_report: float | None = None
 
 
 class CbitEngine:
@@ -48,19 +59,27 @@ class CbitEngine:
                detail: str = "") -> None:
         """One monitor observation. Debounce on raise: the condition
         must hold continuously for the row's ``debounce_s`` of monitor
-        time. Non-latching faults clear on the first healthy report;
-        latching faults hold until ``clear()`` (ground op)."""
+        time — a reporting silence above ``REPORT_GAP_S`` breaks the
+        continuity claim and restarts a pending debounce (a parked
+        half-finished debounce must not complete on one blip after a
+        disarm/dropout/realignment window). Non-latching faults clear on
+        the first healthy report; latching faults hold until ``clear()``
+        (ground op)."""
         spec = self._faults[code] if code in self._faults else None
         if spec is None:
             raise KeyError(f"unknown fault code {code!r}")
         st = self._st(code)
+        gap = (st.last_report is not None
+               and now - st.last_report > REPORT_GAP_S)
+        st.last_report = now
         if active:
             if detail:
                 st.detail = detail
             if st.raised:
                 return
-            if st.pending_since is None:
+            if st.pending_since is None or gap:
                 st.pending_since = now
+                st.onset = now
             if now - st.pending_since >= spec.debounce_s:
                 st.raised = True
                 st.raised_at = now
@@ -70,6 +89,11 @@ class CbitEngine:
                 st.raised = False
                 st.raised_at = None
                 st.detail = ""
+            if not st.raised:
+                # Keep onset while a latched fault holds through a
+                # flicker — snapshot()'s "since = condition onset"
+                # contract survives the condition clearing.
+                st.onset = None
 
     def clear(self, code: str) -> None:
         """Ground/maintenance clear (pack swap, repair): drops the fault
@@ -82,6 +106,7 @@ class CbitEngine:
             st.raised = False
             st.raised_at = None
             st.detail = ""
+            st.onset = None
 
     # ----------------------------------------------------------- aggregates
 
@@ -148,7 +173,7 @@ class CbitEngine:
             if st is None or not st.raised:
                 continue
             out[code] = {
-                "since": st.pending_since,
+                "since": st.onset,
                 "latched": self._faults[code].latching,
                 "detail": st.detail,
             }

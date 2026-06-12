@@ -34,7 +34,7 @@ from coopuavs.core.messages import (
 from coopuavs.interceptors.uav import RELEASE_TIMEOUT_S, SitlShellUav
 from coopuavs.mc.fire_control import CLEARANCE_VALID_S
 from test_coopfc_fcu import SynthHost
-from test_sitl_stage2 import DT, _clr, _hosted_engine, _task
+from test_sitl_stage2 import DT, _clr, _hosted_engine, _task, _tracks
 
 VALID_S = FCU_DEFAULTS["fcu.release_token_valid_s"]
 
@@ -195,3 +195,76 @@ def test_lost_release_times_out_and_restores_the_round():
     assert shell.release_refused == 1
     assert shell.effector.ammo == capacity
     assert eng.fcus[0].releases == 0
+
+
+# --------------------------------------------- review-fix regressions
+
+def test_wire_carries_negative_debris_track_ids():
+    """Debris pseudo-tracks are NEGATIVE by contract (SIM-DEB-003,
+    world.next_debris_ref): the token/release wire must round-trip them
+    -- u32 packing crashed the MC on its first debris clearance."""
+    from coopuavs.coopfc.link.coop_link import FrameDecoder, decode_msg, encode_msg
+    for name, vals in (("CLEARANCE_TOKEN", (5.0, -103, 4.5)),
+                       ("WEAPON_RELEASE", (5.0, -103))):
+        ((mid, payload),) = FrameDecoder().feed(encode_msg(name, *vals))
+        got = decode_msg(mid, payload)[1]
+        assert got["track_id"] == -103, name
+
+
+def test_fcu_releases_on_negative_debris_track():
+    h = _armed_host()
+    h.fcu.cmd_clearance_token(-103, 50.0)
+    ok, why = h.fcu.cmd_weapon_release(50.2, -103)
+    assert ok, why
+    assert h.fcu.effector_port.read() == (1, (-103, 50.2))
+
+
+def test_hold_and_denied_clearances_never_arm_the_fcu_token():
+    """The hard interlock backstops MC misfires on refused clearances:
+    mirroring HOLD/DENIED tokens would neuter exactly that defense."""
+    from test_sitl_stage2 import _AppHost
+    host = _AppHost()
+    sent = []
+    host.app._client.send_clearance_token = (
+        lambda track_id, issued: sent.append((track_id, issued)))
+    host.post("tasks", [_task(track_id=1, task_id=7)])
+    host.post("tracks", _tracks(1))
+    for decision in (EngagementDecision.HOLD, EngagementDecision.DENIED):
+        host.post("clearance", _clr(track_id=1, task_id=7,
+                                    decision=decision))
+        host.step(0.0)
+    assert sent == []
+    host.post("tasks", [_task(track_id=1, task_id=7)])   # DENIED cleared it
+    host.post("clearance", _clr(track_id=1, task_id=7,
+                                decision=EngagementDecision.AUTHORIZED))
+    host.step(0.1)
+    assert sent == [(1, 0.0)]                  # only AUTHORIZED mirrors
+
+
+def test_health_flows_before_alignment():
+    """PHY-UAV-013: a vehicle bricked pre-alignment must still report --
+    HEALTH was gated behind the nav telemetry check."""
+    from coopuavs.coopfc.cbit import FAULTS
+    eng, mcu = _hosted_engine()
+    eng.fault_sensor_dropout("u1", "imu")      # dead IMU from boot
+    _drive_engine_only(eng, 0.0, 5.0)
+    client = mcu.app._client
+    assert client.nav is None                  # never aligned...
+    assert client.health is not None           # ...but health got through
+    assert client.fault_word & (1 << FAULTS["IMU_STALE"].bit)
+    assert client.cbit_inhibit_arming
+
+
+def _drive_engine_only(eng, t, t_span):
+    for m in range(round(t_span / DT)):
+        eng.run_macro_step(t + m * DT, DT)
+    return t + round(t_span / DT) * DT
+
+
+def test_release_timeout_below_every_reload_time():
+    """Load-bearing pairing invariant: at most ONE stage per track can
+    exist (ack matching + pulse collection rely on it) -- guaranteed by
+    the stage window expiring before any effector can fire again."""
+    from coopuavs.interceptors.effectors import EFFECTOR_FACTORIES
+    for name, make in EFFECTOR_FACTORIES.items():
+        assert RELEASE_TIMEOUT_S < make().reload_time, name

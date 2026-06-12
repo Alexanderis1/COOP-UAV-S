@@ -94,6 +94,9 @@ FCU_DEFAULTS = {
     "fcu.batt_capacity_ah": 16.0,
     "fcu.batt_r0": 0.036,
     "fcu.batt_r1": 0.018,
+    "fcu.batt_tau1_s": 15.0,      # r1*c1 — the RC relaxation the SOC
+                                  # estimator and SAG_ANOM model
+
     # Hard interlock token freshness (P5-5): must equal the MC-side
     # mc/fire_control.CLEARANCE_VALID_S — the two ends of one window
     # (cross-checked by test_sitl_release.py).
@@ -175,7 +178,9 @@ class Fcu:
             debounce_s=p("fcu.batt_debounce_s")))
         self.soc_est = SocEstimator(SocParams(
             capacity_ah=p("fcu.batt_capacity_ah"),
-            cells=p("fcu.batt_cells")))
+            cells=p("fcu.batt_cells"),
+            r0=p("fcu.batt_r0"), r1=p("fcu.batt_r1"),
+            tau1_s=p("fcu.batt_tau1_s")))
         self.pos_ctl = PosCtl(PosParams(
             kp=p("fcu.pos_kp"), vel_max_h=p("fcu.vel_max_h"),
             vel_max_up=p("fcu.vel_max_up"),
@@ -399,6 +404,10 @@ class Fcu:
                 if res is not None:
                     if res.ok:
                         self.align_result = res
+                        # ALIGN_FAIL counts retries THIS alignment, not
+                        # per power-up history: a windy boot must not
+                        # poison every later healthy realignment window.
+                        self._align_retries = 0
                         # Seed the nominal position from the latest fix:
                         # starting at the world origin under the wide
                         # alignment prior leaves any spawn beyond ~870 m
