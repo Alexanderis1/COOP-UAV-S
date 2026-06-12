@@ -40,13 +40,17 @@ from ..core.messages import (
     UavState,
 )
 from ..core.node import Node
-from ..sim.physics import PointMass
+from ..sim.physics import LoadFactorBody, make_body
 from . import cooperation, guidance
 from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
 MIN_PK_TO_REQUEST = 0.25   # don't waste ammo on envelope-edge shots
 MIN_PK_TO_RELEASE = 0.15   # abort if geometry collapsed while clearing
+# Load-factor airframes hand the endgame to true PN inside this time-to-go:
+# lead pursuit re-aims at the PIP through the body's velocity-command lag,
+# which is exactly the window where a terminal weave defeats it.
+TERMINAL_PN_TGO_S = 6.0
 # A clearance token lost in transit must not deadlock the interlock
 # (SIM-COM-003): if no answer arrives within this window, re-request.
 CLEARANCE_TIMEOUT_S = 3.0
@@ -70,6 +74,9 @@ class InterceptorUav(Node):
         battery_minutes: float = 25.0,
         cruise_speed: float | None = None,
         turnaround_s: float = 90.0,
+        airframe: str = "point_mass",
+        n_max: float = 4.0,
+        pn_gain: float = 4.0,
     ):
         super().__init__(uav_id, bus, rate_hz=rate_hz)
         self.uav_id = uav_id
@@ -80,7 +87,14 @@ class InterceptorUav(Node):
         self.link_quality = 1.0
         self.home = np.asarray(home, dtype=float)
         self.effector = effector
-        self.body = PointMass(self.home.copy(), max_speed=max_speed, max_accel=max_accel)
+        self.body = make_body(
+            airframe, self.home.copy(),
+            max_speed=max_speed, max_accel=max_accel, n_max=n_max,
+        )
+        # Terminal PN needs an acceleration-flown airframe; the point-mass
+        # default keeps the verified v0.1 pursuit behaviour bit-for-bit.
+        self._terminal_pn = isinstance(self.body, LoadFactorBody)
+        self.pn_gain = pn_gain
         self.max_speed = max_speed
         self.cruise_speed = cruise_speed if cruise_speed is not None else 0.6 * max_speed
         self.turnaround_s = turnaround_s
@@ -233,10 +247,24 @@ class InterceptorUav(Node):
         # Fire control runs on the track extrapolated to now — a 0.2 s stale
         # track is an 11 m error against an OWA, comparable to the envelope.
         tgt_pos = track.position + track.velocity * max(0.0, t - track.header.stamp)
-        v_cmd = guidance.pursuit_velocity(
-            self.body.position, tgt_pos, track.velocity, self.max_speed
+        t_go = guidance.intercept_time(
+            tgt_pos - self.body.position, track.velocity, self.max_speed
         )
-        self.body.command_velocity(v_cmd)
+        if self._terminal_pn and t_go is not None and t_go < TERMINAL_PN_TGO_S:
+            # Endgame on the load-factor airframe: steer the LOS rate
+            # directly. PN commands only lateral acceleration, so the body
+            # carries the speed pursuit built up into the intercept.
+            self.body.command_acceleration(
+                guidance.pro_nav_accel(
+                    self.body.position, self.body.velocity,
+                    tgt_pos, track.velocity, nav_gain=self.pn_gain,
+                )
+            )
+        else:
+            v_cmd = guidance.pursuit_velocity(
+                self.body.position, tgt_pos, track.velocity, self.max_speed
+            )
+            self.body.command_velocity(v_cmd)
 
         rel = tgt_pos - self.body.position
         pk = self.effector.p_kill(rel, self.body.velocity, track.velocity)
