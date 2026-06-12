@@ -70,13 +70,18 @@ Each step, in this frozen order:
 Every consumer draws from its own named stream
 (`core/rng.py RngRegistry`, pure function of `(run_seed, name)`):
 `weather`, `comms`, `sensor/<name>`, `adjudicator`, `debris`,
-`threat/<id>`. The staged P2 hw device banks (P4 wiring) follow the same
-rule with one parent stream per device type — `sensor/imu`, `sensor/gps`,
-`sensor/baro`, `sensor/mag`, `sensor/esc_telem` — from which each bank
-spawns one child per vehicle (the Dryden pattern: a fleet-size change
-leaves existing vehicles' draw histories identical; suite:
+`threat/<id>`. The P2 hw device banks (wired by the P4-1 SitlEngine)
+follow the same rule with one parent stream per device type —
+`sensor/imu`, `sensor/gps`, `sensor/baro`, `sensor/mag`,
+`sensor/esc_telem`, plus `dryden` for the fleet gust bank — from which
+each bank spawns one child per vehicle (the Dryden pattern: a fleet-size
+change leaves existing vehicles' draw histories identical; suites:
 `tests/test_hw_determinism.py`, including the pin that spawning twice from
-ONE parent is *not* an independent copy — names must be unique).
+ONE parent is *not* an independent copy — names must be unique, and
+`tests/test_sil_fleet.py` through the engine wiring. Note the contract is
+*draw histories*: batched einsum/matmul kernels differ at the last ULP
+across batch sizes, so trajectories agree to ~1e-14 relative, not
+bitwise — RESEARCH.md "P4-1 fleet-size invariance").
 Consequences:
 
 - Execution order between consumers **no longer touches randomness** — an
@@ -106,7 +111,7 @@ pipeline order or stop asserting on them.
    delivery (the clearance interlock and inline adjudication depend on it).
 5. The §6 micro-tick order once the SITL engine lands (P4).
 
-## 6. SITL micro-tick contract (P1 models staged; engine lands in P4)
+## 6. SITL micro-tick contract (engine landed P4-1: `sil/fleet.py`)
 
 Referenced normatively by the physics docstrings (`physics/motor.py`,
 `physics/__init__.py`); the frozen order is the PLAN_PROBLEM1 "Time —
@@ -146,6 +151,15 @@ Steps 5 and 6 have no data flow between them and draw from separate
 streams, but the order is frozen anyway — determinism pins replay whole
 ticks. Status: P1 ships the physics models and their unit pins; P2 ships
 the step-1 device models (imu/gps/baro/mag/seeker_gimbal/esc_telem) and
-their unit/determinism pins; the tick order itself gets pinned by the P4
-SitlEngine tests (`tests/test_sitl_end_to_end.py` determinism pins) when
-the micro-loop lands.
+their unit/determinism pins; P4-1 lands the fleet micro-loop
+(`sil/fleet.py SitlEngine`) — the tick order is pinned structurally by
+`tests/test_sil_fleet.py` (first-tick call-sequence pin plus run-twice
+determinism), step 3 (MC tick) is a seam until P4-3, step 8 (threat
+batch) until P6. Two P4-1 wiring notes, both user decisions 2026-06-12:
+the IMU samples the exact wrench `force_world / m` at the latched inputs
+(the P3 dv/dt bench placeholder is closed in the engine; the
+single-vehicle bench keeps its pinned form), and ground contact stays
+deferred — a non-ARMED row is frozen truth ("stand convention") with
+zeroed velocity/rates, devices keep sampling it with real noise, and the
+world's truth-side wind displacement skips SITL friendlies
+(`FriendlyVehicle.wind_displaced = False`; wind is a plant force here).

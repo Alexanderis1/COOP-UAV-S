@@ -424,8 +424,19 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       deterministic 0.138 s; RESEARCH.md "P3-5 yaw rate gate"). Suites re-run green.
 
 ### P4 — Fleet integration (XL — riskiest; staged strangler)
-- [ ] P4-1 `sil/vehicle.py` FriendlyVehicle protocol-conformance test (pins full duck-type contract)
-      + `sil/fleet.py` SitlEngine into `world.step` (wind becomes force, not displacement)
+- [x] P4-1 `sil/vehicle.py` FriendlyVehicle truth adapter + protocol-conformance test pinning the
+      full world.friendlies duck-type (consumer map in test_sil_vehicle.py: adjudicator/evasion/
+      comms/recorder/seeker accesses; legacy InterceptorUav + SentinelUav held to the same
+      contract) + `sil/fleet.py` SitlEngine behind World.micro: N×(P2 device banks w/ registry
+      `sensor/*` parents + `dryden`) + N FCUs, frozen ORDERING §6 order pinned structurally;
+      wind = plant force (WeatherState.mean_wind_at + per-vehicle Dryden, OU excluded;
+      world.step skips wind_displaced=False friendlies). User decisions 2026-06-12: Dryden over
+      OU; IMU accel = exact wrench force_world/m (dv/dt placeholder closed in the engine);
+      ground contact deferred (stand convention: frozen non-ARMED rows, pre-spin at arm).
+      Pins: §6 first-tick order, run-twice bit-identical (wind+gusts), fleet-size invariance
+      (bitwise gust draws + 1e-9 trajectory — ULP kernel finding, RESEARCH.md), exact-wrench
+      IMU, stand freeze w/ live devices, ekf.late_meas==0 through fleet timing, world-clock
+      lockstep + wind-skip seam. 20 tests test_sil_{vehicle,fleet}.py (2026-06-12)
 - [ ] P4-2 Stage 1 velocity passthrough: InterceptorUav keeps FSM, `command_velocity` routes over
       link to FCU OFFBOARD; sitl twin of guidance intercept test; 1-interceptor kill in
       SITL_SMALL_SCENARIO

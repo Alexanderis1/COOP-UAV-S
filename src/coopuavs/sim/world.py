@@ -155,9 +155,12 @@ class World:
             # Truth-side wind displacement of friendly airframes (SIM-PHX-003);
             # the agents fight the drift through their velocity loops. A
             # REARMing airframe is docked to its pad (rooftop stations sit
-            # well above the z>1 altitude gate), not airborne.
+            # well above the z>1 altitude gate), not airborne. SITL vehicles
+            # opt out (FriendlyVehicle.wind_displaced=False): they feel wind
+            # as a plant force in the micro-loop, never as displacement.
             for uav in self.friendlies.values():
-                if uav.position[2] > 1.0 and uav.mode != UavMode.REARM:
+                if (uav.position[2] > 1.0 and uav.mode != UavMode.REARM
+                        and getattr(uav, "wind_displaced", True)):
                     uav.body.position += self.weather.wind_at(uav.position[2]) * self.dt
 
         self.t += self.dt

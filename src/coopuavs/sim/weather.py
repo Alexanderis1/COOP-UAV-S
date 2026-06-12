@@ -99,6 +99,16 @@ class WeatherState:
         shear = float(np.clip((max(alt, 2.0) / 10.0) ** 0.14, 0.6, 1.6))
         return self.mean_wind * shear + np.array([self._gust[0], self._gust[1], 0.0])
 
+    def mean_wind_at(self, alts: np.ndarray) -> np.ndarray:
+        """Gust-free sheared mean wind, vectorized: (n,) altitudes -> (n, 3).
+
+        The SITL fleet engine feeds this to the plant as the force-producing
+        wind input (PLAN_PROBLEM1 P4-1); turbulence arrives separately via
+        its Dryden bank, so the OU gust term is deliberately excluded —
+        same shear law as :meth:`wind_at`, pinned by ``test_sil_fleet``."""
+        shear = np.clip((np.maximum(alts, 2.0) / 10.0) ** 0.14, 0.6, 1.6)
+        return self.mean_wind[None, :] * shear[:, None]
+
     # -- sensor coupling (SIM-SEN-003) -------------------------------------------
 
     def eo_ir_range_factor(self) -> float:

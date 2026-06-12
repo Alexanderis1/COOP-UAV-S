@@ -1170,3 +1170,44 @@ enough to pass a tripled settle time. Re-stamped per the
 fidelity/determinism goal as a REGRESSION gate: **settle < 0.20 s**
 (+45% headroom, same style as the GNSS-denied drift gate), overshoot
 gate < 20% unchanged.
+
+## P4 fleet integration - engine wiring decisions (added 2026-06-12)
+
+### P4-1 SITL wind coupling (user decision 2026-06-12)
+
+Legacy weather applies an Ornstein-Uhlenbeck gust on the mean wind as a
+truth-side *displacement*. A SITL vehicle must feel wind as a *force*
+through the plant wrench, so the engine feeds per-vehicle
+`WeatherState.mean_wind_at(z)` (the same power-law shear as `wind_at`,
+gust-free) plus a MIL-F-8785C Dryden bank (the validated P1 machinery,
+per-vehicle child streams) whenever scenario wind is nonzero. The OU
+gust term is deliberately excluded for SITL vehicles — Dryden replaces
+it; applying both would double-count turbulence. Mapping note: the
+Dryden severity knob w20 is the mean wind at 20 ft (6.1 m); the
+scenario `wind_speed` is referenced at 10 m. The 10 m figure is used
+as w20 directly (≤6% shear-law difference, well inside the turbulence
+model's class accuracy). Turbulence sigma/length scales are frozen at
+each vehicle's spawn altitude (the bench convention).
+
+### P4-1 IMU acceleration = exact wrench (user decision 2026-06-12)
+
+The P3 bench fed the IMU a dv/dt finite difference (documented
+placeholder). The fleet engine threads the exact truth CoM acceleration
+`force_world / m` — the plant wrench at the latched rotor speeds and
+ZOH wind, gravity included, matching the `hw.Imu.sample` contract —
+evaluated at the pre-step state the devices sample. Stand rows read
+zero (the unmodeled ground reaction balances them). Real ground
+contact stays deferred (same decision): non-ARMED rows are frozen with
+zeroed velocity/rates, motors pre-spin to hover at arming.
+
+### P4-1 fleet-size invariance is a draw-history contract
+
+ORDERING §4 promises that adding a vehicle leaves existing vehicles'
+*draw histories* identical — pinned bit-exact at bank level
+(test_hw_determinism) and through the engine's Dryden wiring
+(test_sil_fleet). Full-trajectory bitwise invariance across batch
+sizes does NOT hold: numpy einsum/matmul kernels differ at the last
+ULP between n=1 and n=2 shapes (measured 1.6e-14 relative over a
+1.5 s hover). The trajectory pin is therefore 1e-9 — any
+stream-wiring fault diverges at device-noise scale, five-plus orders
+louder. Run-twice determinism at fixed fleet size remains bitwise.
