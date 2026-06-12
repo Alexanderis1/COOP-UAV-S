@@ -77,21 +77,7 @@ class Recorder(Node):
             "run": dict(self.run_info),
             "tracks": [self._track_entry(trk)
                        for trk in (self._tracks.tracks if self._tracks else [])],
-            "uavs": [
-                {
-                    "id": u.uav_id,
-                    "pos": [round(float(x), 1) for x in u.position],
-                    "vel": [round(float(x), 1) for x in u.velocity],
-                    "mode": u.mode.value,
-                    "ammo": u.ammo,
-                    "battery": round(u.battery, 3),
-                    "task_id": u.task_id,
-                    "link": round(float(getattr(u, "link", 1.0)), 3),
-                    "kind": getattr(u, "kind", "interceptor"),
-                    "effector": getattr(u, "effector", "") or None,
-                }
-                for u in self._uavs.values()
-            ],
+            "uavs": [self._uav_entry(u) for u in self._uavs.values()],
             "turrets": [
                 {
                     "id": s.turret_id,
@@ -122,6 +108,33 @@ class Recorder(Node):
             "events": events,
             "decisions": decisions,
         }
+
+    def _uav_entry(self, u: UavState) -> dict:
+        entry = {
+            "id": u.uav_id,
+            "pos": [round(float(x), 1) for x in u.position],
+            "vel": [round(float(x), 1) for x in u.velocity],
+            "mode": u.mode.value,
+            "ammo": u.ammo,
+            "battery": round(u.battery, 3),
+            "task_id": u.task_id,
+            "link": round(float(getattr(u, "link", 1.0)), 3),
+            "kind": getattr(u, "kind", "interceptor"),
+            "effector": getattr(u, "effector", "") or None,
+        }
+        # Sitl-mode telemetry, additive only (ICD §2.2 v0.4): keys appear
+        # exactly when the platform reports them — a pointmass recording
+        # is byte-compatible with v0.3 parsers.
+        att = getattr(u, "attitude_q", None)
+        if att is not None:
+            entry["att"] = [round(float(q), 4) for q in att]
+        nav_q = getattr(u, "nav_quality", None)
+        if nav_q is not None:
+            entry["nav_q"] = round(float(nav_q), 2)
+        health = getattr(u, "health", None)
+        if health is not None:
+            entry["health"] = health
+        return entry
 
     def _debris_entries(self) -> list[dict]:
         """Live falling debris (ICD §2.2 v0.3): truth-derived display data,

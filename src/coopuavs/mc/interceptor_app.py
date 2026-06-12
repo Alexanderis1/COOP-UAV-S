@@ -304,6 +304,7 @@ class InterceptorApp:
         return bool(np.linalg.norm(self.body.position - point) < radius)
 
     def _publish_state(self, t: float) -> None:
+        nav, status = self._client.nav, self._client.status
         self._out_state.post(
             UavState(
                 header=Header(stamp=t),
@@ -318,5 +319,10 @@ class InterceptorApp:
                 max_speed=self.max_speed,
                 kind="interceptor",
                 effector=self.effector.type.value,
+                # estimate-domain extras (P4-7 additive telemetry)
+                attitude_q=((nav["qw"], nav["qx"], nav["qy"], nav["qz"])
+                            if nav is not None else None),
+                nav_quality=(status["sigma_pos_h"]
+                             if status is not None else None),
             )
         )

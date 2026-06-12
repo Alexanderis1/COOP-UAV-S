@@ -51,6 +51,7 @@ class _StubClient:
     reads as a healthy pack so the energy branch matches the legacy
     host's full battery."""
     nav = None
+    status = None
     state = "ARMED"
     batt_frac = 1.0
     failsafe = ""

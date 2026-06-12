@@ -500,7 +500,13 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       determinism (events + summary equal); 10-seed @slow total kills ≥9/10 + CRITICAL==0.
       Stage-1 kill smoke superseded into this suite. 4 tests; 601 fast + @slow e2e green,
       ruff clean (2026-06-12)
-- [ ] P4-7 recorder/ICD additive fields + ICD_RUNTIME v0.4 same commit + legacy-recording parse test
+- [x] P4-7 recorder/ICD additive: UavState += attitude_q/nav_quality/health (None in pointmass;
+      apps fill att+nav_q from NAV/STATUS telemetry — estimate-domain; health lands P5);
+      recorder `_uav_entry` emits att/nav_q/health ONLY when present; ICD_RUNTIME bumped v0.4
+      same commit (additive §2.2 note + sitl pos/vel=estimate clarification). Parse pins:
+      pointmass recording keeps the EXACT v0.3 uav key set; sitl recording carries unit-quat
+      att + nav_q in (0,10) m, no health yet, json round-trips. 2 tests test_sitl_recorder.py
+      (2026-06-12)
 - [ ] P4-8 perf gate `@perf`: residential_raid sitl RTF ≥0.5× headless + committed profile; miss →
       pull fallback levers before proceeding
 - GATE: all sitl twins + e2e + determinism + perf; legacy suite untouched and green
