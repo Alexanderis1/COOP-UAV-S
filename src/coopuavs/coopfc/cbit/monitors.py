@@ -35,6 +35,7 @@ import math
 from coopuavs.coopfc.battery_monitor import CRITICAL, LOW
 from coopuavs.coopfc.core import vec
 from coopuavs.coopfc.estimation.alignment import mag_yaw
+from coopuavs.coopfc.soc import ocv_v_cell
 
 from .engine import CbitEngine
 
@@ -103,6 +104,15 @@ MOTOR_U_STEADY = 0.08      # max per-rotor |u - u at previous frame|
 # ticks before the 50 Hz observer calls the instant "saturated" (the
 # 1 s dictionary debounce sits on top).
 SAT_STREAK_TICKS = 8
+# Battery family (P5-1f). CELL_IMBALANCE: tap spread (max-min) above
+# this — taps carry sigma 0.005 + lsb 0.01, so 80 mV is ~8x the noise
+# floor and ~1/3 of a healthy pack's full usable OCV span.
+CELL_SPREAD_V = 0.08
+# BATT_SAG_ANOM: measured bus volts below the SOC-implied expectation
+# OCV(soc) - I*(r0 + r1) by more than this margin per cell (the RC
+# branch lags toward I*r1 — using the settled value over-predicts sag
+# during load transients, which only makes the monitor conservative).
+SAG_MARGIN_V_CELL = 0.10
 # Watchdog cross-check.
 WDOG_FAST_MIN = 45         # fast fires per slow period (nominal 50)
 WDOG_SLOW_AGE_S = 2.5      # fast-side bound on slow-task recency
@@ -220,6 +230,7 @@ class FcuMonitors:
         if self._sub_esc.updated:
             self._esc_msg = self._sub_esc.read()
             self._motor_response(now)
+            self._battery_family(now)
         eng.report("SAT_PERSIST", fcu._sat_streak >= SAT_STREAK_TICKS, now)
 
         # -- mirrors (legacy failsafe chain keeps command authority) ----
@@ -266,6 +277,26 @@ class FcuMonitors:
             bad, rotor = True, u.index(max(u))
         self.eng.report("MOTOR_RESPONSE", bad, now,
                         detail=f"rotor {rotor}" if bad else "")
+
+    def _battery_family(self, now: float) -> None:
+        """Per ESC frame (10 Hz): cell-tap spread + SOC-implied sag."""
+        msg = self._esc_msg
+        eng = self.eng
+        spread = max(msg.cells) - min(msg.cells)
+        eng.report("CELL_IMBALANCE", spread > CELL_SPREAD_V, now,
+                   detail=f"spread {spread:.2f} V"
+                   if spread > CELL_SPREAD_V else "")
+        soc = self.fcu.soc_est.soc
+        if soc is None:
+            return
+        p = self.fcu.params.get
+        cells = p("fcu.batt_cells")
+        expected = (ocv_v_cell(soc) * cells
+                    - msg.i_bus * (p("fcu.batt_r0") + p("fcu.batt_r1")))
+        anom = msg.v_bus < expected - SAG_MARGIN_V_CELL * cells
+        eng.report("BATT_SAG_ANOM", anom, now,
+                   detail=f"{(expected - msg.v_bus) / cells:.2f} V/cell"
+                   if anom else "")
 
     # ------------------------------------------------------------- 1 Hz
 

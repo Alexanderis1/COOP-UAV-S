@@ -225,7 +225,22 @@ class SitlEngine:
                 weather.wind_speed, stream("dryden"))
 
         self.hals = [HalIO() for _ in range(n)]
-        self.fcus = [Fcu(hal, overlay=fcu_overlay) for hal in self.hals]
+        # Per-vehicle pack calibration (P5-1f): each FCU is configured
+        # with ITS airframe's battery datasheet values (capacity/R) —
+        # configuration data, not a truth leak; an explicit scenario
+        # overlay for these keys wins.
+        self.fcus = []
+        for i, hal in enumerate(self.hals):
+            batt = self.groups[self._group_of[i]].cfg.battery
+            overlay = {
+                "fcu.batt_capacity_ah": float(batt["capacity_ah"]),
+                "fcu.batt_r0": float(batt["r0"]),
+                "fcu.batt_r1": float(batt["r1"]),
+                "fcu.batt_cells": int(batt["n_series"]),
+            }
+            if fcu_overlay:
+                overlay.update(fcu_overlay)
+            self.fcus.append(Fcu(hal, overlay=overlay))
         self._act_ports = [hal.port("actuators") for hal in self.hals]
 
         self._flying = np.zeros(n, dtype=bool)

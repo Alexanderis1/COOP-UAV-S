@@ -58,6 +58,7 @@ from coopuavs.coopfc.estimation.alignment import Aligner
 from coopuavs.coopfc.estimation.ekf import Ekf, EkfParams
 from coopuavs.coopfc.params import ParamTable
 from coopuavs.coopfc.sched import Scheduler
+from coopuavs.coopfc.soc import SocEstimator, SocParams
 
 TICK_HZ = 800
 
@@ -87,6 +88,12 @@ FCU_DEFAULTS = {
     # FAILSAFE_ATT collective: just under the ~0.55 hover point so the
     # rate-damped descent is gentle, not ballistic.
     "fcu.fs_att_thrust": 0.45,
+    # Pack calibration (P5-1f; defaults = the interceptor_quad pack —
+    # per-airframe values are overlaid by the host, e.g. the fleet
+    # engine reads them off each vehicle's airframe class).
+    "fcu.batt_capacity_ah": 16.0,
+    "fcu.batt_r0": 0.036,
+    "fcu.batt_r1": 0.018,
 }
 
 BOOT = "BOOT"
@@ -158,6 +165,9 @@ class Fcu:
             cells=p("fcu.batt_cells"), low_v_cell=p("fcu.batt_low_v_cell"),
             crit_v_cell=p("fcu.batt_crit_v_cell"),
             debounce_s=p("fcu.batt_debounce_s")))
+        self.soc_est = SocEstimator(SocParams(
+            capacity_ah=p("fcu.batt_capacity_ah"),
+            cells=p("fcu.batt_cells")))
         self.pos_ctl = PosCtl(PosParams(
             kp=p("fcu.pos_kp"), vel_max_h=p("fcu.vel_max_h"),
             vel_max_up=p("fcu.vel_max_up"),
@@ -315,6 +325,10 @@ class Fcu:
         if self.state == ARMED:
             return False, "armed: battery reset is a ground operation"
         self.batt.reset()
+        self.soc_est.reset()      # re-seed from the new pack's rest OCV
+        # Battery-family CBIT latches belong to the swapped-out pack.
+        self.cbit.clear("BATT_SAG_ANOM")
+        self.cbit.clear("CELL_IMBALANCE")
         return True, ""
 
     # ------------------------------------------------------------ alignment
@@ -384,7 +398,9 @@ class Fcu:
 
     def _batt_task(self, now: float) -> None:
         if self._sub_esc.updated:
-            self.batt.update(now, self._sub_esc.read().v_bus)
+            msg = self._sub_esc.read()
+            self.batt.update(now, msg.v_bus)
+            self.soc_est.update(msg.stamp, msg.v_bus, msg.i_bus)
 
     def _pbit_task(self, now: float) -> None:
         if self.state == BOOT:
