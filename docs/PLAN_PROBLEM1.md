@@ -650,8 +650,15 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       params), semantics in the engine (rotor range, sensor names, until>t); faults without
       fidelity.fleet=sitl = build error; scenario-level e2e: SITL_SMALL + gps_denial on u1 →
       GPS_LOSS raised on u1 only (2026-06-12)
-- [ ] P5-3 degraded-mode scenarios: motor-degraded→LAND no-CRITICAL-wreck; GPS-denied 5 min→
-      DR bound+RTB; interlock holds under every injected fault (matrix test)
+- [x] P5-3 degraded-mode scenarios (test_sitl_degraded.py, 10 tests): (1) motor-degraded
+      mid-raid via the scenario faults block → detected, owned the failsafe reason, controlled
+      descent to touchdown latch, re-arming refused on the latched fault, raid CRITICAL==0;
+      (2) GPS denial with a 300 m home leg → claimed sigma honestly covers |est−truth|
+      (<4σ throughout, measured ~0.1-0.3σ), DR budget orders RTB (~20 s at the 8 m default —
+      airborne-past-budget is asserted impossible), truth lands <60 m from home on the
+      drifting estimate; @slow literal 5-minute PHY-UAV-011 window sustained; (3) interlock
+      matrix: a shooter mid-engagement under EVERY fault kind with no token delivered → zero
+      releases (never-self-authorize; token-in-hand veto = P5-1e tests) (2026-06-12)
 - [ ] P5-4 `UavHealth` ≥1 Hz to C2 + recorder + TRACEABILITY rows (PHY-UAV-013/033 → high)
 - [ ] P5-5 FCU-side hard fire interlock (decision 3): clearance token mirrored over coop_link;
       FCU refuses WEAPON_RELEASE without valid token + clean CBIT inhibit_fire; release pulse
