@@ -76,11 +76,13 @@ def test_counts_targets_axes_and_weather():
         == ["depot", "substation"]
 
     # Spawns sit outside the map on the requested bearing at class altitude.
+    from coopuavs.threats.enemy_drone import THREAT_PROFILES
     for e in by_class[ThreatClass.FPV]:
         assert e.position[0] < -4000.0           # approach from the west
-        assert abs(e.position[2] - 80.0) < 1.0   # FPV cruise altitude
+        assert abs(e.position[2] - THREAT_PROFILES[ThreatClass.FPV].cruise_alt) < 1.0
     for e in by_class[ThreatClass.OWA_STRATEGIC]:
-        assert abs(e.position[2] - 1500.0) < 1.0
+        assert abs(e.position[2]
+                   - THREAT_PROFILES[ThreatClass.OWA_STRATEGIC].cruise_alt) < 1.0
 
     # Weather override and run meta land on the scenario.
     assert sc.world.weather.wind_speed == 6.0

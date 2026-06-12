@@ -37,32 +37,51 @@ class ThreatProfile:
     mass: float             # kg, drives debris severity (future use)
     rcs: float              # m^2-equivalent radar cross-section
     warhead: bool           # decoys carry none
+    terminal_speed: float = 0.0  # m/s in the terminal dive (0 -> = cruise)
     weave_ampl: float = 0.0  # lateral weave amplitude, m/s
     weave_period: float = 11.0
 
+    def dive_speed(self) -> float:
+        return self.terminal_speed if self.terminal_speed > 0.0 else self.speed
 
+    def top_speed(self) -> float:
+        return max(self.speed, self.terminal_speed)
+
+
+# Profiles calibrated to verified 2025 open-source data on the Ukrainian
+# theatre (see docs/RESEARCH.md, "Threat realism" appendix):
+#   * Shahed-136/Geran-2 cruise ~180-210 km/h (50-58 m/s), but the 2025
+#     profile flies HIGH (2.0-2.8 km AGL) and dives steeply (<=60 deg) at a
+#     much greater speed onto the aimpoint;
+#   * Geran-3 (jet Shahed-238): recorded cruise ~300-350 km/h (~85-97 m/s),
+#     sprinting toward ~550-600 km/h (~150-167 m/s) in the terminal phase;
+#   * Lancet-3 loitering munition: slow cruise ~80-110 km/h (22-30 m/s) with
+#     a fast ~300 km/h (~83 m/s) terminal dive — the previous 80 m/s cruise
+#     was unrealistically fast;
+#   * FPV kamikaze: ~110-140 km/h typical, low and agile;
+#   * Gerbera decoy: deliberately mirrors the strategic OWA profile.
 THREAT_PROFILES: dict[ThreatClass, ThreatProfile] = {
     ThreatClass.OWA_STRATEGIC: ThreatProfile(
-        speed=55.0, cruise_alt=1500.0, dive_range=2500.0, mass=200.0, rcs=0.5,
-        warhead=True, weave_ampl=4.0,
+        speed=53.0, cruise_alt=2200.0, dive_range=2800.0, mass=200.0, rcs=0.5,
+        warhead=True, terminal_speed=105.0, weave_ampl=4.0,
     ),
     ThreatClass.OWA_JET: ThreatProfile(
-        speed=100.0, cruise_alt=3000.0, dive_range=4000.0, mass=200.0, rcs=0.6,
-        warhead=True,
+        speed=95.0, cruise_alt=2800.0, dive_range=4500.0, mass=200.0, rcs=0.6,
+        warhead=True, terminal_speed=155.0,
     ),
     ThreatClass.FPV: ThreatProfile(
-        speed=33.0, cruise_alt=80.0, dive_range=300.0, mass=3.0, rcs=0.02,
-        warhead=True, weave_ampl=6.0, weave_period=5.0,
+        speed=38.0, cruise_alt=80.0, dive_range=300.0, mass=3.0, rcs=0.02,
+        warhead=True, terminal_speed=60.0, weave_ampl=6.0, weave_period=5.0,
     ),
     ThreatClass.LOITERING: ThreatProfile(
-        speed=80.0, cruise_alt=400.0, dive_range=1500.0, mass=12.0, rcs=0.08,
-        warhead=True,
+        speed=28.0, cruise_alt=400.0, dive_range=1500.0, mass=12.0, rcs=0.08,
+        warhead=True, terminal_speed=83.0,
     ),
     # Decoy mimics the strategic OWA: same speed, altitude, RCS and RF
     # signature; lighter airframe and no warhead.
     ThreatClass.DECOY: ThreatProfile(
-        speed=55.0, cruise_alt=1500.0, dive_range=2500.0, mass=18.0, rcs=0.5,
-        warhead=False, weave_ampl=4.0,
+        speed=53.0, cruise_alt=2200.0, dive_range=2800.0, mass=18.0, rcs=0.5,
+        warhead=False, terminal_speed=105.0, weave_ampl=4.0,
     ),
 }
 
@@ -119,7 +138,8 @@ class EnemyDrone:
         direction = self.target[:2] - position[:2]
         direction = direction / (np.linalg.norm(direction) + 1e-9)
         v0 = np.array([direction[0] * p.speed, direction[1] * p.speed, 0.0])
-        self.body = PointMass(position, v0, max_speed=p.speed, max_accel=15.0)
+        # max_speed admits the terminal-dive sprint; cruise is commanded below.
+        self.body = PointMass(position, v0, max_speed=p.top_speed(), max_accel=15.0)
 
     # -- accessors used by sensors/world -------------------------------------
 
@@ -145,8 +165,9 @@ class EnemyDrone:
         dist_xy = float(np.linalg.norm(to_target[:2]))
 
         if dist_xy < p.dive_range:
-            # Terminal phase: straight at the asset.
-            v_cmd = to_target / (np.linalg.norm(to_target) + 1e-9) * p.speed
+            # Terminal phase: steep dive straight at the asset, accelerating
+            # from cruise toward the (faster) terminal speed (SIM-THR-004).
+            v_cmd = to_target / (np.linalg.norm(to_target) + 1e-9) * p.dive_speed()
         else:
             # Cruise toward the target at cruise altitude, with weave.
             heading = to_target[:2] / (dist_xy + 1e-9)

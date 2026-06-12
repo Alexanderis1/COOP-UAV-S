@@ -1,0 +1,152 @@
+# Realistic saturation raid on a single 12 x 12 km defended area.
+#
+# Sizing rationale (see docs/RESEARCH.md "Raid realism" appendix). Russian
+# 2025 raids run 100-800+ Shahed/Gerbera vehicles per NIGHT NATIONWIDE,
+# spread over 10+ regions in pulses; 40-60% are Gerbera decoys. For a single
+# 144 km^2 city the concurrent load is governed by Little's law:
+#   L = arrival_rate x dwell_time,  dwell ~= 12 km / 55 m/s ~= 180 s.
+# A heavy, multi-axis saturation pulse against one primary-target city puts
+# on the order of 15-30 vehicles airborne over/approaching the box at once,
+# 30-40 over the whole engagement, ~40-60% of them decoys. This scenario
+# models ~30 vehicles in four overlapping multi-axis waves (12 decoys = 40%,
+# 10 strategic OWA, 3 jet OWA, 3 FPV, 2 Lancet).
+#
+# Defence: a realistic dedicated C-UAS battery for one high-value city —
+# 12 Sting-class interceptors (~80 m/s = 288 km/h) on a FORWARD picket arc
+# (the geometry that the fleet-size sweep showed beats raw numbers), backed
+# by four point-defence turrets on the protected assets.
+
+name: saturation_raid
+seed: 11
+dt: 0.05
+duration: 700.0
+record_hz: 5.0
+
+weather:
+  wind_speed: 0.0
+  wind_dir_deg: 270.0
+  fog: 0.0
+  precip: 0.0
+  daylight: 0.0
+
+comms:
+  base_pos: [0.0, -2500.0, 5.0]
+  latency_s: 0.01
+  jitter_s: 0.0
+  base_loss: 0.0
+  loss_per_km: 0.0
+
+environment:
+  bounds: [-6000.0, -6000.0, 6000.0, 6000.0]
+  cell_size: 100.0
+  default_zone: DANGEROUS
+  zones:
+    - { rect: [-6000, -6000,  6000, -3500], class: SAFE }
+    - { rect: [-6000,  3500,  6000,  6000], class: SAFE }
+    - { rect: [-6000, -6000, -3500,  6000], class: SAFE }
+    - { rect: [ 3500, -6000,  6000,  6000], class: SAFE }
+    - { rect: [-6000,  -150,  6000,   150], class: SAFE }
+    - { rect: [ -400,   300,   200,   900], class: SAFE }
+    - { rect: [  300,   900,   900,  1400], class: CRITICAL }   # hospital
+    - { rect: [ -900,  -500,  -400,  -100], class: CRITICAL }   # school
+    - { rect: [-1600,  1200, -1100,  1700], class: CRITICAL }   # shelter
+    - { rect: [  800, -1400,  1700,  -500], class: CRITICAL }   # dense housing
+
+  assets:
+    - { name: substation, position: [1500.0,  300.0, 0.0], value: 1.0, radius: 40.0 }
+    - { name: depot,      position: [-2000.0, -1500.0, 0.0], value: 0.8, radius: 40.0 }
+
+  buildings:
+    - { rect: [  300,   900,   900,  1400], height: 25.0 }
+    - { rect: [ -900,  -500,  -400,  -100], height: 12.0 }
+    - { rect: [  800, -1400,  1700,  -500], height: 30.0 }
+    - { rect: [-1600,  1200, -1100,  1700], height: 10.0 }
+    - { rect: [ 1400,   200,  1600,   400], height: 8.0 }
+
+base_station:
+  rate_hz: 1.0
+  roe:
+    max_expected_collateral: 0.30
+    max_p_critical: 0.01
+    last_resort_time: 25.0
+    last_resort_threat: 0.35
+    last_resort_collateral: 2.0
+    last_resort_p_critical: 0.05
+
+fusion:
+  rate_hz: 5.0
+  confirm_hits: 3
+  max_coast: 5.0
+
+sensors:
+  - { type: radar,    name: radar-main, position: [0.0, -2500.0, 15.0], max_range: 12000.0 }
+  - { type: rf,       name: rf-df,      position: [0.0, -2500.0, 15.0], max_range: 15000.0 }
+  - { type: eo_ir,    name: eo-base,    position: [0.0, -2500.0, 20.0] }
+  - { type: eo_ir,    name: eo-substn,  position: [1500.0, 300.0, 20.0] }
+  - { type: eo_ir,    name: eo-depot,   position: [-2000.0, -1500.0, 20.0] }
+  # forward EO/IR pickets to earn decoy ID before the shooters commit
+  - { type: eo_ir,    name: eo-fwd-n,   position: [0.0, 3000.0, 25.0] }
+  - { type: eo_ir,    name: eo-fwd-nw,  position: [-2800.0, 2800.0, 25.0] }
+  # acoustic pickets covering the low-altitude approaches
+  - { type: acoustic, name: ac-w1, position: [-4500.0, -1000.0, 5.0] }
+  - { type: acoustic, name: ac-w2, position: [-3500.0,   200.0, 5.0] }
+  - { type: acoustic, name: ac-w3, position: [-3000.0, -1800.0, 5.0] }
+  - { type: acoustic, name: ac-nw, position: [-3500.0,  3000.0, 5.0] }
+  - { type: acoustic, name: ac-ne, position: [ 3000.0,  3000.0, 5.0] }
+
+# 12 Sting-class interceptors (~80 m/s, 288 km/h) on a forward picket arc
+# straddling the N / NW / NE approach corridors at cruise altitude.
+interceptors:
+  - { id: hawk-1,  home: [-3200.0, 2400.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-2,  home: [-2400.0, 2800.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-3,  home: [-1600.0, 3100.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-4,  home: [ -800.0, 3300.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-5,  home: [    0.0, 3400.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-6,  home: [  800.0, 3300.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-7,  home: [ 1600.0, 3100.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-8,  home: [ 2400.0, 2800.0, 1800.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-9,  home: [-3000.0, 1200.0, 1500.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-10, home: [ 3000.0, 1200.0, 1500.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-11, home: [-1000.0, 2000.0, 1600.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-12, home: [ 1000.0, 2000.0, 1600.0], effector: projectile, max_speed: 80.0 }
+
+turrets:
+  - { id: turret-base,   position: [0.0, -2600.0, 5.0] }
+  - { id: turret-substn, position: [1550.0, 250.0, 5.0] }
+  - { id: turret-depot,  position: [-2050.0, -1450.0, 5.0] }
+  - { id: turret-north,  position: [0.0, 1600.0, 5.0] }
+
+threats:
+  # Wave 1 (t=10-45): NW axis probe — strategic OWA salted with decoys.
+  - { time: 10.0, class: DECOY,         spawn: [-5800.0, 5800.0, 2200.0], target: substation }
+  - { time: 14.0, class: OWA_STRATEGIC, spawn: [-5600.0, 5600.0, 2200.0], target: substation }
+  - { time: 19.0, class: DECOY,         spawn: [-5800.0, 5200.0, 2200.0], target: depot }
+  - { time: 24.0, class: OWA_STRATEGIC, spawn: [-5400.0, 5800.0, 2200.0], target: depot }
+  - { time: 30.0, class: DECOY,         spawn: [-5700.0, 5000.0, 2200.0], target: substation }
+  - { time: 37.0, class: OWA_STRATEGIC, spawn: [-5200.0, 5600.0, 2200.0], target: substation }
+  # Wave 2 (t=45-95): N axis — jets lead, decoys mask the strike OWAs.
+  - { time: 48.0, class: OWA_JET,       spawn: [   200.0, 5900.0, 2800.0], target: substation }
+  - { time: 52.0, class: DECOY,         spawn: [  -400.0, 5900.0, 2200.0], target: substation }
+  - { time: 58.0, class: OWA_STRATEGIC, spawn: [   600.0, 5800.0, 2200.0], target: substation }
+  - { time: 64.0, class: DECOY,         spawn: [  -800.0, 5800.0, 2200.0], target: depot }
+  - { time: 70.0, class: OWA_JET,       spawn: [  -200.0, 5900.0, 2800.0], target: depot }
+  - { time: 77.0, class: OWA_STRATEGIC, spawn: [   400.0, 5700.0, 2200.0], target: depot }
+  - { time: 84.0, class: DECOY,         spawn: [  1000.0, 5800.0, 2200.0], target: substation }
+  # Wave 3 (t=70-120): W low-level penetration under the radar horizon.
+  - { time: 72.0, class: LOITERING,     spawn: [-5800.0,  600.0,  400.0], target: substation }
+  - { time: 80.0, class: FPV,           spawn: [-5500.0, -700.0,   80.0], target: depot }
+  - { time: 88.0, class: FPV,           spawn: [-5500.0, -300.0,   80.0], target: depot }
+  - { time: 96.0, class: LOITERING,     spawn: [-5800.0, -1200.0, 400.0], target: depot }
+  - { time: 104.0, class: FPV,          spawn: [-5500.0,  100.0,   80.0], target: substation }
+  # Wave 4 (t=100-150): multi-axis saturation pulse — peak concurrency.
+  - { time: 100.0, class: DECOY,         spawn: [-5800.0, 4600.0, 2200.0], target: substation }
+  - { time: 105.0, class: OWA_STRATEGIC, spawn: [-5200.0, 5200.0, 2200.0], target: depot }
+  - { time: 110.0, class: DECOY,         spawn: [ 3800.0, 5400.0, 2200.0], target: substation }
+  - { time: 114.0, class: OWA_JET,       spawn: [ 1200.0, 5900.0, 2800.0], target: substation }
+  - { time: 119.0, class: DECOY,         spawn: [-4200.0, 5600.0, 2200.0], target: depot }
+  - { time: 124.0, class: OWA_STRATEGIC, spawn: [ 3400.0, 5600.0, 2200.0], target: substation }
+  - { time: 129.0, class: DECOY,         spawn: [ 2800.0, 5800.0, 2200.0], target: depot }
+  - { time: 134.0, class: OWA_STRATEGIC, spawn: [-3600.0, 5800.0, 2200.0], target: substation }
+  - { time: 139.0, class: DECOY,         spawn: [ 4000.0, 5000.0, 2200.0], target: substation }
+  - { time: 144.0, class: OWA_STRATEGIC, spawn: [ 3000.0, 5400.0, 2200.0], target: depot }
+  - { time: 150.0, class: DECOY,         spawn: [-2800.0, 5900.0, 2200.0], target: depot }
