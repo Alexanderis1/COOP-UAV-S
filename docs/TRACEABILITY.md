@@ -10,7 +10,7 @@
 
 | PHY req | Simulated by | Fidelity | Known deviations |
 |---|---|---|---|
-| PHY-UAV-001 (two tiers, speeds, endurance) | `interceptors/uav.py` point-mass kinematics, per-UAV `max_speed`; fleet defined per scenario | representative | Single tier in reference scenario; Tier-F (150 m/s) not yet in the preset fleet (ROADMAP fast-interceptor item). Point-mass, no airframe dynamics (SIM-PHX-005 upgrade path). |
+| PHY-UAV-001 (two tiers, speeds, endurance) | `interceptors/uav.py` over the `AirframeBody` seam: 3-DOF load-factor body (`sim/physics.py`, lateral accel ≤ n_max g so turn rate falls with airspeed) with true-PN endgame for the reference fleet; `point_mass` kinematics remain the sweep default | representative | Single tier in reference scenario; Tier-F (150 m/s) not yet in the preset fleet (ROADMAP fast-interceptor item). No attitude state or aero coefficients — n_max values are invented; full airframe dynamics arrive behind the same seam (SIM-PHX-005, PX4 SITL). |
 | PHY-UAV-002 (environmental envelope) | `sim/weather.py` wind displacement on all airborne objects; sensor degradation factors | representative | Temperature/icing effects not yet modelled; battery-vs-cold coupling absent. |
 | PHY-UAV-003 (recoil/release tolerance) | Not modelled — effector release has no flight-dynamics effect | placeholder | Irrelevant at point-mass fidelity. |
 | PHY-UAV-004 (60 s scramble, autonomous recovery) | Instant launch from home on tasking; RTB + landing at home pad | representative | No explicit scramble latency parameter yet (ROADMAP CAP-station item covers launch latency). |

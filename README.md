@@ -24,7 +24,7 @@ A complete, deterministic, message-driven battle simulation:
 - **Layered sensing** — radar (R⁴ Pd, radar horizon), passive RF (bearing-only, signature hashes), EO/IR towers (range-ramped identification), acoustic pickets (hear below the radar horizon), and terminal onboard seekers riding each interceptor.
 - **Perception** — multi-sensor Kalman tracking with per-scan GNN association, Bayesian threat-class belief, decoy probability from fused RF/EO/acoustic/kinematic evidence.
 - **C2 (TEWA)** — threat evaluation against protected assets, priority-greedy weapon-target assignment with reserved cooperative blockers and incumbent hysteresis, debris-footprint rules of engagement with clearance/hold/deny semantics. No release without clearance — the human-on-the-loop seam is already in the message flow.
-- **Interceptors** — mode-FSM agents (pursuit / engage / blocking / herding / RTB), intercept-triangle guidance, net-gun and projectile effectors with probabilistic kill envelopes.
+- **Interceptors** — mode-FSM agents (pursuit / engage / blocking / herding / RTB), intercept-triangle guidance with a true proportional-navigation endgame on 3-DOF load-factor airframes (turn rate falls with airspeed, as physics demands), net-gun and projectile effectors with probabilistic kill envelopes.
 - **3D C2 dashboard** — Three.js, replay or live-streamed over websocket: zone-coloured city, hostiles vs the track picture (decoy-suspect tracks fade out), interceptor status, event log.
 
 ```

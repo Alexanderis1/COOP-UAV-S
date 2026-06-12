@@ -54,7 +54,11 @@ Risk-aware engagement:
       ROS 2 with the sim as a node. (Aerostack2 as the multi-drone
       framework target — RESEARCH.md §7.)
 - [ ] **Gazebo / PX4 SITL** flight dynamics for a 2–3 vehicle slice;
-      keep the Python world for large-scale Monte-Carlo.
+      keep the Python world for large-scale Monte-Carlo. The
+      `AirframeBody` seam (`sim/physics.py`) is the adapter boundary: a
+      `Px4Body` implements the same four members over offboard
+      setpoints. Interim step already in place: 3-DOF load-factor body
+      with terminal PN behind the same seam.
 - [ ] **Sensor fidelity**: micro-Doppler classification features, terrain
       occlusion masks for radar/EO, weather effects (the operational
       envelope in the README is mostly nocturnal winter).
@@ -74,7 +78,9 @@ Risk-aware engagement:
 - Constant-velocity tracker lags manoeuvres (mitigated by onboard seeker).
 - Enemy drones do not react to interceptors; herding is therefore
   positioning, not coercion.
-- Point-mass flight dynamics; no wind, weather, or terrain occlusion.
+- Interceptor flight dynamics are 3-DOF load-factor (lateral n_max g,
+  terminal PN) — no attitude state or aero coefficients, and the n_max
+  values are invented; threats remain point-mass. No terrain occlusion.
 - Effector Pk surfaces are plausible inventions, not measured data — no
   public Pk data exists for any C-UAS interceptor (RESEARCH.md §5).
 - Battery model is a linear drain; no recovery/rearm cycle (UAVs RTB and
