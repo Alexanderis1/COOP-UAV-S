@@ -74,6 +74,9 @@ def test_sitl_sentinel_orbit_and_truth_mounted_payload():
     # the payload mounts on TRUTH, not the estimate body
     eo = next(n for n in world.nodes if n.name == "eo-sent-1")
     assert eo._platform is fv
+    # and the platform flies the endurance airframe class (P4-R(2))
+    gi = world.micro._group_of[world.micro.index["sent-1"]]
+    assert world.micro.groups[gi].airframe == "sentinel_quad"
 
     states, tracks = [], []
     world.bus.subscribe("uav/state", lambda m: states.append(m)

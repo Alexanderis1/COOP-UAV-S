@@ -531,6 +531,18 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       sag the 12S pack into the voltage-only monitor's band → FCU protects/lands/retries (P5
       CELL_IMBALANCE owns SOC estimation). 604 fast + @slow bench/fcu/e2e + @perf (re-read
       1.59×, machine-state sensitive per the documented caveat) green, ruff clean.
+      **(2) per-class airframe banks SHIPPED** — with real energy, a sentinel on the racer pack
+      hits BATT_LOW mid-raid (artifact distorting reference scenarios). `physics/params/
+      sentinel_quad.yaml`: 24 Ah endurance pack (~42 min hover, the PHY-SNT 40-min class),
+      flight dynamics IDENTICAL by design (pack-mass idealization documented+pinned, so
+      trim/controllers carry over). SitlEngine vehicles may name an airframe per entry; one
+      batched plant/powertrain + ONE RK4 per class (ORDERING §6 amended); device banks stay
+      fleet-wide (classes must share rotor count); single-airframe `eng.plant/pt/motor/cfg`
+      conveniences preserved. Scenario: sentinels fly sentinel_quad. Pins: params endurance
+      delta + dynamics equality, mixed-fleet groups/hover, mixed run-twice bitwise, solo-vs-
+      mixed 1e-9 draw-history invariance, SOC-drain ratio 1.5±, scenario group wiring.
+      5 tests test_sitl_airframes.py; 609 fast + @slow e2e/bench + @perf 1.55× green
+      (2026-06-12).
 
 ### P5 — CBIT + fault injection (M)
 - [ ] P5-1 `cbit/` dictionary+engine+monitors: table-driven test per fault (detection latency,

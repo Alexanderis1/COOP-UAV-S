@@ -180,9 +180,13 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         from ..sil.host import VirtualMCU
 
         sitl_cfg = _parse_sitl(cfg.get("sitl"))
+        # Airframe classes (P4 gate-review resolution 2): interceptors fly
+        # the engine-default racer quad, sentinels the endurance-pack
+        # variant — one batched plant per class inside the one engine.
         engine = SitlEngine(
             [(uid, tuple(home)) for uid, home, _, _ in icfgs]
-            + [(uid, tuple(home)) for uid, home, _, _ in scfgs],
+            + [(uid, tuple(home), "sentinel_quad")
+               for uid, home, _, _ in scfgs],
             world.rng_registry, weather=world.weather, world_dt=world.dt,
             base_hz=sitl_cfg["base_hz"], fcu_overlay=sitl_cfg["fcu"],
             heartbeat_hz=0.0)

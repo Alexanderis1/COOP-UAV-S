@@ -8,7 +8,11 @@ mixed 10-threat raid).
 
 **RTF 0.81× headless (1.24 s CPU/sim-s) over a 20 sim-s boot+raid
 slice — gate ≥ 0.5× (plan perf budget), 60% headroom.** Gate lives in
-`tests/test_sitl_perf.py` (`@perf`).
+`tests/test_sitl_perf.py` (`@perf`). Re-measured after the P4-R
+gate-review resolutions (brake fix + per-class airframe banks):
+**1.55–1.59×** on a settled machine — the original 0.81× was read right
+after a long suite run (the thermal/contention caveat below); both
+readings clear the gate.
 
 cProfile, 10 sim-s slice (top cumulative, trimmed):
 

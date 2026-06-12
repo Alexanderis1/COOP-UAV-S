@@ -103,6 +103,26 @@ class _FcuLink:
         self.dec = FrameDecoder()
 
 
+class _AirframeGroup:
+    """One airframe class within the fleet: a batched plant + powertrain
+    over the global state rows in ``rows`` (P4 gate-review resolution 2)."""
+
+    def __init__(self, airframe: str, rows: np.ndarray):
+        raw = load_airframe(airframe)
+        self.airframe = airframe
+        self.rows = rows
+        self.cfg = MultirotorParams.from_dict(raw)
+        gn = len(rows)
+        self.plant = MultirotorPlant(self.cfg, gn)
+        self.motor = MotorEsc(gn, self.cfg.n_rotors, **self.cfg.motor)
+        battery = BatteryEcm(gn, **self.cfg.battery)
+        self.pt = Powertrain(self.motor, battery,
+                             i_bus_max_a=raw["powertrain"]["i_bus_max_a"])
+        self.mass_col = self.plant.mass[:, None]
+        self.w_hover = math.sqrt(
+            self.cfg.mass * G / (self.cfg.n_rotors * self.cfg.kf))
+
+
 class SitlEngine:
     """Fleet micro-loop behind ``World.micro`` (SIM-SIL-002)."""
 
@@ -119,7 +139,15 @@ class SitlEngine:
             raise ValueError(
                 f"base_hz={base_hz} unsupported: the CoopFC tick rate is "
                 f"{TICK_HZ} Hz (rate profiles are a fallback lever, not wired)")
-        ids = [uid for uid, _ in vehicles]
+        # Airframe classes (P4 gate-review resolution 2, fidelity-first):
+        # a vehicle entry is (uid, start) for the engine default airframe
+        # or (uid, start, airframe) for its own class — one batched
+        # plant/powertrain per class, ONE RK4 per class per tick. Device
+        # banks stay fleet-wide (one suite), so every class must share
+        # the rotor count for the shared ESC telemetry bank.
+        specs = [(v[0], v[1], v[2] if len(v) > 2 else airframe)
+                 for v in vehicles]
+        ids = [uid for uid, _, _ in specs]
         if len(set(ids)) != len(ids):
             raise ValueError(f"duplicate vehicle ids in {ids}")
         if not ids:
@@ -144,16 +172,24 @@ class SitlEngine:
         self.mag = Mag(MagParams.from_dict(dev["mag"]), n,
                        stream("sensor/mag"))
 
-        raw = load_airframe(airframe)
-        cfg = MultirotorParams.from_dict(raw)
-        self.cfg = cfg
+        by_airframe: dict[str, list[int]] = {}
+        for i, (_, _, af) in enumerate(specs):
+            by_airframe.setdefault(af, []).append(i)
+        self.groups = [_AirframeGroup(af, np.asarray(rows, dtype=np.intp))
+                       for af, rows in by_airframe.items()]
+        self._group_of = np.zeros(n, dtype=np.intp)
+        self._local_of = np.zeros(n, dtype=np.intp)
+        for gi, g in enumerate(self.groups):
+            self._group_of[g.rows] = gi
+            self._local_of[g.rows] = np.arange(len(g.rows))
+        rotor_counts = {g.cfg.n_rotors for g in self.groups}
+        if len(rotor_counts) != 1:
+            raise ValueError(
+                f"airframe classes disagree on rotor count {rotor_counts}: "
+                "the fleet shares one ESC telemetry bank")
+        n_rotors = rotor_counts.pop()
         self.esc = EscTelem(EscTelemParams.from_dict(dev["esc_telem"]), n,
-                            cfg.n_rotors, stream("sensor/esc_telem"))
-        self.plant = MultirotorPlant(cfg, n)
-        self.motor = MotorEsc(n, cfg.n_rotors, **cfg.motor)
-        battery = BatteryEcm(n, **cfg.battery)
-        self.pt = Powertrain(self.motor, battery,
-                             i_bus_max_a=raw["powertrain"]["i_bus_max_a"])
+                            n_rotors, stream("sensor/esc_telem"))
 
         self._imu_every = self._divisor(base_hz, self.imu.params.rate_hz, "imu")
         self._baro_mag_every = self._divisor(base_hz, BARO_MAG_HZ, "baro/mag")
@@ -167,7 +203,7 @@ class SitlEngine:
         self.mcs: list = [None] * n            # VirtualMCU per vehicle (P4-3)
         self._pads: list = [None] * n          # pad chargers (P4-4)
 
-        starts = np.asarray([s for _, s in vehicles], dtype=float)
+        starts = np.asarray([s for _, s, _ in specs], dtype=float)
         self.state = np.zeros((n, 13))
         self.state[:, 0:3] = starts
         self.state[:, 6] = 1.0
@@ -184,15 +220,15 @@ class SitlEngine:
         self._act_ports = [hal.port("actuators") for hal in self.hals]
 
         self._flying = np.zeros(n, dtype=bool)
-        self._omega_r = np.zeros((n, cfg.n_rotors))
+        self._omega_r = np.zeros((n, n_rotors))
         self._wind = np.zeros((n, 3))
         self._wind_zero = np.zeros((n, 3))
-        self._esc_out = (np.zeros((n, cfg.n_rotors)),
-                         battery.ocv(battery.soc) - battery.v1,
-                         np.zeros(n))
-        self._mass_col = self.plant.mass[:, None]
-        self._w_hover = math.sqrt(cfg.mass * G / (cfg.n_rotors * cfg.kf))
-        self._u_buf = np.zeros((n, cfg.n_rotors))
+        self._accel_buf = np.zeros((n, 3))
+        esc_v = np.empty(n)
+        for g in self.groups:
+            esc_v[g.rows] = g.pt.battery.ocv(g.pt.battery.soc) - g.pt.battery.v1
+        self._esc_out = (np.zeros((n, n_rotors)), esc_v, np.zeros(n))
+        self._u_buf = np.zeros((n, n_rotors))
         self._z_buf = np.empty(n)
 
     @staticmethod
@@ -206,6 +242,24 @@ class SitlEngine:
     @property
     def clock(self):
         return self._micro.clock
+
+    # Single-airframe conveniences (the P3-bench shape every harness uses;
+    # mixed fleets address self.groups directly).
+    @property
+    def cfg(self):
+        return self.groups[0].cfg
+
+    @property
+    def plant(self):
+        return self.groups[0].plant
+
+    @property
+    def motor(self):
+        return self.groups[0].motor
+
+    @property
+    def pt(self):
+        return self.groups[0].pt
 
     def attach_link(self, uav_id: str, *, latency_s: float = 0.02,
                     bandwidth_bps: float = 57600.0,
@@ -267,11 +321,15 @@ class SitlEngine:
             if self._flying.any():
                 # Exact truth CoM acceleration: the wrench at the latched
                 # rotor speeds and ZOH wind (gravity included — the
-                # hw.Imu.sample contract). Stand rows read zero: the
-                # ground reaction the plant does not model balances them.
-                force, _ = self.plant.wrench(st, self._omega_r,
-                                             self._wind, RHO)
-                a_w = force / self._mass_col
+                # hw.Imu.sample contract), per airframe class. Stand rows
+                # read zero: the ground reaction the plant does not model
+                # balances them.
+                a_w = self._accel_buf
+                for g in self.groups:
+                    force, _ = g.plant.wrench(st[g.rows],
+                                              self._omega_r[g.rows],
+                                              self._wind[g.rows], RHO)
+                    a_w[g.rows] = force / g.mass_col
                 a_w[~self._flying] = 0.0
             else:
                 a_w = np.zeros((self.n, 3))
@@ -366,8 +424,11 @@ class SitlEngine:
         rises = flying & ~self._flying
         if rises.any():
             # Stand convention: motors pre-spun to hover at arming.
-            self.motor.omega[rises] = self._w_hover
-            self._omega_r[rises] = self._w_hover
+            for g in self.groups:
+                lm = rises[g.rows]
+                if lm.any():
+                    g.motor.omega[lm] = g.w_hover
+                    self._omega_r[g.rows[lm]] = g.w_hover
         falls = self._flying & ~flying
         if falls.any():
             # Touchdown/disarm: the (unmodeled) ground stops the vehicle.
@@ -391,16 +452,22 @@ class SitlEngine:
         else:
             wind = self._wind_zero
 
-        omega_r, v_bus, i_bus = self.pt.step(self._dt, u)
-        self._esc_out = (omega_r, v_bus, i_bus)
+        # Powertrain + ONE batched RK4 per airframe class.
+        omega_r, v_bus, i_bus = self._esc_out
+        new = np.empty_like(st)
+        for g in self.groups:
+            om, vb, ib = g.pt.step(self._dt, u[g.rows])
+            omega_r[g.rows] = om
+            v_bus[g.rows] = vb
+            i_bus[g.rows] = ib
+            new[g.rows] = g.plant.step(st[g.rows], self._dt, om,
+                                       wind[g.rows], RHO)
         self._omega_r = omega_r
 
-        new = self.plant.step(st, self._dt, omega_r, wind, RHO)
         if not flying.all():
             frozen = ~flying
             new[frozen] = st[frozen]
             # Pad chargers (P4-4): docked = disarmed within pad radius.
-            batt = self.pt.battery
             for i in np.flatnonzero(frozen):
                 pad = self._pads[i]
                 if pad is None:
@@ -409,7 +476,9 @@ class SitlEngine:
                 dy = new[i, 1] - pad[1]
                 dz = new[i, 2] - pad[2]
                 if dx * dx + dy * dy + dz * dz <= pad[3]:
-                    batt.soc[i] = min(1.0, batt.soc[i] + self._dt * pad[4])
+                    batt = self.groups[self._group_of[i]].pt.battery
+                    li = self._local_of[i]
+                    batt.soc[li] = min(1.0, batt.soc[li] + self._dt * pad[4])
         self.state = new
         self._wind = wind
         self._flying = flying

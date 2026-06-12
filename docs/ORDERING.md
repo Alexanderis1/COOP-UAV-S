@@ -142,9 +142,14 @@ the K micro-ticks (BASE_HZ, plan: 800 Hz) runs, in this frozen order:
    update. The resulting rotor speeds are **latched** as plant inputs.
    Never wire `i_bus` → `battery.step` → `v_bus` explicitly one step late:
    that composition diverges at any dt (`physics/powertrain.py`).
-7. **ONE batched fleet RK4** — `rigid_body.rk4_step` over all vehicles at
-   the latched rotor speeds/wind; state-dependent wrench terms re-evaluate
-   at every RK4 stage, latched inputs do not.
+7. **ONE batched fleet RK4 per airframe class** — `rigid_body.rk4_step`
+   over each class's rows at the latched rotor speeds/wind (P4
+   gate-review resolution 2: the fleet may mix airframe classes — e.g.
+   sentinel endurance packs — each with its own batched plant/powertrain;
+   a single-class fleet keeps exactly the one batched call);
+   state-dependent wrench terms re-evaluate at every RK4 stage, latched
+   inputs do not. Device banks stay fleet-wide (one suite), so classes
+   must share the rotor count.
 8. **Threat batch** (P6 6DOF threats, own streams).
 
 Steps 5 and 6 have no data flow between them and draw from separate
