@@ -374,10 +374,19 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       C20 = C_phys+dev(N=20) + 20·C_fcu(direct) — measured RTF 1.24–1.38×; enabled by a
       sha256-verified VALUE-IDENTICAL selection-indexed EKF fusion refactor (`_fuse_sel`).
       5 tests `test_coopfc_bench.py` (2 fast + 2 @slow + 1 @perf) (2026-06-12)
-- [ ] P3-9 `@oracle` ArduPilot SITL (WSL2) waypoint-square envelope comparison, procedure doc'd
-- [ ] P3-10 tuning-stop rule: tolerances unmet after budgeted tuning → STOP and replan (never
-      loosen gates silently)
-- GATE: bench + NEES + oracle + determinism; 1-vehicle RTF ≥20×, 20-instance projection ≥1×
+- [x] P3-9 `@oracle` ArduPilot SITL (WSL2, official prebuilt stable ArduCopter, EKF3) flies
+      the same 200 m square via `scripts/oracle/export_ardupilot_square.py` (pymavlink,
+      offline-oracle policy, fixture committed); `test_oracle_ardupilot.py` envelope bands:
+      both complete, lap ratio [0.5,2.0] (35 vs 38 s), leg cross-track same class (1.81 vs
+      0.67 m — bench flies real GNSS GM wander), cruise ±30%, alt band ±4 m. Setup +
+      re-baseline procedure in tests/fixtures/oracle/README.md (2026-06-12)
+- [x] P3-10 tuning-stop rule: EXERCISED 2026-06-12 — P3-8 hover-truth-RMS and RTF-20× gates
+      were physically unreachable (GNSS GM wander floor; N-independent plant cost); stopped,
+      raised to user, resolved by explicit decision (gate split + re-scope, RESEARCH.md) —
+      never loosened silently
+- GATE: bench ✓ + NEES ✓ + oracle ✓ (RotorPy + ArduPilot) + determinism ✓; perf per the
+  2026-06-12 user re-scope: 1-vehicle RTF ≥3× (meas. 3.6–3.7×), 20-instance projection ≥1×
+  (meas. 1.24–1.38×). STOPPED for user gate review per cadence.
 
 ### P4 — Fleet integration (XL — riskiest; staged strangler)
 - [ ] P4-1 `sil/vehicle.py` FriendlyVehicle protocol-conformance test (pins full duck-type contract)

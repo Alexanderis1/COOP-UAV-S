@@ -1039,6 +1039,7 @@ models).
 | Quad-X mixer + sequential desaturation, priority roll/pitch > collective > yaw; per-axis directional saturation flags for rate-loop anti-windup | `control/mixer.py` | PX4 ControlAllocationSequentialDesaturation order [project knowledge, standard convention]; sign table derived from the `physics/multirotor.py` wrench equations (documented in the module docstring). |
 | Position P -> velocity setpoint cascade | `control/position.py` | PX4 PositionControl outer-loop structure. [standard reference] |
 | FCU failsafe conventions: battery LOW->RTL / CRITICAL->LAND upward-latching with debounce, link-loss->RTL, offboard setpoint-timeout->POS_HOLD, priority order | `fcu.py`, `battery_monitor.py` | PX4 commander/battery failsafe conventions [project knowledge]; priority order and timelines pinned by `tests/test_coopfc_fcu.py`. |
+| Whole-stack flight envelope cross-check (waypoint square) | `tests/test_oracle_ardupilot.py` + `scripts/oracle/export_ardupilot_square.py` | ArduPilot ArduCopter stable SITL (official prebuilt, EKF3) as an independent complete autopilot; offline-oracle policy and envelope-band scoping per tests/fixtures/oracle/README.md. |
 
 ### Colored measurement errors and covariance honesty (the P3 EKF contract)
 
