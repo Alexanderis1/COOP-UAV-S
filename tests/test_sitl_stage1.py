@@ -190,13 +190,22 @@ SITL_SMALL_SCENARIO = {
 
 
 def test_sitl_scenario_build_wiring():
+    from coopuavs.interceptors.uav import SitlShellUav
+
     sc = scenario_mod.build(SITL_SMALL_SCENARIO)
     world = sc.world
     assert isinstance(world.micro, SitlEngine)
     fv = world.friendlies["u1"]
     assert isinstance(fv, FriendlyVehicle)
     assert fv.tactical is sc.uavs["u1"]
-    assert isinstance(sc.uavs["u1"].body, SitlBody)
+    # stage 2: the agent is a thin shell over a hosted MC (P4-3); its
+    # body view is the app's link-backed estimate body
+    shell = sc.uavs["u1"]
+    assert isinstance(shell, SitlShellUav)
+    mcu = world.micro.mcs[world.micro.index["u1"]]
+    assert mcu is not None and shell.body is mcu.app.body
+    assert isinstance(shell.body, SitlBody)
+    assert shell.effector is mcu.app.effector
     # the referee resolves against truth adapters, not the agent
     adj = next(n for n in world.nodes if isinstance(n, EngagementAdjudicator))
     assert adj.uavs["u1"] is fv

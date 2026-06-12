@@ -164,6 +164,7 @@ class SitlEngine:
         self.heartbeat_every = (round(base_hz / heartbeat_hz)
                                 if heartbeat_hz else 0)
         self.links: list[_FcuLink | None] = [None] * n
+        self.mcs: list = [None] * n            # VirtualMCU per vehicle (P4-3)
 
         starts = np.asarray([s for _, s in vehicles], dtype=float)
         self.state = np.zeros((n, 13))
@@ -219,6 +220,15 @@ class SitlEngine:
                         Channel(latency_s, bandwidth_bps, queue_max_bytes))
         self.links[i] = link
         return link.up, link.down
+
+    def attach_mc(self, uav_id: str, mcu) -> None:
+        """Host one vehicle's mission computer (sil/host.py VirtualMCU)
+        in the §6 step-3 slot — it ticks on the micro clock between the
+        FCU pipeline and the actuator latch."""
+        i = self.index[uav_id]
+        if self.mcs[i] is not None:
+            raise ValueError(f"vehicle {uav_id!r} already has an MC")
+        self.mcs[i] = mcu
 
     # ------------------------------------------------------------- world seam
 
@@ -326,7 +336,12 @@ class SitlEngine:
             if link is not None and link_due:
                 self._link_task(fcu, link, now, k)
 
-        # 3. MC tick if due — P4-3 seam.
+        # 3. MC tick if due (P4-3): hosted mission computers on the micro
+        # clock, behind their crash fences (a dead MC is silent, the
+        # simulation keeps running).
+        for mcu in self.mcs:
+            if mcu is not None and mcu.due(k):
+                mcu.run_tick()
 
         # 4-7. latch actuators, gusts, powertrain, ONE batched RK4
         st = self.state

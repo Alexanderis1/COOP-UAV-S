@@ -450,8 +450,21 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       2-interceptor FPV kill in SITL_SMALL_SCENARIO (kill t≈49 s, SAFE-zone debris, truth
       quarantine visibly held: est≠truth bounded <10 m). 8 tests test_sitl_stage1.py +
       fidelity-flag flip (2026-06-12)
-- [ ] P4-3 Stage 2 MC split: tactical logic → `mc/` apps on own VirtualMCU (PHY-UAV-010/011);
-      `interceptors/uav.py` thin shell in sitl mode; clearance-interlock sitl twins byte-equivalent
+- [x] P4-3 Stage 2 MC split (PHY-UAV-010/011): `core/ports.py` bounded Mailbox/Ports +
+      `sil/host.py` VirtualMCU ((clock,rng,ports) ctor, exception fence latches processor crash,
+      clock freezes — SIM-SIL-003 fault mode free) [P4-3a]; guidance/cooperation moved to `mc/`
+      (re-export shims keep legacy imports); clearance interlock moved VERBATIM to
+      `mc/fire_control.py` FireControl — ONE state machine driven by BOTH the legacy node and
+      `mc/interceptor_app.py` (same effector object, ammo cannot fork; uav.py keeps `_clearance`
+      property views for tests); InterceptorApp = near line-for-line FSM port on mailbox I/O
+      (tasks/tracks/debris/peers/clearance/command/link_quality in; uav_state/fire_request/fire/
+      cue out); `SitlShellUav` thin shell ferries bus↔mailboxes + mirrors mode/battery, body =
+      app's estimate body; engine hosts MCU in the §6 step-3 slot; scenario sitl path builds
+      shell+MCU per interceptor (`sitl.mc_hz` default 10). Pins: 4 byte-equivalent clearance
+      twins (same script → field-equal FireRequests both hosts), MC arms+flies from inside the
+      loop on mailbox tasking, crash fence end-to-end (dead MC → silent → FCU failsafes home,
+      sim never sees the exception), e2e kill re-validated through the MCU path. 7+6 tests
+      test_sil_host.py + test_sitl_stage2.py; suite 591 fast green, ruff clean (2026-06-12)
 - [ ] P4-4 energy/telemetry rewire: ECM battery via FCU telemetry; UavState from MC estimates only
       (truth quarantine holds); import-boundary test
 - [ ] P4-5 sentinels as MC app + sitl twin of test_sentinel

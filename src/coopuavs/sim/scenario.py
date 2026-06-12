@@ -32,8 +32,8 @@ from ..core.comms import CommsModel
 from ..core.messages import ThreatClass
 from ..interceptors.effectors import EFFECTOR_FACTORIES
 from ..interceptors.sentinel import SentinelUav
-from ..interceptors.uav import InterceptorUav
-from ..mc.fcu_client import FcuClient, SitlBody
+from ..interceptors.uav import InterceptorUav, SitlShellUav
+from ..mc.fcu_client import FcuClient
 from ..perception.fusion import FusionNode
 from ..sensors.acoustic import AcousticSensor
 from ..sensors.base import mounted
@@ -125,6 +125,7 @@ def _parse_sitl(raw) -> dict:
     cfg = dict(raw or {})
     out = {
         "base_hz": int(cfg.pop("base_hz", 800)),
+        "mc_hz": int(cfg.pop("mc_hz", 10)),
         "link": dict(cfg.pop("link", None) or {}),
         "fcu": dict(cfg.pop("fcu", None) or {}) or None,
     }
@@ -148,42 +149,62 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     # Node order fixes the within-step pipeline: sense -> fuse -> decide ->
     # act -> adjudicate -> evaluate -> record.
-    uavs: dict[str, InterceptorUav] = {}
+    icfgs = []
     for u in cfg.get("interceptors", []):
         u = dict(u)
-        uav = InterceptorUav(
-            uav_id=u.pop("id"),
-            bus=world.bus,
-            home=_resolve_home(u, env),
-            effector=EFFECTOR_FACTORIES[u.pop("effector")](),
-            **u,
-        )
-        uavs[uav.uav_id] = uav
+        icfgs.append((u.pop("id"), _resolve_home(u, env),
+                      u.pop("effector"), u))
 
-    # Fleet fidelity (PLAN_PROBLEM1 P4-2 stage 1): in sitl mode each
-    # interceptor flies a SitlEngine vehicle — the agent keeps its FSM but
-    # commands velocity over the coop-link and reads NAV estimates
-    # (SitlBody), while every sim-side consumer (adjudicator, comms radio,
-    # seekers, evasion, recorder) sees the FriendlyVehicle TRUTH adapter.
-    # Sentinels stay legacy point-mass until P4-5.
+    # Fleet fidelity (PLAN_PROBLEM1 P4-3 stage 2): in sitl mode the
+    # tactical stack runs as mc/interceptor_app.py on a VirtualMCU inside
+    # the engine micro-loop, flying a SitlEngine vehicle over the
+    # coop-link on EKF estimates; the world-side SitlShellUav node only
+    # ferries bus traffic across the mailbox boundary, and every sim-side
+    # consumer (adjudicator, comms radio, seekers, evasion, recorder)
+    # sees the FriendlyVehicle TRUTH adapter. Sentinels stay legacy
+    # point-mass until P4-5.
+    uavs: dict[str, InterceptorUav] = {}
     platforms: dict[str, object] = uavs
-    if fidelity["fleet"] == "sitl" and uavs:
+    if fidelity["fleet"] == "sitl" and icfgs:
+        from ..mc.interceptor_app import InterceptorApp
+        from ..sil.host import VirtualMCU
+
         sitl_cfg = _parse_sitl(cfg.get("sitl"))
         engine = SitlEngine(
-            [(uid, tuple(u.home)) for uid, u in uavs.items()],
+            [(uid, tuple(home)) for uid, home, _, _ in icfgs],
             world.rng_registry, weather=world.weather, world_dt=world.dt,
             base_hz=sitl_cfg["base_hz"], fcu_overlay=sitl_cfg["fcu"],
             heartbeat_hz=0.0)
         world.micro = engine
         platforms = {}
-        for uid, uav in uavs.items():
+        for uid, home, eff_name, extra in icfgs:
+            effector = EFFECTOR_FACTORIES[eff_name]()
             up, down = engine.attach_link(uid, **sitl_cfg["link"])
-            uav.body = SitlBody(FcuClient(up, down), uav.home, uav.max_speed,
-                                clock=lambda w=world: w.t)
-            platforms[uid] = FriendlyVehicle(engine, uid, uav.home,
-                                             tactical=uav)
-    elif cfg.get("sitl"):
-        raise ValueError("a `sitl:` block requires fidelity.fleet=sitl")
+            client = FcuClient(up, down)
+            app_kw = {k: v for k, v in extra.items() if k != "rate_hz"}
+
+            def factory(clock, rng, ports, *, _uid=uid, _home=home,
+                        _eff=effector, _client=client, _kw=app_kw):
+                return InterceptorApp(clock, rng, ports, uav_id=_uid,
+                                      home=_home, effector=_eff,
+                                      fcu_client=_client, **_kw)
+
+            mcu = VirtualMCU(f"mc/{uid}", tick_hz=sitl_cfg["mc_hz"],
+                             base_hz=sitl_cfg["base_hz"], app_factory=factory,
+                             rng=world.rng_registry.stream(f"mc/{uid}"))
+            engine.attach_mc(uid, mcu)
+            shell = SitlShellUav(uid, world.bus, home, effector, mcu=mcu,
+                                 **extra)
+            uavs[uid] = shell
+            platforms[uid] = FriendlyVehicle(engine, uid, home,
+                                             tactical=shell)
+    else:
+        if cfg.get("sitl"):
+            raise ValueError("a `sitl:` block requires fidelity.fleet=sitl")
+        for uid, home, eff_name, extra in icfgs:
+            uavs[uid] = InterceptorUav(
+                uav_id=uid, bus=world.bus, home=home,
+                effector=EFFECTOR_FACTORIES[eff_name](), **extra)
     for uid, platform in platforms.items():
         world.friendlies[uid] = platform
 
