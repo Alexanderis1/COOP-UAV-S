@@ -41,7 +41,7 @@ import numpy as np
 
 from coopuavs.coopfc import GRAVITY
 from coopuavs.coopfc.core import vec
-from coopuavs.coopfc.estimation.alignment import AlignResult
+from coopuavs.coopfc.estimation.alignment import AlignResult, mag_yaw
 
 # Error-state slices.
 DP = slice(0, 3)
@@ -51,6 +51,25 @@ DBG = slice(9, 12)
 DBA = slice(12, 15)
 
 _STAMP_EPS = 1e-9  # derived-float stamp comparisons get epsilon slack
+
+
+def _strapdown_step(q, v, p, b_g, b_a, gyro, accel, dt):
+    """One IMU sample of Sola eq. 255-259 nominal kinematics (ZOH from
+    the sample stamp, trapezoid position). The SINGLE strapdown source
+    for both the mainline integration and the output replay — the two
+    must never diverge (a scheme tweak applied to one copy would be a
+    test-evading offset between horizon and published state). Plain
+    floats: this is the hot path."""
+    w = (gyro[0] - b_g[0], gyro[1] - b_g[1], gyro[2] - b_g[2])
+    f = (accel[0] - b_a[0], accel[1] - b_a[1], accel[2] - b_a[2])
+    a_w = vec.quat_rotate(q, f)
+    a_w = (a_w[0], a_w[1], a_w[2] - GRAVITY)
+    p = (p[0] + v[0] * dt + 0.5 * a_w[0] * dt * dt,
+         p[1] + v[1] * dt + 0.5 * a_w[1] * dt * dt,
+         p[2] + v[2] * dt + 0.5 * a_w[2] * dt * dt)
+    v = (v[0] + a_w[0] * dt, v[1] + a_w[1] * dt, v[2] + a_w[2] * dt)
+    q = vec.quat_integrate(q, w, dt)
+    return q, v, p
 
 
 class EkfParams(NamedTuple):
@@ -221,6 +240,10 @@ class Ekf:
         self._R_gps_vel = np.diag(self._r_gps_vel)
         self._R_baro = np.array([[self._r_baro]])
         self._R_mag_yaw = np.array([[self._r_mag_yaw]])
+        # Baro partial-update gain mask {dp_z, dv_z, db_a_z}, built once
+        # (constant per filter; rebuilt-per-fusion was pure churn).
+        self._baro_gain_mask = np.zeros(15, dtype=bool)
+        self._baro_gain_mask[[2, 5, 14]] = True
         # Prediction scratch (allocation-free per segment):
         self._eye15 = np.eye(15)
         self._F = np.eye(15)
@@ -349,17 +372,9 @@ class Ekf:
                 or (bool(self._mag) and self._mag[0][0] <= lim))
 
     def _integrate_nominal(self, gyro, accel, dt) -> None:
-        """One IMU sample: Sola eq. 255-259 nominal kinematics."""
-        w = (gyro[0] - self.b_g[0], gyro[1] - self.b_g[1], gyro[2] - self.b_g[2])
-        f = (accel[0] - self.b_a[0], accel[1] - self.b_a[1], accel[2] - self.b_a[2])
-        a_w = vec.quat_rotate(self.q, f)
-        a_w = (a_w[0], a_w[1], a_w[2] - GRAVITY)
-        v0 = self.v
-        self.v = (v0[0] + a_w[0] * dt, v0[1] + a_w[1] * dt, v0[2] + a_w[2] * dt)
-        self.p = (self.p[0] + v0[0] * dt + 0.5 * a_w[0] * dt * dt,
-                  self.p[1] + v0[1] * dt + 0.5 * a_w[1] * dt * dt,
-                  self.p[2] + v0[2] * dt + 0.5 * a_w[2] * dt * dt)
-        self.q = vec.quat_integrate(self.q, w, dt)
+        """One IMU sample into the horizon state (shared strapdown)."""
+        self.q, self.v, self.p = _strapdown_step(
+            self.q, self.v, self.p, self.b_g, self.b_a, gyro, accel, dt)
 
     def _predict_cov(self, q, w_mean, f_mean, dt) -> None:
         """Error-state transition, Sola eq. 270 (first order, mean rates).
@@ -427,13 +442,18 @@ class Ekf:
 
     def _fuse_sel(self, idx: tuple[int, ...], innov: np.ndarray,
                   r_cov: np.ndarray, gate: float, name: str,
-                  gain_rows: tuple[int, ...] | None = None) -> bool:
+                  gain_mask: np.ndarray | None = None) -> bool:
         """Fuse a measurement whose H rows select state indices `idx`.
 
-        Indexed equivalents of the dense forms (value-identical — the
-        H matmuls only ever accumulated exact +0.0 terms):
-        S = P[idx,idx] + R; K = P[:,idx] S^-1; I - K H = I with K
-        subtracted from columns `idx`. Joseph form unchanged.
+        Indexed equivalents of the dense forms (the H matmuls only ever
+        accumulated exact +0.0 terms): S = P[idx,idx] + R;
+        K = P[:,idx] S^-1. The Joseph update is expanded for a selection
+        H into rank-m form — (I-KH)P = P - K P[idx,:] and
+        X (I-KH)^T = X - X[:,idx] K^T — two rank-m products instead of
+        two dense 15x15 matmuls (~5x cheaper on the fleet path; exact
+        for ANY gain, including the masked partial update). Algebraic
+        identity to the textbook dense Joseph form is pinned by
+        test_coopfc_ekf.test_fuse_sel_matches_dense_joseph_reference.
         """
         if not np.all(np.isfinite(innov)):
             self.rejected["nonfinite"] += 1
@@ -454,20 +474,16 @@ class Ekf:
         tally[0] += nis
         tally[1] += 1
         K = self.P[:, idx] @ S_inv
-        if gain_rows is not None:
+        if gain_mask is not None:
             # Partial update (Brink 2017 partial-update Schmidt-KF
-            # form): zero the gain outside `gain_rows`. The Joseph
-            # covariance form below is exact for ANY gain, so P stays
-            # consistent with the suboptimal-by-design K.
-            keep = np.zeros(K.shape[0], dtype=bool)
-            keep[list(gain_rows)] = True
-            K = np.where(keep[:, None], K, 0.0)
+            # form): zero the gain outside the mask rows. The Joseph
+            # form below is exact for ANY gain, so P stays consistent
+            # with the suboptimal-by-design K.
+            K = np.where(gain_mask[:, None], K, 0.0)
         dx = K @ innov
         self._inject(dx)
-        ikh = self._eye15.copy()
-        ikh[:, idx] -= K
-        # Joseph form keeps P symmetric PSD under roundoff.
-        P = ikh @ self.P @ ikh.T + K @ r_cov @ K.T
+        A = self.P - K @ self.P[idx, :]
+        P = A - A[:, idx] @ K.T + K @ r_cov @ K.T
         self.P = 0.5 * (P + P.T)
         self._guard()
         return True
@@ -511,7 +527,7 @@ class Ekf:
         """
         innov = np.array([alt_m - self.p[2]])
         self._fuse_sel((2,), innov, self._R_baro, self.params.baro_gate,
-                       "baro", gain_rows=(2, 5, 14))
+                       "baro", gain_mask=self._baro_gain_mask)
 
     def _fuse_mag(self, field_ut) -> None:
         """Heading-only mag fusion (the PX4-EKF2 default).
@@ -538,12 +554,10 @@ class Ekf:
         if abs(math.cos(pitch)) < 0.3:
             self.mag_tilt_skips += 1
             return
-        q_rp = vec.quat_from_euler(roll, pitch, 0.0)
-        m_l = vec.quat_rotate(q_rp, (float(field_ut[0]), float(field_ut[1]),
-                                     float(field_ut[2])))
-        decl = math.radians(self.params.mag_declination_deg)
-        yaw_mag = vec.wrap_pi((0.5 * math.pi - decl)
-                              - math.atan2(m_l[1], m_l[0]))
+        yaw_mag = mag_yaw(roll, pitch,
+                          (float(field_ut[0]), float(field_ut[1]),
+                           float(field_ut[2])),
+                          math.radians(self.params.mag_declination_deg))
         innov = np.array([vec.wrap_pi(yaw_mag - yaw_est)])
         # Yaw axis ONLY — deliberately not the full euler row
         # [0, sinφ/cosθ, cosφ/cosθ]: its tilt-coupling terms would let
@@ -559,25 +573,23 @@ class Ekf:
 
     def _output(self, now: float) -> NavState:
         """Replay buffered IMU from the horizon to `now` (output
-        predictor; nominal only, no covariance)."""
+        predictor; nominal only, no covariance).
+
+        Full replay every update is the EXACT output prediction — a
+        PX4-style incremental predictor (integrate each sample once,
+        apply the post-fusion horizon delta as an additive correction)
+        would be ~7x cheaper but approximate. Fidelity-first: the cost
+        is bounded by the lag_s window (~56 samples) and covered by the
+        @perf gates."""
         q, v, p = self.q, self.v, self.p
         b_g, b_a = self.b_g, self.b_a
         dt = self._imu_dt
-        quat_rotate, quat_integrate = vec.quat_rotate, vec.quat_integrate
         for stamp, gyro, accel in self._imu:
             if stamp <= self.horizon + _STAMP_EPS:
                 continue
             if stamp > now + _STAMP_EPS:
                 break
-            w = (gyro[0] - b_g[0], gyro[1] - b_g[1], gyro[2] - b_g[2])
-            f = (accel[0] - b_a[0], accel[1] - b_a[1], accel[2] - b_a[2])
-            a_w = quat_rotate(q, f)
-            a_w = (a_w[0], a_w[1], a_w[2] - GRAVITY)
-            p = (p[0] + v[0] * dt + 0.5 * a_w[0] * dt * dt,
-                 p[1] + v[1] * dt + 0.5 * a_w[1] * dt * dt,
-                 p[2] + v[2] * dt + 0.5 * a_w[2] * dt * dt)
-            v = (v[0] + a_w[0] * dt, v[1] + a_w[1] * dt, v[2] + a_w[2] * dt)
-            q = quat_integrate(q, w, dt)
+            q, v, p = _strapdown_step(q, v, p, b_g, b_a, gyro, accel, dt)
         g = self._last_gyro
         omega = (g[0] - b_g[0], g[1] - b_g[1], g[2] - b_g[2])
         d = np.diagonal(self.P)[:9] + self.budget9  # honest reporting

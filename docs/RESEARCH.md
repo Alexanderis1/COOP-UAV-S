@@ -1147,3 +1147,26 @@ accumulated exact +0.0 terms) — verified VALUE-IDENTICAL by sha256
 over the full state + covariance of a 20 s device-suite run before and
 after. Measured: C_fcu 0.023-0.027 s/sim-s direct, projection
 0.73-0.81 s/sim-s -> RTF 1.24-1.38x.
+
+P3-R2 follow-ups (2026-06-12 gate review, cut-findings pass): the
+one-time sha256 equivalence check is now a COMMITTED default-suite pin
+(`test_fuse_sel_matches_dense_joseph_reference` re-derives every sensor
+block, incl. the masked baro partial update, against a test-side dense
+Joseph reference), and the Joseph update itself is expanded to rank-m
+form for selection H ((I-KH)P = P - K P[idx,:]; X(I-KH)^T =
+X - X[:,idx] K^T) — an algebraic identity (exact for any gain), ~5x
+fewer multiplies than the two dense 15x15 matmuls it replaces. The
+output predictor stays a FULL replay (exact prediction) rather than a
+PX4-style incremental delta (approximate): fidelity-first, cost bounded
+by the lag_s window and covered by the @perf gates.
+
+### P3-5 yaw rate gate (user decision 2026-06-12, gate review)
+
+The plan's "rate rise < 60 ms" is a roll/pitch spec: quad-X yaw is
+actuated by rotor drag torque, ~30x weaker authority, and physically
+cannot meet it. The interim 0.40 s settle gate carried 2.9x headroom
+over the measured 0.138 s (deterministic truth-fed bench) — loose
+enough to pass a tripled settle time. Re-stamped per the
+fidelity/determinism goal as a REGRESSION gate: **settle < 0.20 s**
+(+45% headroom, same style as the GNSS-denied drift gate), overshoot
+gate < 20% unchanged.

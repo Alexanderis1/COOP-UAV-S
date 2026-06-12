@@ -136,6 +136,12 @@ def test_rate_step_pitch_rise_and_overshoot():
 
 
 def test_rate_step_yaw_settles():
+    # Yaw authority is ~30x weaker than roll/pitch (drag-torque
+    # actuation), so the plan's 60 ms rise figure is a roll/pitch spec.
+    # User decision 2026-06-12 (P3 gate review): yaw is gated as a
+    # REGRESSION gate at 0.20 s settle — measured 0.138 s, deterministic
+    # truth-fed bench, +45% headroom — replacing the unstamped 0.40 s
+    # whose 2.9x headroom would have passed a tripled settle time.
     b = Bench()
     u_h = VelParams().u_hover
     hist = []
@@ -144,7 +150,7 @@ def test_rate_step_yaw_settles():
         hist.append((b.t, b.state[0, 12]))
     inside = [t for t, w in hist if abs(w - 0.5) > 0.05]
     t_settle = max(inside) if inside else 0.0
-    assert t_settle < 0.40, f"yaw rate settle {t_settle:.2f} s"
+    assert t_settle < 0.20, f"yaw rate settle {t_settle:.2f} s"
     peak = max(w for _, w in hist)
     assert peak / 0.5 - 1.0 < 0.20, "yaw rate overshoot"
 

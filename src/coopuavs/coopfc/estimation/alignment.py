@@ -30,6 +30,21 @@ from coopuavs.coopfc import GRAVITY
 from coopuavs.coopfc.core import vec
 
 
+def mag_yaw(roll: float, pitch: float, field_ut, decl_rad: float) -> float:
+    """Tilt-compensated magnetic heading (world ENU: x east, y north).
+
+    Level the body-frame field with roll/pitch only, then compare the
+    horizontal angle against the theater declination. ONE formula shared
+    by the static aligner and the EKF mag fusion — a declination-sign or
+    axis fix applied to a single copy would leave boot yaw and in-flight
+    yaw disagreeing by construction.
+    """
+    q_rp = vec.quat_from_euler(roll, pitch, 0.0)
+    m_l = vec.quat_rotate(q_rp, field_ut)
+    return vec.wrap_pi((0.5 * math.pi - decl_rad)
+                       - math.atan2(m_l[1], m_l[0]))
+
+
 class AlignResult(NamedTuple):
     ok: bool                 # variance gate verdict; if False, retry
     q0: vec.Quat             # initial attitude, body -> world
@@ -121,12 +136,8 @@ class Aligner:
         pitch = math.asin(vec.clip(-g_hat[0], -1.0, 1.0))
         roll = math.atan2(g_hat[1], g_hat[2])
 
-        # Yaw: level the mag mean with roll/pitch only, compare horizontal
-        # angles against the theater declination (ENU: x east, y north).
-        q_rp = vec.quat_from_euler(roll, pitch, 0.0)
-        m_l = vec.quat_rotate(q_rp, self._mag.mean())
-        yaw = vec.wrap_pi((0.5 * math.pi - self.decl)
-                          - math.atan2(m_l[1], m_l[0]))
+        # Yaw from the leveled mag mean (shared formula, module-level).
+        yaw = mag_yaw(roll, pitch, self._mag.mean(), self.decl)
         q0 = vec.quat_from_euler(roll, pitch, yaw)
 
         # Honest P0 (variances). Statistical part scales 1/n; systematic

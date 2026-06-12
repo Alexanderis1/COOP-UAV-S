@@ -12,6 +12,8 @@ RESEARCH.md "P3 CoopFC flight stack"):
   Gate 2.0 m RMS — the documented device budget (measured 0.5-0.9 m
   over seeds; ~1-1.5 m is the published GNSS position-hold class,
   centimeter hover needs RTK which this suite deliberately is not).
+- VERTICAL gated separately since the P3 review (control z plan-class,
+  truth z 3.0 m RMS vertical device budget) — see _hover_rms.
 
 Waypoint square: 200 m sides at 10 m/s, MC-role OFFBOARD velocity
 guidance from NAV telemetry at 10 Hz; TRUTH cross-track < 2 m on the
@@ -53,36 +55,54 @@ WP_RADIUS = 5.0
 
 
 def _hover_rms(seed: int, wind, w20, t_meas: float = 30.0):
+    """(ctl_xy, truth_xy, ctl_z, truth_z) hover RMS errors.
+
+    Vertical gated separately (P3 review: x/y-only gates left the
+    baro-drift axis — the likeliest silent-failure channel — unguarded):
+    control z gets the same plan-class numbers as horizontal (measured
+    0.028-0.037 m, thrust authority is strong); truth z is gated at the
+    VERTICAL device budget 3.0 m RMS (gps_gm_sigma_v 2.4 m blended with
+    baro drift 1.25 m by the filter; measured 1.2-2.4 m over seeds,
+    regression headroom +23% over worst — same style as the drift gate).
+    """
     b = Bench(seed=seed, wind_mean=wind, dryden_wind20=w20)
     b.boot_and_arm()
     hold = b.fcu._hold_pos
     truth0 = b.state[0, 0:3].copy()
     b.run(5.0)                                  # transient out
-    ce, te = [], []
+    ce, te, cz, tz = [], [], [], []
     for _ in range(round(t_meas * TICK_HZ)):
         b.tick()
         if b.k % 16 == 0:
             n = b.fcu.nav
             ce.append((n.pos[0] - hold[0]) ** 2 + (n.pos[1] - hold[1]) ** 2)
+            cz.append((n.pos[2] - hold[2]) ** 2)
             s = b.state[0]
             te.append((s[0] - truth0[0]) ** 2 + (s[1] - truth0[1]) ** 2)
-    return math.sqrt(np.mean(ce)), math.sqrt(np.mean(te))
+            tz.append((s[2] - truth0[2]) ** 2)
+    return (math.sqrt(np.mean(ce)), math.sqrt(np.mean(te)),
+            math.sqrt(np.mean(cz)), math.sqrt(np.mean(tz)))
 
 
 def test_hover_calm_control_and_truth_rms():
-    ctl, truth = _hover_rms(0, (0.0, 0.0, 0.0), None)
+    ctl, truth, ctl_z, truth_z = _hover_rms(0, (0.0, 0.0, 0.0), None)
     assert ctl < 0.15, f"calm control RMS {ctl:.3f} m"
     assert truth < 2.0, f"calm truth RMS {truth:.3f} m (GNSS budget)"
+    assert ctl_z < 0.15, f"calm control z RMS {ctl_z:.3f} m"
+    assert truth_z < 3.0, f"calm truth z RMS {truth_z:.3f} m (vert budget)"
 
 
 @pytest.mark.slow
 def test_hover_wind_dryden_control_and_truth_rms():
-    worst_ctl = worst_truth = 0.0
+    worst = [0.0, 0.0, 0.0, 0.0]
     for seed in range(3):
-        ctl, truth = _hover_rms(seed, (8.0, 0.0, 0.0), 8.0)
-        worst_ctl, worst_truth = max(worst_ctl, ctl), max(worst_truth, truth)
-    assert worst_ctl < 1.0, f"wind control RMS {worst_ctl:.3f} m"
-    assert worst_truth < 2.0, f"wind truth RMS {worst_truth:.3f} m"
+        worst = [max(w, m) for w, m
+                 in zip(worst, _hover_rms(seed, (8.0, 0.0, 0.0), 8.0))]
+    ctl, truth, ctl_z, truth_z = worst
+    assert ctl < 1.0, f"wind control RMS {ctl:.3f} m"
+    assert truth < 2.0, f"wind truth RMS {truth:.3f} m"
+    assert ctl_z < 1.0, f"wind control z RMS {ctl_z:.3f} m"
+    assert truth_z < 3.0, f"wind truth z RMS {truth_z:.3f} m (vert budget)"
 
 
 # ------------------------------------------------------- waypoint square

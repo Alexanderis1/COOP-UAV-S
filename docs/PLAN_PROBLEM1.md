@@ -333,8 +333,9 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       `control/mixer.py` quad-X sequential desat, priority rp > collective > yaw, per-axis
       directional saturation flags. Acceptance vs REAL plant (truth-fed; powertrain motor lag
       in loop, plant RK4 800 Hz / ctl 400 / vel 50): roll+pitch rate rise <60 ms overshoot
-      <20%; yaw rate 0.5 rad/s settle 0.138 s (yaw authority ~30x weaker — drag-torque
-      actuation — 60 ms figure is a roll/pitch spec, documented); 30° att step settle <0.5 s;
+      <20%; yaw rate 0.5 rad/s settle 0.138 s, gated <0.20 s regression-style (user decision
+      2026-06-12 gate review, RESEARCH.md "P3-5 yaw rate gate": yaw authority ~30x weaker —
+      drag-torque actuation — 60 ms figure is a roll/pitch spec); 30° att step settle <0.5 s;
       vel zero SS error calm + 5 m/s wind; integrator frozen-while-saturated white-box pin +
       2.5 s saturated-dash recovery; mixer analytic desat pins; run-twice bit-identical.
       14 tests `test_coopfc_control.py` (2026-06-12)
@@ -406,6 +407,21 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       NaN >= x is False — into latched CRITICAL → forced LAND); **F10** wire enum tables
       (STATE/MODE/FAILSAFE/BATT codes) pinned in the link registry, cross-checked against the
       fcu vocabulary. Full fast suite 550 + ruff + @slow/@perf/@oracle re-run green.
+- [x] P3-R2 cut-findings pass (2026-06-12, user-directed "fix all + decide yaw"): **(a)** hover
+      gates grew a VERTICAL channel — control z plan-class <0.15/1.0 m (measured 0.028-0.037),
+      truth z 3.0 m RMS vertical device budget (gps_gm_v 2.4 ⊕ baro drift 1.25 filter-blended;
+      measured 1.21-2.43 over seeds, +23% regression headroom); **(b)** `_fuse_sel` equivalence
+      now a COMMITTED default-suite pin vs a test-side dense Joseph reference (all 4 sensor
+      blocks + masked baro partial update + spoof-gate case); **(c)** Joseph update expanded to
+      rank-m selection form (~5x fewer multiplies; algebraic identity, pinned by (b)) + baro
+      gain mask precomputed; **(d)** strapdown deduplicated — one `_strapdown_step` feeds both
+      mainline and output replay (sha256 BIT-IDENTICAL pre/post on a 6 s maneuvering-EKF and a
+      3 s bench run); output predictor kept FULL replay (exact) over PX4-style incremental
+      delta (approximate) per the fidelity goal — perf headroom delegated to (c), @perf green;
+      **(e)** `mag_yaw` deduplicated alignment↔EKF (same sha256 proof); **(f)** bench hot-loop
+      preallocation (u/z buffers, hoisted zeros; sha256 bit-identical); **(g)** yaw settle gate
+      re-stamped as user decision and TIGHTENED 0.40 → 0.20 s regression gate (+45% over the
+      deterministic 0.138 s; RESEARCH.md "P3-5 yaw rate gate"). Suites re-run green.
 
 ### P4 — Fleet integration (XL — riskiest; staged strangler)
 - [ ] P4-1 `sil/vehicle.py` FriendlyVehicle protocol-conformance test (pins full duck-type contract)

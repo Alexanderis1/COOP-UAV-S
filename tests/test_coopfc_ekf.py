@@ -194,6 +194,98 @@ def test_run_twice_bit_identical():
     assert run() == run()
 
 
+def _dense_joseph(P, idx, innov, r_cov, gain_rows=None):
+    """Textbook dense-H Joseph reference for a selection measurement."""
+    m = len(idx)
+    H = np.zeros((m, 15))
+    H[np.arange(m), list(idx)] = 1.0
+    S = H @ P @ H.T + r_cov
+    S_inv = np.linalg.inv(S)
+    K = P @ H.T @ S_inv
+    if gain_rows is not None:
+        keep = np.zeros(15, dtype=bool)
+        keep[list(gain_rows)] = True
+        K = np.where(keep[:, None], K, 0.0)
+    dx = K @ innov
+    ikh = np.eye(15) - K @ H
+    Pn = ikh @ P @ ikh.T + K @ r_cov @ K.T
+    return dx, 0.5 * (Pn + Pn.T)
+
+
+def test_fuse_sel_matches_dense_joseph_reference():
+    # P3 review (cut finding): the selection-indexed fusion's claimed
+    # value-identity to the dense Joseph form was a one-time out-of-band
+    # sha256 check with the dense path deleted — this DEFAULT-suite pin
+    # re-derives every sensor block (incl. the baro partial update)
+    # against a test-side dense reference so a selection-index regression
+    # cannot hide behind the @slow-only statistical suites.
+    ekf = Ekf(perfect_align(q0=vec.quat_from_euler(0.05, -0.03, 0.2)))
+    sim = TruthSim(ekf, accel_fn=lambda t: (math.sin(t), 0.3, 0.1),
+                   q0=vec.quat_from_euler(0.05, -0.03, 0.2))
+    sim.run(2.0)
+    assert not ekf.diverged
+    p = ekf.params
+
+    # GPS: position then velocity blocks, sequential like _fuse_gps
+    P0 = ekf.P.copy()
+    pos_b, vel_b = np.array(ekf.p), np.array(ekf.v)
+    meas_pos = tuple(pos_b + (0.8, -0.5, 0.3))
+    meas_vel = tuple(vel_b + (0.05, -0.02, 0.01))
+    dx_p, P1 = _dense_joseph(P0, (0, 1, 2), np.array(meas_pos) - pos_b,
+                             np.diag([p.gps_sigma_pos_h ** 2
+                                      + p.gps_gm_sigma_h ** 2] * 2
+                                     + [p.gps_sigma_pos_v ** 2
+                                        + p.gps_gm_sigma_v ** 2]))
+    vel_mid = vel_b + dx_p[3:6]      # pos block also moves velocity
+    dx_v, P2 = _dense_joseph(P1, (3, 4, 5), np.array(meas_vel) - vel_mid,
+                             np.diag([p.gps_sigma_vel ** 2] * 3))
+    ekf._fuse_gps(meas_pos, meas_vel)
+    assert np.allclose(ekf.P, P2, rtol=1e-8, atol=1e-14)
+    assert np.allclose(np.array(ekf.p) - pos_b, dx_p[0:3] + dx_v[0:3],
+                       rtol=1e-8, atol=1e-12)
+    assert np.allclose(np.array(ekf.v) - vel_b, dx_p[3:6] + dx_v[3:6],
+                       rtol=1e-8, atol=1e-12)
+
+    # Baro: scalar partial update, gain masked to rows (2, 5, 14)
+    P0 = ekf.P.copy()
+    z_b = ekf.p[2]
+    n_baro = ekf.nis["baro"][1]
+    dx_b, P1 = _dense_joseph(
+        P0, (2,), np.array([0.4]),
+        np.array([[p.baro_sigma_m ** 2 + p.baro_drift_m ** 2]]),
+        gain_rows=(2, 5, 14))
+    ekf._fuse_baro(z_b + 0.4)
+    assert ekf.nis["baro"][1] == n_baro + 1      # accepted, not gated
+    assert np.allclose(ekf.P, P1, rtol=1e-8, atol=1e-14)
+    assert abs((ekf.p[2] - z_b) - dx_b[2]) < 1e-12
+    keep = np.zeros(15, dtype=bool)
+    keep[[2, 5, 14]] = True
+    assert np.all(dx_b[~keep] == 0.0)            # mask honored
+
+    # Mag: scalar yaw fusion (lift P_yaw above the information floor —
+    # converged filters legitimately sit on it and would floor-skip)
+    ekf.P[8, 8] = 2.0 * ekf._yaw_floor_var
+    P0 = ekf.P.copy()
+    roll, pitch, yaw_est = vec.quat_to_euler(ekf.q)
+    yaw_meas = yaw_est + 0.02
+    decl = math.radians(p.mag_declination_deg)
+    # field whose leveled atan2 yields yaw_meas (invert the model)
+    ang = (0.5 * math.pi - decl) - yaw_meas
+    m_l = (math.cos(ang), math.sin(ang), 0.0)
+    field = vec.quat_rotate_inv(vec.quat_from_euler(roll, pitch, 0.0), m_l)
+    n_mag = ekf.nis["mag"][1]
+    dx_m, P1 = _dense_joseph(P0, (8,), np.array([0.02]),
+                             np.array([[ekf._r_mag_yaw]]))
+    ekf._fuse_mag(field)
+    assert ekf.nis["mag"][1] == n_mag + 1
+    assert np.allclose(ekf.P, P1, rtol=1e-7, atol=1e-13)
+
+    # spoof-sized innovation: both reference NIS and the filter gate it
+    n_rej = ekf.rejected["gps_pos"]
+    ekf._fuse_gps(tuple(np.array(ekf.p) + 500.0), tuple(ekf.v))
+    assert ekf.rejected["gps_pos"] == n_rej + 1
+
+
 def test_diverged_latches_and_freezes_mainline():
     ekf = Ekf(perfect_align())
     sim = TruthSim(ekf)

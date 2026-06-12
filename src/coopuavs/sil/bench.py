@@ -92,6 +92,13 @@ class Bench:
         self._v_prev2 = np.zeros((2, 3))     # velocity 1 and 2 steps back
         self._esc_out = (np.zeros((1, cfg.n_rotors)), np.array([50.0]),
                          np.array([0.0]))
+        # Hot-loop scratch (the 800 Hz tick is RTF-gated): reused
+        # buffers instead of per-tick np.array construction; the zero
+        # constants are read-only by the device sample contracts.
+        self._u_buf = np.zeros((1, cfg.n_rotors))
+        self._z_buf = np.zeros(1)
+        self._zero3 = np.zeros(3)
+        self._zero13 = np.zeros((1, 3))
         self.k = 0
 
     @property
@@ -111,17 +118,18 @@ class Bench:
                 a_w = (self.state[0, 3:6] - self._v_prev2[0]) / (2.0 * DT)
                 omega_b = self.state[:, 10:13]
             else:
-                a_w = np.zeros(3)
-                omega_b = np.zeros((1, 3))
+                a_w = self._zero3
+                omega_b = self._zero13
             gyro, accel = self.imu.sample(quat, omega_b, a_w[None, :])
             self.hal.port("imu").write((tuple(gyro[0]), tuple(accel[0])))
-        vel = self.state[:, 3:6] if self.flying else np.zeros((1, 3))
+        vel = self.state[:, 3:6] if self.flying else self._zero13
         fix = self.gps.tick(self.state[:, 0:3], vel)
         if fix is not None:
             self.hal.port("gps").write((tuple(fix.pos[0]), tuple(fix.vel[0]),
                                         int(fix.fix_type[0]), fix.stamp_s))
         if k % 16 == 0:
-            p = self.baro.sample(np.array([s[2]]))
+            self._z_buf[0] = s[2]
+            p = self.baro.sample(self._z_buf)
             self.hal.port("baro").write(float(p[0]))
             self.hal.port("mag").write(tuple(self.mag.sample(quat)[0]))
         if k % 80 == 0:
@@ -139,7 +147,8 @@ class Bench:
             _, u = self.hal.port("actuators").read()
             self._v_prev2[0] = self._v_prev2[1]
             self._v_prev2[1] = self.state[0, 3:6]
-            omega_r, v_bus, i_bus = self.pt.step(DT, np.array([u], dtype=float))
+            self._u_buf[0] = u
+            omega_r, v_bus, i_bus = self.pt.step(DT, self._u_buf)
             self._esc_out = (omega_r, v_bus, i_bus)
             wind = self.wind_mean
             if self.dryden is not None:
