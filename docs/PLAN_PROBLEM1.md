@@ -327,8 +327,17 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       RSS scale) AND inside the filter's own 4-sigma claim — PHY-UAV-011 partial, VIO/datalink
       fallback out of sim scope; 50 m spoof step gated (>=25 consecutive rejections). 17 tests
       `test_coopfc_{alignment,ekf}.py` + 2 `@slow` `test_coopfc_ekf_mc.py` (2026-06-12)
-- [ ] P3-5 `control/` cascade + `mixer.py`: rate rise <60 ms overshoot <20%; 30° attitude step
-      settle <0.5 s; velocity zero steady-state error; anti-windup ramp recovery; desat priority
+- [x] P3-5 `control/` cascade (rate PID 400 Hz w/ conditional anti-windup vs own clip AND
+      mixer axis_sat feedback; quaternion attitude P, Brescianini law, yaw_weight 0.4;
+      velocity PI -> (q_sp, thrust) via flatness map + u_hover sqrt thrust curve) +
+      `control/mixer.py` quad-X sequential desat, priority rp > collective > yaw, per-axis
+      directional saturation flags. Acceptance vs REAL plant (truth-fed; powertrain motor lag
+      in loop, plant RK4 800 Hz / ctl 400 / vel 50): roll+pitch rate rise <60 ms overshoot
+      <20%; yaw rate 0.5 rad/s settle 0.138 s (yaw authority ~30x weaker — drag-torque
+      actuation — 60 ms figure is a roll/pitch spec, documented); 30° att step settle <0.5 s;
+      vel zero SS error calm + 5 m/s wind; integrator frozen-while-saturated white-box pin +
+      2.5 s saturated-dash recovery; mixer analytic desat pins; run-twice bit-identical.
+      14 tests `test_coopfc_control.py` (2026-06-12)
 - [ ] P3-6 `fcu.py` boot/PBIT/arming/modes + `battery_monitor`/failsafes: PBIT-blocks-arming,
       setpoint-timeout→POS_HOLD, link-loss→RTL timeline, RTL home from 2 km under wind
 - [ ] P3-7 `link/coop_link.py`: framing/heartbeat/latency/bandwidth-queue determinism

@@ -1032,6 +1032,11 @@ models).
 | Static coarse alignment: leveling from mean specific force, gyro bias from mean rate, yaw from leveled mag + declination, motion variance gate | `estimation/alignment.py` | Groves 2013, ch. 5 (coarse alignment / leveling). [standard reference] |
 | NEES/NIS Monte-Carlo filter consistency methodology | `tests/test_coopfc_ekf_mc.py` | Bar-Shalom, Li & Kirubarajan 2001, ch. 5 (consistency of state estimators; NEES/NIS bounds). [standard reference] |
 | Yaw information floor; unmodeled-error budget added to every reported sigma | `ekf.py` (`_fuse_mag` floor, `budget9`) | No external source: ours (static consider-covariance in spirit, Schmidt 1966); rationale below, calibrated against the MC suite. |
+| Quaternion attitude P law `rate_sp = 2 kp vec(q^-1 q_sp)`, shortest path, yaw weight | `control/attitude.py` | Brescianini, Hehn & D'Andrea, *Nonlinear quadrocopter attitude control* (ETH Zurich tech report, 2013); PX4 attitude controller convention. [standard reference] |
+| Body-rate PID, derivative-on-measurement + LPF; conditional-integration anti-windup | `control/rate.py` | Astrom & Hagglund, *Advanced PID Control* (ISA 2006), ch. 3 (integrator windup; conditional integration). [standard reference] |
+| Velocity PI -> specific force -> attitude (thrust-direction flatness map, yaw-frame euler solve) | `control/velocity.py` | Mellinger & Kumar, *Minimum snap trajectory generation and control for quadrotors*, ICRA 2011 (thrust direction = desired body z); PX4 PositionControl structure. [standard reference] |
+| Quadratic thrust-curve command linearization `u = u_hover sqrt(\|f\|/g)` | `control/velocity.py` | T ~ omega^2 with omega ~ linear in command (quasi-static armature, P1 motor model); PX4 THR_MDL_FAC convention. [project knowledge] |
+| Quad-X mixer + sequential desaturation, priority roll/pitch > collective > yaw; per-axis directional saturation flags for rate-loop anti-windup | `control/mixer.py` | PX4 ControlAllocationSequentialDesaturation order [project knowledge, standard convention]; sign table derived from the `physics/multirotor.py` wrench equations (documented in the module docstring). |
 
 ### Colored measurement errors and covariance honesty (the P3 EKF contract)
 
