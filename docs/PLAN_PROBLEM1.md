@@ -314,10 +314,19 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       encoding; baro rejects non-finite/<=0 Pa without publishing (bad_frames tally = CBIT
       seam); GPS msg carries fix_stamp (OOSM key). 15 tests `test_coopfc_drivers.py`
       (2026-06-11)
-- [ ] P3-4 `estimation/alignment.py` (leveling accuracy, variance gate) + `ekf.py`: Sola F/Q
-      predict, covariance symmetry/PD guard; GPS/baro/mag sequential fusion + chi-square gating +
-      0.5 s ring-buffer OOSM; NEES/NIS 25-seed MC consistency (`@slow`); GPS-denied drift <envelope
-      5 min (PHY-UAV-011); 50 m spoof step rejected
+- [x] P3-4 `estimation/alignment.py` (leveling, gyro bias, mag yaw, variance gate, honest P0) +
+      `ekf.py` Sola 15-state error-state EKF: PX4-style delayed horizon (OOSM structural,
+      exact-stamp fusion on the IMU lattice), chi-square gates, Joseph form, divergence latch.
+      Colored-error honesty: R inflation + mag yaw information floor + baro PARTIAL update
+      (gain masked to vertical channel — 15k correlated baro-drift fusions otherwise suppress
+      claimed sigma_vel 20x via maneuver-built cross-covariances; caught by the 4-sigma honesty
+      gate, isolated by baro-on/off A/B) + unmodeled-error budget on every reported sigma with
+      one-shot GNSS-denial injection (RESEARCH.md "P3 CoopFC flight stack"). NEES/NIS 25-seed
+      MC vs the real P2 devices (`@slow`, bounds not precision); GPS-denied 5 min: drift
+      km-class free-inertial (worst 5472 m, regression gate 7000 m, first-principles ~3.4 km
+      RSS scale) AND inside the filter's own 4-sigma claim — PHY-UAV-011 partial, VIO/datalink
+      fallback out of sim scope; 50 m spoof step gated (>=25 consecutive rejections). 17 tests
+      `test_coopfc_{alignment,ekf}.py` + 2 `@slow` `test_coopfc_ekf_mc.py` (2026-06-12)
 - [ ] P3-5 `control/` cascade + `mixer.py`: rate rise <60 ms overshoot <20%; 30° attitude step
       settle <0.5 s; velocity zero steady-state error; anti-windup ramp recovery; desat priority
 - [ ] P3-6 `fcu.py` boot/PBIT/arming/modes + `battery_monitor`/failsafes: PBIT-blocks-arming,

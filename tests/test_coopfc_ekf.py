@@ -155,11 +155,11 @@ def test_gps_denied_grows_sigma_keeps_attitude():
     ekf = Ekf(perfect_align())
     sim = TruthSim(ekf)
     sim.run(5.0)
-    sigma_aided = sim.states[-1].sigma_pos_h
+    sigma_aided = math.sqrt(ekf.P[0, 0])  # raw filter covariance
     sim.gps_enabled = False
     s = sim.run(10.0, t0=5.0)
     assert not s.diverged
-    assert s.sigma_pos_h > 2.0 * sigma_aided  # honest growth
+    assert math.sqrt(ekf.P[0, 0]) > 2.0 * sigma_aided  # honest growth
     r, p, _ = vec.quat_to_euler(s.q)
     assert max(abs(r), abs(p)) < math.radians(0.2)  # mag+gravity hold tilt
     assert abs(s.pos[2] - sim.t_pos[2]) < 1.0       # baro holds altitude

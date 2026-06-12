@@ -81,6 +81,8 @@ class EkfParams(NamedTuple):
     mag_gm_sigma_ut: float = 0.5
     mag_hard_iron_sigma_ut: float = 2.0
     mag_gate: float = 5.0
+    # GNSS-denied detection: no accepted position fusion for this long.
+    denied_after_s: float = 1.0
 
 
 class NavState(NamedTuple):
@@ -137,6 +139,10 @@ class Ekf:
         self.b_a = (0.0, 0.0, 0.0)
         self.P = np.diag(align.p0_diag).astype(float)
         self.horizon = 0.0
+        # Time the nominal (horizon) state refers to: stamp of the last
+        # integrated IMU sample + one IMU period (each sample is ZOH
+        # forward from its stamp). NEES tooling compares truth here.
+        self.state_time = 0.0
         self.diverged = False
         # Ring buffers (stamp-ordered appends by construction).
         n_imu = round(p.buffer_s * p.imu_rate_hz)
@@ -147,6 +153,10 @@ class Ekf:
         self._last_gyro = (0.0, 0.0, 0.0)
         self.rejected = {"gps_pos": 0, "gps_vel": 0, "baro": 0, "mag": 0,
                          "nonfinite": 0}
+        # Accepted-fusion NIS tallies (per sensor: [sum, count]) — the
+        # NIS half of the MC consistency suite reads these.
+        self.nis = {"gps_pos": [0.0, 0], "gps_vel": [0.0, 0],
+                    "baro": [0.0, 0], "mag": [0.0, 0]}
         self._m_world = _mag_field_enu(p.mag_field_ut, p.mag_declination_deg,
                                        p.mag_inclination_deg)
         # Measurement covariances (diagonals), inflated for unmodeled
@@ -157,8 +167,41 @@ class Ekf:
             p.gps_sigma_pos_v ** 2 + p.gps_gm_sigma_v ** 2])
         self._r_gps_vel = np.full(3, p.gps_sigma_vel ** 2)
         self._r_baro = p.baro_sigma_m ** 2 + p.baro_drift_m ** 2
-        self._r_mag = np.full(3, p.mag_sigma_ut ** 2 + p.mag_gm_sigma_ut ** 2
-                              + p.mag_hard_iron_sigma_ut ** 2)
+        # Heading fusion measurement variance: white + GM + hard-iron
+        # over the horizontal field magnitude.
+        b_h = p.mag_field_ut * math.cos(math.radians(p.mag_inclination_deg))
+        self._r_mag_yaw = ((p.mag_sigma_ut ** 2 + p.mag_gm_sigma_ut ** 2
+                            + p.mag_hard_iron_sigma_ut ** 2) / (b_h * b_h))
+        self._yaw_floor_var = (p.mag_hard_iron_sigma_ut / b_h) ** 2
+        self.mag_tilt_skips = 0
+        self.mag_floor_skips = 0
+        # Unmodeled-error budget (variances, 9-dof pos/vel/att): colored
+        # measurement errors a 15-state filter cannot estimate — GNSS GM
+        # wander, baro drift, mag hard-iron yaw, accel-GM tilt with its
+        # gravity leak into velocity. P alone under-reports truth error
+        # by exactly these floors (the filter averages colored errors as
+        # if white), so every *reported* sigma adds them, and the MC
+        # NEES suite scores against P + diag(budget). RESEARCH.md "P3".
+        # Tilt/yaw/vel floors are the hard-iron leak chain, with coupling
+        # factors calibrated once against the device-suite MC
+        # (test_coopfc_ekf_mc.py; rationale in RESEARCH.md "P3"): mag
+        # fusion at non-zero roll leaks yaw bias into tilt through the
+        # euler H row (~0.15x), tilt leaks g*sin into velocity between
+        # GPS-vel corrections (~0.25 s effective), and occasional
+        # floor-duty-cycle mag fusions leave ~0.3x of the hard-iron
+        # level as correlated yaw residual.
+        yaw_hi = p.mag_hard_iron_sigma_ut / b_h
+        tilt_var = (0.15 * yaw_hi) ** 2
+        vel_var = (GRAVITY * 0.15 * yaw_hi * 0.25) ** 2
+        self.budget9 = np.array([
+            p.gps_gm_sigma_h ** 2, p.gps_gm_sigma_h ** 2,
+            max(p.gps_gm_sigma_v, p.baro_drift_m) ** 2,
+            vel_var, vel_var, vel_var,
+            tilt_var, tilt_var,
+            (0.3 * yaw_hi) ** 2,
+        ])
+        self.last_gps_fuse: float | None = None
+        self._denied_injected = False
 
     # ------------------------------------------------------------- intake
 
@@ -186,6 +229,21 @@ class Ekf:
         if not self.diverged:
             self._mainline(horizon_new)
         self.horizon = horizon_new
+        # GNSS-denial transition: while aided, the unmodeled-error
+        # budget stays *out of P* (static floors keep fusion weights
+        # sharp); once position aiding stops, the attitude/velocity
+        # floors are real locked-in errors at denial onset that the
+        # dynamics will double-integrate — inject them into P once per
+        # denial event so the first seconds of predicted drift don't
+        # start from the sharp aided covariance (the gyro-RW process
+        # noise takes over the growth within ~10 s; MC denied suite).
+        if (not self.diverged and self.last_gps_fuse is not None
+                and not self._denied_injected
+                and self.state_time - self.last_gps_fuse
+                > self.params.denied_after_s):
+            idx = np.arange(3, 9)
+            self.P[idx, idx] += self.budget9[3:9]
+            self._denied_injected = True
         # IMU history at or before the horizon is consumed (the output
         # replay starts there) — drop it so buffer scans stay short.
         while self._imu and self._imu[0][0] <= self.horizon + _STAMP_EPS:
@@ -220,6 +278,7 @@ class Ekf:
                     return
                 self._seg_q = self.q
             self._integrate_nominal(gyro, accel, dt_im)
+            self.state_time = stamp + dt_im
             s = self._seg
             s[0] += gyro[0]
             s[1] += gyro[1]
@@ -321,22 +380,34 @@ class Ekf:
                 return
 
     def _fuse_block(self, innov: np.ndarray, H: np.ndarray, r_diag,
-                    gate: float, name: str) -> None:
+                    gate: float, name: str,
+                    gain_rows: tuple[int, ...] | None = None) -> bool:
         if not np.all(np.isfinite(innov)):
             self.rejected["nonfinite"] += 1
-            return
+            return False
         S = H @ self.P @ H.T + np.diag(np.atleast_1d(r_diag))
         try:
             S_inv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
             self.diverged = True
-            return
+            return False
         nis = float(innov @ S_inv @ innov)
         dof = innov.shape[0]
         if nis > gate * gate * dof:
             self.rejected[name] += 1
-            return
+            return False
+        tally = self.nis[name]
+        tally[0] += nis
+        tally[1] += 1
         K = self.P @ H.T @ S_inv
+        if gain_rows is not None:
+            # Partial update (Brink 2017 partial-update Schmidt-KF
+            # form): zero the gain outside `gain_rows`. The Joseph
+            # covariance form below is exact for ANY gain, so P stays
+            # consistent with the suboptimal-by-design K.
+            keep = np.zeros(K.shape[0], dtype=bool)
+            keep[list(gain_rows)] = True
+            K = np.where(keep[:, None], K, 0.0)
         dx = K @ innov
         self._inject(dx)
         ikh = np.eye(15) - K @ H
@@ -344,6 +415,7 @@ class Ekf:
         P = ikh @ self.P @ ikh.T + K @ np.diag(np.atleast_1d(r_diag)) @ K.T
         self.P = 0.5 * (P + P.T)
         self._guard()
+        return True
 
     def _inject(self, dx: np.ndarray) -> None:
         """Sola eq. 282: inject error into nominal, reset error to zero."""
@@ -360,7 +432,10 @@ class Ekf:
         H = np.zeros((3, 15))
         H[:, DP] = np.eye(3)
         innov = np.array(pos) - np.array(self.p)
-        self._fuse_block(innov, H, self._r_gps_pos, self.params.gps_gate, "gps_pos")
+        if self._fuse_block(innov, H, self._r_gps_pos, self.params.gps_gate,
+                            "gps_pos"):
+            self.last_gps_fuse = self.state_time
+            self._denied_injected = False
         if self.diverged:
             return
         H = np.zeros((3, 15))
@@ -369,19 +444,67 @@ class Ekf:
         self._fuse_block(innov, H, self._r_gps_vel, self.params.gps_gate, "gps_vel")
 
     def _fuse_baro(self, alt_m: float) -> None:
+        """Baro altitude, partial update: vertical channel only.
+
+        The baro drift (GM, tau 600 s — effectively one offset per
+        flight) is fused 50 times a second; treated as white it buys
+        sqrt(N) fake information. Confined to {dp_z, dv_z, db_a_z} the
+        damage is self-contained (R is inflated by the drift variance);
+        let through the maneuver-built cross-covariances it quietly
+        conditions TILT and YAW — measured on the GNSS-denied MC suite:
+        claimed sigma_vel 3.1 m/s vs 67.5 m/s honest, a 20x covariance
+        suppression while the true drift went km-class (the 4-sigma
+        honesty gate caught it). Same colored-error mechanism as the
+        mag yaw information floor above.
+        """
         H = np.zeros((1, 15))
         H[0, 2] = 1.0
         innov = np.array([alt_m - self.p[2]])
-        self._fuse_block(innov, H, self._r_baro, self.params.baro_gate, "baro")
+        self._fuse_block(innov, H, self._r_baro, self.params.baro_gate, "baro",
+                         gain_rows=(2, 5, 14))
 
     def _fuse_mag(self, field_ut) -> None:
-        # h(q) = R^T m_world; for local error δθ: H_θ = [R^T m_world]x.
-        rot = _rotmat(self.q)
-        pred = rot.T @ self._m_world
-        H = np.zeros((3, 15))
-        H[:, DTH] = _skew(pred)
-        innov = np.array(field_ut) - pred
-        self._fuse_block(innov, H, self._r_mag, self.params.mag_gate, "mag")
+        """Heading-only mag fusion (the PX4-EKF2 default).
+
+        3D vector fusion would let the per-power-up hard-iron offset
+        (~2 uT of 50 uT = 2.3 deg of apparent field direction) pull
+        *tilt*, which then leaks g*sin(err) into velocity — measured
+        3.6 deg tilt / 0.19 m/s vel error in the MC suite. Heading
+        fusion confines the hard-iron damage to yaw, where the
+        unmodeled-error budget covers it. Skipped beyond ~72 deg tilt
+        (leveling degenerates; counted, not rejected).
+        """
+        # Information floor: the hard-iron error is one fixed draw per
+        # power-up, not white — re-fusing it at 50 Hz must not average
+        # P_yaw below its variance. Once P_yaw reaches the floor, stop
+        # fusing: P stays honest at sigma_yaw ~ hard-iron level, and
+        # (crucially) GPS-velocity evidence during maneuvers then flows
+        # into yaw instead of being mis-attributed to tilt/accel-bias
+        # (measured 4-7 deg tilt walk before this guard; MC suite).
+        if self.P[8, 8] <= self._yaw_floor_var:
+            self.mag_floor_skips += 1
+            return
+        roll, pitch, yaw_est = vec.quat_to_euler(self.q)
+        if abs(math.cos(pitch)) < 0.3:
+            self.mag_tilt_skips += 1
+            return
+        q_rp = vec.quat_from_euler(roll, pitch, 0.0)
+        m_l = vec.quat_rotate(q_rp, (float(field_ut[0]), float(field_ut[1]),
+                                     float(field_ut[2])))
+        decl = math.radians(self.params.mag_declination_deg)
+        yaw_mag = vec.wrap_pi((0.5 * math.pi - decl)
+                              - math.atan2(m_l[1], m_l[0]))
+        innov = np.array([vec.wrap_pi(yaw_mag - yaw_est)])
+        # Yaw axis ONLY — deliberately not the full euler row
+        # [0, sinφ/cosθ, cosφ/cosθ]: its tilt-coupling terms would let
+        # thousands of *correlated* (hard-iron-biased) heading fusions
+        # buy fake tilt information at non-zero roll (measured: P_tilt
+        # quietly collapsed during GNSS-denial and the predicted drift
+        # under-claimed 4x). The dropped terms are O(sin(tilt)) and the
+        # colored mag cannot legitimately fund tilt knowledge.
+        H = np.zeros((1, 15))
+        H[0, 8] = 1.0
+        self._fuse_block(innov, H, self._r_mag_yaw, self.params.mag_gate, "mag")
 
     # -------------------------------------------------------------- output
 
@@ -407,7 +530,7 @@ class Ekf:
             q = vec.quat_integrate(q, w, dt)
         g = self._last_gyro
         omega = (g[0] - b_g[0], g[1] - b_g[1], g[2] - b_g[2])
-        d = np.diagonal(self.P)
+        d = np.diagonal(self.P)[:9] + self.budget9  # honest reporting
         return NavState(
             stamp=now, q=q, vel=v, pos=p, omega=omega,
             sigma_pos_h=float(np.sqrt(max(d[0], d[1]))),

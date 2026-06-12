@@ -1011,3 +1011,90 @@ Known model-validity limitations (P2, kept as-is by design):
 - **Baro reads the ISA column, not weather** (`hw/baro.py`): the legacy
   weather model carries no pressure field; if a synoptic pressure offset
   is added later it must enter the baro truth path explicitly.
+
+## P3 CoopFC flight stack - estimation sources and consistency rationale (added 2026-06-12)
+
+Per-equation traceability for `src/coopuavs/coopfc/estimation/` (same
+rule as P1/P2: one citation per implemented equation, module docstrings
+carry the same references; every equation is additionally pinned by a
+unit test, plus the NEES/NIS Monte-Carlo consistency suite
+`tests/test_coopfc_ekf_mc.py` (@slow) against the real P2 device
+models).
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| Error-state 15-state EKF: nominal kinematics, error-state transition F, error injection + reset | `estimation/ekf.py` (`_integrate_nominal`, `_predict_cov`, `_inject`) | J. Sola, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508 (2017), eq. 255-259 (nominal), eq. 270 (transition), eq. 282 (injection). |
+| Delayed fusion horizon + IMU ring buffer + output predictor (mainline runs `lag_s` behind now; every sensor, incl. 120 ms-late GNSS, fuses at exactly its stamp; control output = horizon state replayed through buffered IMU) | `ekf.py` (`update`, `_mainline`, `_output`) | PX4-EKF2 / ECL EKF architecture (delayed-time horizon with output complementary predictor), PX4 dev documentation. [standard reference, design pattern] |
+| Chi-square innovation gate: reject if NIS > gate^2 * dof; accepted/rejected tallies as CBIT spoof seam | `ekf.py _fuse_block` | Bar-Shalom, Li & Kirubarajan, *Estimation with Applications to Tracking and Navigation* (Wiley 2001), sec. 5.4 innovation tests; gate-in-sigmas convention per PX4 EKF2. [standard reference] |
+| Joseph-form covariance update (symmetric PSD under roundoff, exact for ANY gain) | `ekf.py _fuse_block` | Bucy & Joseph (1968), as presented in Brown & Hwang, *Introduction to Random Signals and Applied Kalman Filtering*, 4th ed., ch. 5. [standard reference] |
+| Partial (masked-gain) measurement update: baro confined to the vertical channel {dp_z, dv_z, db_a_z} | `ekf.py _fuse_baro` -> `_fuse_block(gain_rows=...)` | Brink, *Partial-Update Schmidt-Kalman Filter*, J. Guidance, Control & Dynamics 40(9), 2017 (zero-gain rows = beta=0 states); consider-state framework per Schmidt 1966. Joseph form keeps P consistent for the deliberately suboptimal gain. |
+| Heading-only magnetometer fusion: tilt-leveled field, yaw innovation, H = yaw axis only | `ekf.py _fuse_mag` | PX4 EKF2 mag heading fusion (the default mag mode); leveled-field yaw per Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. (2013), ch. 6. [standard reference] |
+| Static coarse alignment: leveling from mean specific force, gyro bias from mean rate, yaw from leveled mag + declination, motion variance gate | `estimation/alignment.py` | Groves 2013, ch. 5 (coarse alignment / leveling). [standard reference] |
+| NEES/NIS Monte-Carlo filter consistency methodology | `tests/test_coopfc_ekf_mc.py` | Bar-Shalom, Li & Kirubarajan 2001, ch. 5 (consistency of state estimators; NEES/NIS bounds). [standard reference] |
+| Yaw information floor; unmodeled-error budget added to every reported sigma | `ekf.py` (`_fuse_mag` floor, `budget9`) | No external source: ours (static consider-covariance in spirit, Schmidt 1966); rationale below, calibrated against the MC suite. |
+
+### Colored measurement errors and covariance honesty (the P3 EKF contract)
+
+The P2 device suite is deliberately *colored*: GNSS carries GM wander
+(sigma 1.2/2.4 m, tau 60 s), the baro a GM drift (~1.25 m, tau 600 s -
+effectively one offset per flight), the mag a per-power-up hard iron
+(~2 uT = ~5 deg of yaw at 63 deg dip), the IMU GM bias instability
+(gyro 4e-5 rad/s = ~8 deg/h class, tau 100 s). A 15-state filter models
+white noise + bias random walks only; it provably cannot estimate these
+processes. Three mechanisms keep the filter *honest* about that, all
+validated by the MC suite:
+
+1. **R inflation** (variance of the colored process added to the
+   measurement noise) keeps single-fusion weights right - but N
+   repeated fusions of one frozen error still average it down sqrt(N)
+   as if white. Hence:
+2. **Structural fusion limits** where repetition is the hazard: the mag
+   *yaw information floor* (stop fusing once P_yaw reaches the
+   hard-iron variance - re-measuring one fixed draw at 50 Hz buys
+   nothing) and the baro *partial update* (gain masked to the vertical
+   channel; through maneuver-built cross-covariances 15000 baro
+   fusions per flight otherwise quietly condition tilt and yaw:
+   measured 20x claimed-sigma_vel suppression on the GNSS-denied
+   suite, caught by the 4-sigma honesty gate).
+3. **The unmodeled-error budget** `budget9` (9-dof variances): the
+   residual floors the filter still cannot represent - GNSS GM wander
+   on position, baro drift on height, hard-iron on yaw, and the
+   hard-iron leak chain into tilt/velocity (coupling factors 0.15x,
+   0.25 s, 0.3x calibrated ONCE against the MC suite). Every
+   *reported* sigma is sqrt(diag P + budget9); the NEES suite scores
+   against P + diag(budget9); on the GNSS-denial transition the
+   attitude/velocity floors are injected into P once (they become real
+   initial errors that the dynamics double-integrate).
+
+### GNSS-denied 5-minute drift envelope (PHY-UAV-011, partial)
+
+SRS PHY-UAV-011 makes 5-minute GNSS-denied navigation *engagement-grade*
+only via a VIO/datalink fallback that is real-system scope (out of this
+simulation; docs/TRACEABILITY.md marks the requirement partial). What
+the sim therefore validates is (a) the honest free-inertial drift of
+the modeled suite — baro holds height, mag holds yaw, nothing holds
+horizontal — and (b) *covariance honesty over the whole denial*: the
+filter's own 4-sigma claim must contain the true drift at every scored
+seed, because that claim is what the P5 CBIT dead-reckoning budget (and
+the real system's fallback trigger) acts on.
+
+First-principles horizontal scale over t = 300 s of denial, for the P2
+IMU (gyro RW K = 1e-5 rad/s/sqrt(s), GM bias instability
+sigma = 4e-5 rad/s ~ 8 deg/h, tau 100 s): the gravity leak of the
+random-walking tilt-rate bias integrates to
+`sigma_pos = g K sqrt(t^7/252) ~ 2.9 km`, and the GM bias treated as a
+coherent ramp adds `g sigma_gm t^3/6 ~ 1.8 km` — ~3.4 km RSS scale.
+Measured (MC suite, seeds 0-4, 2026-06-12): worst 5472 m, spread
+1.3-5.5 km, all inside the filter's 4-sigma claim; regression gate
+7000 m (+28% over worst). The filter over-claims late-denial sigma by
+2-8x because it models the bounded GM bias instability as an unbounded
+random walk — the conservative side of honesty, accepted.
+
+The baro partial update above is what makes this honest: before it,
+15000 full-gain baro fusions during denial suppressed the claimed
+sigma_vel 20x below the no-baro covariance (3.1 vs 67.5 m/s at +270 s)
+while true drift stayed km-class — the 4-sigma gate failed at 4.2 sigma
+and the A/B diagnostic (baro on/off during denial) isolated the
+channel. The masked gain trades the small *real* tilt information in
+baro z-residuals (order f_horizontal/g) for killing the large fake
+component; true drift rises (pure DR), the claim becomes truthful.
