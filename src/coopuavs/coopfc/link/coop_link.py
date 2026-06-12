@@ -55,6 +55,28 @@ MSG = {
 }
 _BY_NAME = {name: (mid, fmt) for mid, (name, fmt, _) in MSG.items()}
 
+# Largest payload any registry message can legally carry. The decoder
+# rejects length fields above this immediately instead of buffering up
+# to 65 kB that will never form a frame — a corrupted length byte must
+# cost one resync, not seconds of stalled heartbeats behind it.
+MAX_PAYLOAD = max(struct.calcsize(fmt) for _, fmt, _ in MSG.values())
+
+# Wire codes for the u8 enum fields above (STATUS state/mode/failsafe/
+# batt, SET_MODE mode). The FCU API is string-typed; BOTH link endpoints
+# (MC-side encode/decode and the FCU adapter, P4) must use these tables
+# — a u8 disagreement is a silent wrong-mode command, so the registry
+# pins the mapping here. Cross-checked against the fcu/battery_monitor
+# vocabularies by test_coopfc_link.py.
+STATE_CODES = {"BOOT": 0, "STANDBY": 1, "ARMED": 2}
+MODE_CODES = {"": 0, "OFFBOARD": 1, "POS_HOLD": 2, "RTL": 3, "LAND": 4}
+FAILSAFE_CODES = {"": 0, "BATT_CRIT": 1, "LINK_LOSS": 2, "BATT_LOW": 3,
+                  "OFFBOARD_TIMEOUT": 4}
+BATT_CODES = {"NORMAL": 0, "LOW": 1, "CRITICAL": 2}
+STATE_NAMES = {v: k for k, v in STATE_CODES.items()}
+MODE_NAMES = {v: k for k, v in MODE_CODES.items()}
+FAILSAFE_NAMES = {v: k for k, v in FAILSAFE_CODES.items()}
+BATT_NAMES = {v: k for k, v in BATT_CODES.items()}
+
 
 def encode_msg(name: str, *values) -> bytes:
     mid, fmt = _BY_NAME[name]
@@ -95,6 +117,14 @@ class FrameDecoder:
             if len(self._buf) < _HDR + 1:
                 return out
             (length,) = struct.unpack_from("<H", self._buf, 2)
+            if length > MAX_PAYLOAD:
+                # The length field is read before the CRC can vouch for
+                # it: a value no registry message can produce is frame
+                # corruption, rejected now (waiting for `length` bytes
+                # would stall every frame queued behind the bad one).
+                self.bad_frames += 1
+                del self._buf[:2]      # resync past this SYNC pair
+                continue
             total = _HDR + 1 + length + _CRC
             if len(self._buf) < total:
                 return out

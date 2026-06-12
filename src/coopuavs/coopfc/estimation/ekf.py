@@ -7,6 +7,10 @@ to the horizon and is simply buffered until the horizon passes its
 timestamp (stamp order, structural OOSM; the 0.5 s IMU ring buffer
 bounds the history). The control-facing state at *now* is the horizon
 state replayed through the buffered IMU samples (output predictor).
+The "from the future" premise is host scheduling's to keep: ``lag_s``
+must cover device latency PLUS any driver poll quantization — a stamp
+already behind the horizon at intake is counted in ``late_meas`` (CBIT
+seam) and fused late.
 
 Error state (see estimation/__init__): [δp δv δθ δb_g δb_a], local/right
 attitude error. Equations: Sola 2017 "Quaternion kinematics for the
@@ -153,6 +157,12 @@ class Ekf:
         self._last_gyro = (0.0, 0.0, 0.0)
         self.rejected = {"gps_pos": 0, "gps_vel": 0, "baro": 0, "mag": 0,
                          "nonfinite": 0}
+        # Measurements that arrived with a stamp already at/behind the
+        # fusion horizon: they can only be fused late, against a state
+        # later than their own time (CBIT seam — the host's driver
+        # scheduling must keep these at zero; still buffered, since a
+        # slightly-stale fusion beats dropping the information).
+        self.late_meas = {"gps": 0, "baro": 0, "mag": 0}
         # Accepted-fusion NIS tallies (per sensor: [sum, count]) — the
         # NIS half of the MC consistency suite reads these.
         self.nis = {"gps_pos": [0.0, 0], "gps_vel": [0.0, 0],
@@ -228,13 +238,27 @@ class Ekf:
 
     def on_gps(self, fix_stamp: float, pos: vec.Vec3, vel: vec.Vec3,
                fix_type: int) -> None:
+        if self.diverged:      # mainline (the only drain) never runs again
+            return
         if fix_type >= 3:
+            # late = strictly behind the horizon (a stamp AT the horizon
+            # still fuses against the state of its own instant)
+            if fix_stamp < self.horizon - _STAMP_EPS:
+                self.late_meas["gps"] += 1
             self._gps.append((fix_stamp, pos, vel))
 
     def on_baro(self, stamp: float, alt_m: float) -> None:
+        if self.diverged:
+            return
+        if stamp < self.horizon - _STAMP_EPS:
+            self.late_meas["baro"] += 1
         self._baro.append((stamp, alt_m))
 
     def on_mag(self, stamp: float, field_ut: vec.Vec3) -> None:
+        if self.diverged:
+            return
+        if stamp < self.horizon - _STAMP_EPS:
+            self.late_meas["mag"] += 1
         self._mag.append((stamp, field_ut))
 
     # ------------------------------------------------------------ mainline

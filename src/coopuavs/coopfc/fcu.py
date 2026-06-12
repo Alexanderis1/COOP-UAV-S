@@ -26,8 +26,11 @@ Rate-loop feedback is the latest gyro sample minus the EKF gyro bias
 
 Touchdown (bench placeholder, documented): LAND descends at
 ``fcu.land_speed`` and the FCU latches touchdown when the estimated
-altitude reaches the arming datum + ``fcu.touchdown_alt`` — physical
+altitude reaches the touchdown datum + ``fcu.touchdown_alt`` — physical
 ground contact/land-detector logic arrives with the P4 world wiring.
+The datum is home z, frozen at LAND entry; ``cmd_set_home`` refuses a
+home at/above the vehicle while armed (either hole would latch
+touchdown mid-air and cut the motors).
 """
 
 from __future__ import annotations
@@ -97,15 +100,29 @@ class FcuStatus(NamedTuple):
 
 class Fcu:
     def __init__(self, hal, overlay: dict | None = None,
-                 ekf_params: EkfParams = EkfParams()):
+                 ekf_params: EkfParams | None = None):
         self.params = ParamTable(FCU_DEFAULTS, overlay)
         p = self.params.get
         self.topics = TopicStore()
         self.sched = Scheduler(TICK_HZ)
+        if ekf_params is None:
+            # One knob: the param-table declination feeds BOTH the
+            # aligner and the EKF mag fusion (split defaults would be a
+            # persistent heading bias). An explicit ekf_params wins.
+            ekf_params = EkfParams()._replace(
+                mag_declination_deg=p("fcu.mag_declination_deg"))
         self._ekf_params = ekf_params
 
         self.imu_drv = ImuDriver(hal.port("imu"), self.topics)
-        self.gps_drv = GpsDriver(hal.port("gps"), self.topics)
+        # GPS polled at 50 Hz, NOT the 10 Hz fix rate: the EKF lag_s
+        # horizon covers the device latency (120 ms) but not a 100 ms
+        # poll quantization on top — a 10 Hz poll off-phase from fix
+        # delivery hands the EKF fixes already behind the horizon
+        # (fused stale; the ekf.late_meas seam counts it, pinned at
+        # zero by test_coopfc_bench). stale_after 15 keeps the
+        # staleness window at 300 ms of poll ticks.
+        self.gps_drv = GpsDriver(hal.port("gps"), self.topics,
+                                 stale_after=15)
         self.baro_drv = BaroDriver(hal.port("baro"), self.topics)
         self.mag_drv = MagDriver(hal.port("mag"), self.topics)
         self.esc_drv = EscDriver(hal.port("esc"), self.topics)
@@ -143,6 +160,7 @@ class Fcu:
         self._aligner = self._new_aligner()
         self.nav = None              # latest NavState
         self.home: vec.Vec3 | None = None
+        self._land_datum: float | None = None   # frozen at LAND entry
         self._hold_pos: vec.Vec3 | None = None
         self._rtl_target: vec.Vec3 | None = None
         self._sp_vel: vec.Vec3 = (0.0, 0.0, 0.0)
@@ -157,7 +175,7 @@ class Fcu:
 
         s = self.sched
         s.add("imu_drv", 400, self.imu_drv.tick)
-        s.add("gps_drv", 10, self.gps_drv.tick)
+        s.add("gps_drv", 50, self.gps_drv.tick)
         s.add("baro_drv", 50, self.baro_drv.tick)
         s.add("mag_drv", 50, self.mag_drv.tick)
         s.add("esc_drv", 10, self.esc_drv.tick)
@@ -192,6 +210,15 @@ class Fcu:
         self.touchdown = False
         self.vel_ctl.reset()
         self.rate_ctl.reset()
+        # The previous flight's terminal setpoints must not drive the
+        # 400 Hz rate loop before the first nav tick refreshes them.
+        self._q_sp = (1.0, 0.0, 0.0, 0.0)
+        self._thrust = 0.0
+        self._sat = (0, 0, 0)
+        # Heartbeat clock armed from arm time: a link that never
+        # delivered a heartbeat still gets the LINK_LOSS failsafe.
+        if self._last_hb is None:
+            self._last_hb = self.sched.now
         return True, ""
 
     def cmd_disarm(self) -> None:
@@ -224,10 +251,18 @@ class Fcu:
         self._sp_yaw = yaw_sp
         self._sp_stamp = self.sched.now
 
-    def cmd_set_home(self, pos: vec.Vec3) -> None:
+    def cmd_set_home(self, pos: vec.Vec3) -> tuple[bool, str]:
         """Override the RTL home (GCS / launch-site handoff convention;
-        default home is the arming position)."""
+        default home is the arming position). While armed, a home at or
+        above the vehicle is refused: home z is the touchdown datum
+        (bench placeholder, module docstring) and accepting it would
+        latch touchdown mid-air on LAND entry and cut the motors."""
+        if (self.state == ARMED and self.nav is not None
+                and pos[2] > self.nav.pos[2]
+                - self.params.get("fcu.touchdown_alt")):
+            return False, "home z at/above vehicle: touchdown datum refused"
         self.home = pos
+        return True, ""
 
     def on_heartbeat(self) -> None:
         self._last_hb = self.sched.now
@@ -253,7 +288,19 @@ class Fcu:
                 if res is not None:
                     if res.ok:
                         self.align_result = res
-                        self.ekf = Ekf(res, self._ekf_params)
+                        # Seed the nominal position from the latest fix:
+                        # starting at the world origin under the wide
+                        # alignment prior leaves any spawn beyond ~870 m
+                        # permanently chi-square-gated out of GPS fusion
+                        # (PBIT NO_GPS_FUSION, can never arm). The read
+                        # consumes the topic flag, so this fix is the
+                        # prior, not also a measurement.
+                        g = self._sub_gps.read()
+                        if g is not None and g.fix_type >= 3:
+                            self.ekf = Ekf(res, self._ekf_params,
+                                           pos0=g.pos, vel0=g.vel)
+                        else:
+                            self.ekf = Ekf(res, self._ekf_params)
                         self.state = STANDBY
                     else:           # moved/vibrating: retry from scratch
                         self._aligner = self._new_aligner()
@@ -316,6 +363,9 @@ class Fcu:
 
     def _enter_land(self) -> None:
         self._hold_pos = self.nav.pos
+        # Touchdown datum frozen at LAND entry: a later cmd_set_home
+        # must not move it out from under the descent (mid-air disarm).
+        self._land_datum = self.home[2]
 
     def _failsafes(self, now: float) -> None:
         p = self.params.get
@@ -371,7 +421,7 @@ class Fcu:
             hp = self._hold_pos
             v_h = self.pos_ctl.update((hp[0], hp[1], nav.pos[2]), nav.pos)
             v_sp = (v_h[0], v_h[1], -p("fcu.land_speed"))
-            if nav.pos[2] <= self.home[2] + p("fcu.touchdown_alt"):
+            if nav.pos[2] <= self._land_datum + p("fcu.touchdown_alt"):
                 self.touchdown = True
                 self.cmd_disarm()
                 return

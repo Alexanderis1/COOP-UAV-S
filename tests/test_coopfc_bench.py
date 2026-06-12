@@ -133,6 +133,22 @@ def test_waypoint_square_cross_track():
     assert not b.fcu.failsafe, b.fcu.failsafe
 
 
+def test_no_late_measurements_through_real_device_timing():
+    # P3 review F1: GPS device latency (120 ms) plus the driver poll
+    # quantization must stay inside the EKF lag_s horizon — every
+    # measurement fuses at its own stamp. A 10 Hz GPS poll off-phase
+    # from the 120 ms fix delivery used to hand the EKF every fix
+    # 200 ms old (60 ms behind the horizon): a silent, systematic
+    # along-track bias at speed. ekf.late_meas is the CBIT seam.
+    b = Bench(seed=1)
+    b.boot_and_arm()
+    b.run(3.0)
+    ekf = b.fcu.ekf
+    assert ekf.late_meas == {"gps": 0, "baro": 0, "mag": 0}
+    assert ekf.last_gps_fuse is not None
+    assert ekf.nis["gps_pos"][1] > 0        # fixes actually fused
+
+
 # ----------------------------------------------------------- determinism
 
 

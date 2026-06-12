@@ -180,6 +180,25 @@ def test_esc_driver_rpm_to_rad_s_round_trip():
     assert msg.i_bus == 95.0
 
 
+def test_esc_driver_rejects_garbage_without_publishing():
+    # P3 review F9: a wedged ESC streaming NaN volts must be rejected at
+    # the driver (the baro contract) — NaN v_cell would otherwise sustain
+    # the battery debounce (NaN >= x is False) into a latched CRITICAL
+    # and a forced LAND on a healthy pack.
+    hal, topics = HalIO(), TopicStore()
+    drv = EscDriver(hal.port("esc"), topics)
+    sub = topics.subscribe("esc_status")
+    for bad in (((math.nan,) * 4, 44.4, 95.0),
+                ((800.0,) * 4, math.nan, 95.0),
+                ((800.0,) * 4, math.inf, 95.0),
+                ((800.0,) * 4, 0.0, 95.0),
+                ((800.0,) * 4, 44.4, math.nan)):
+        hal.port("esc").write(bad)
+        drv.tick(0.1)
+    assert sub.updated is False  # nothing published
+    assert drv.bad_frames == 5
+
+
 # ------------------------------------------------------- scheduler integration
 
 

@@ -203,3 +203,41 @@ def test_diverged_latches_and_freezes_mainline():
     assert ekf.diverged
     s = sim.run(1.0, t0=1.0)
     assert s.diverged  # flag visible to the FCU failsafe seam
+
+
+def test_diverged_stops_buffering_measurements():
+    # P3 review F8: once diverged the mainline (the only drain) never
+    # runs again, so intake must stop appending — otherwise the gps/
+    # baro/mag deques grow unboundedly for the rest of the run.
+    ekf = Ekf(perfect_align())
+    sim = TruthSim(ekf)
+    sim.run(1.0)
+    ekf.P[0, 0] = math.nan
+    ekf._guard()
+    assert ekf.diverged
+    lens = (len(ekf._gps), len(ekf._baro), len(ekf._mag))
+    for i in range(100):
+        t = 1.0 + i * 0.02
+        ekf.on_gps(t, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 3)
+        ekf.on_baro(t, 0.0)
+        ekf.on_mag(t, (0.0, 50.0, 0.0))
+    assert (len(ekf._gps), len(ekf._baro), len(ekf._mag)) == lens
+
+
+def test_late_measurement_is_counted_not_silent():
+    # P3 review F1: a stamp at/behind the fusion horizon can no longer
+    # be fused at its own time — it is still used (better than dropped)
+    # but the contract violation is counted (CBIT seam). The FCU driver
+    # scheduling must keep this at zero against the real device timing
+    # (pinned in test_coopfc_bench.py).
+    ekf = Ekf(perfect_align())
+    sim = TruthSim(ekf)
+    sim.run(1.0)
+    late = ekf.horizon - 0.01
+    ekf.on_gps(late, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 3)
+    ekf.on_baro(late, 0.0)
+    ekf.on_mag(late, (0.0, 50.0, 0.0))
+    assert ekf.late_meas == {"gps": 1, "baro": 1, "mag": 1}
+    # on-time stamps stay uncounted
+    ekf.on_baro(ekf.horizon + 0.02, 0.0)
+    assert ekf.late_meas["baro"] == 1

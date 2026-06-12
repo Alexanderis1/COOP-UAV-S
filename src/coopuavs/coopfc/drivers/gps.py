@@ -1,13 +1,16 @@
-"""GNSS driver (10 Hz task).
+"""GNSS driver.
 
 HAL frame (normative): ``((px, py, pz), (vx, vy, vz), fix_type,
 fix_stamp_s)`` — world ENU metres / m/s, u-blox fix type, and the
 *measurement* timestamp (delivery minus the modeled 120 ms latency).
 Publishes ``gps_fix``; the EKF's OOSM path keys on ``fix_stamp``.
 
-Default stale_after = 3: with a latency longer than one fix period the
-first fix legitimately lands two driver ticks after boot, so 2 would
-false-alarm during startup.
+Poll faster than the 10 Hz fix rate: the EKF ``lag_s`` horizon covers
+the device latency but not poll quantization on top, so the FCU runs
+this driver at 50 Hz (a fix must reach the EKF before the horizon
+passes its stamp). ``stale_after`` is in poll ticks — the default 3
+suits a 10 Hz poll (first fix lands two ticks after boot at 120 ms
+latency); the FCU passes 15 to keep the same 300 ms window at 50 Hz.
 """
 
 from __future__ import annotations

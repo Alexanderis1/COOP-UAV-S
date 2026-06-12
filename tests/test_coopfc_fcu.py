@@ -205,6 +205,96 @@ def test_critical_battery_beats_link_loss():
     assert h.fcu.batt.state == "CRITICAL"
 
 
+def test_link_loss_failsafe_armed_even_without_any_heartbeat():
+    # P3 review F5: arming seeds the heartbeat clock — a link that never
+    # delivered a single heartbeat must still trigger LINK_LOSS -> RTL
+    # (the `_last_hb is None` guard used to disable the failsafe
+    # structurally for the whole flight).
+    h = SynthHost()
+    h.run(2.6)                              # boot with NO heartbeats
+    ok, why = h.fcu.cmd_arm()
+    assert ok, why
+    h.fcu.cmd_set_home((500.0, 0.0, 0.0))   # keep RTL observable
+    h.run(2.1)
+    assert h.fcu.failsafe == "LINK_LOSS"
+    assert h.fcu.mode == RTL
+
+
+def test_rearm_resets_attitude_setpoint_state():
+    # P3 review F7: the previous flight's terminal _q_sp/_thrust/_sat
+    # must not drive the 400 Hz rate loop between re-arm and the first
+    # 50 Hz nav tick (up to 15 ticks of stale descent commands).
+    h = SynthHost()
+    h.boot_and_arm()
+    h.run(0.2, hb_every=0.1)
+    h.fcu._q_sp = vec.quat_from_euler(0.5, -0.4, 1.0)  # descent-end state
+    h.fcu._thrust = 0.9
+    h.fcu._sat = (1, -1, 0)
+    h.fcu.cmd_disarm()
+    ok, why = h.fcu.cmd_arm()
+    assert ok, why
+    assert h.fcu._q_sp == (1.0, 0.0, 0.0, 0.0)
+    assert h.fcu._thrust == 0.0
+    assert h.fcu._sat == (0, 0, 0)
+
+
+def test_set_home_at_or_above_current_altitude_refused_while_armed():
+    # P3 review F2: home z is the touchdown datum (bench placeholder) —
+    # accepting a home at/above the vehicle would latch touchdown
+    # mid-air on LAND entry and cut the motors.
+    h = SynthHost()
+    h.boot_and_arm()                        # helper parks home at z=0
+    ok, why = h.fcu.cmd_set_home((100.0, 0.0, 50.0))  # at current alt
+    assert not ok and "datum" in why
+    ok, _ = h.fcu.cmd_set_home((100.0, 0.0, 10.0))
+    assert ok
+    assert h.fcu.home == (100.0, 0.0, 10.0)
+
+
+def test_land_datum_frozen_at_land_entry():
+    # P3 review F2: moving home during the descent must not move the
+    # touchdown datum out from under the LAND controller.
+    h = SynthHost()
+    h.boot_and_arm()                        # home at z=0
+    ok, why = h.fcu.cmd_set_mode(LAND)
+    assert ok, why
+    ok, _ = h.fcu.cmd_set_home((500.0, 0.0, 30.0))    # mid-descent
+    assert ok
+    h.run(0.2, hb_every=0.1)
+    assert h.fcu._land_datum == 0.0         # pinned at LAND entry
+    assert h.fcu.state == ARMED and not h.fcu.touchdown
+
+
+def test_ekf_seeded_from_first_fix_far_from_origin():
+    # P3 review F3: the EKF pos prior used to start at the world origin
+    # (sigma 100 m) — a vehicle spawned beyond ~870 m had every GPS
+    # fusion chi-square-gated out and could never pass PBIT. The first
+    # fix now seeds the nominal position.
+    h = SynthHost(pos=(4000.0, -2500.0, 30.0))
+    h.run(2.6, hb_every=0.1)
+    assert h.fcu.pbit_ok, h.fcu.pbit_reasons
+    ok, why = h.fcu.cmd_arm()
+    assert ok, why
+    nav = h.fcu.nav
+    assert max(abs(nav.pos[0] - 4000.0), abs(nav.pos[1] + 2500.0),
+               abs(nav.pos[2] - 30.0)) < 0.5
+
+
+def test_overlay_mag_declination_reaches_both_aligner_and_ekf():
+    # P3 review F6: ONE knob — the param table — must feed alignment AND
+    # the in-flight EKF mag fusion (split defaults = a persistent
+    # heading bias the suite cannot see).
+    from coopuavs.coopfc.estimation.ekf import EkfParams
+
+    f = Fcu(HalIO(), overlay={"fcu.mag_declination_deg": 12.0})
+    assert f._ekf_params.mag_declination_deg == 12.0
+    assert f._aligner.decl == math.radians(12.0)
+    # an explicit ekf_params still wins (documented precedence)
+    f2 = Fcu(HalIO(), overlay={"fcu.mag_declination_deg": 12.0},
+             ekf_params=EkfParams(mag_declination_deg=7.0))
+    assert f2._ekf_params.mag_declination_deg == 7.0
+
+
 def test_disarmed_actuators_are_zero():
     h = SynthHost()
     h.run(2.6)

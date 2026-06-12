@@ -11,7 +11,9 @@ from __future__ import annotations
 import struct
 
 from coopuavs.coopfc.link import (
-    Channel, FrameDecoder, MSG, decode_msg, encode_frame, encode_msg,
+    BATT_CODES, BATT_NAMES, Channel, FAILSAFE_CODES, FAILSAFE_NAMES,
+    FrameDecoder, MAX_PAYLOAD, MODE_CODES, MODE_NAMES, MSG, STATE_CODES,
+    STATE_NAMES, decode_msg, encode_frame, encode_msg,
 )
 
 
@@ -130,6 +132,66 @@ def test_heartbeat_message_carries_stamp_and_source():
     name, fields = decode_msg(mid, payload)
     assert name == "HEARTBEAT"
     assert fields["stamp"] == 12.34 and fields["source"] == 2
+
+
+def test_corrupted_length_field_does_not_stall_the_stream():
+    # P3 review F4: the len u16 is read before the CRC; a bit flip in it
+    # must not make the decoder wait for ~65 kB that never arrive (which
+    # would starve heartbeats behind it into a spurious LINK_LOSS).
+    # Lengths above the registry maximum are rejected immediately.
+    bad = bytearray(encode_msg("HEARTBEAT", 1.0, 1))
+    bad[3] ^= 0xFF                          # length HIGH byte: 9 -> 0xFF09
+    good = encode_msg("ARM", 2.0)
+    dec = FrameDecoder()
+    got = dec.feed(bytes(bad) + good)
+    assert [g[0] for g in got] == [1]       # ARM decodes in the same feed
+    assert dec.bad_frames >= 1
+    name, payload = decode_msg(*got[0])
+    assert name == "ARM" and payload["stamp"] == 2.0
+
+
+def test_max_payload_is_the_registry_maximum():
+    import struct as _struct
+    assert MAX_PAYLOAD == max(
+        _struct.calcsize(fmt) for _, fmt, _ in MSG.values())
+    # a frame at exactly MAX_PAYLOAD still decodes (NAV is the largest)
+    values = (1.0,) + (0.5,) * 10
+    ((mid, payload),) = FrameDecoder().feed(encode_msg("NAV", *values))
+    assert decode_msg(mid, payload)[0] == "NAV"
+
+
+def test_enum_tables_cover_fcu_vocabulary_and_round_trip():
+    # P3 review F10: STATUS/SET_MODE declare u8 enum fields but the FCU
+    # API is string-typed — the registry pins the wire mapping so both
+    # P4 endpoints share one table (a u8 disagreement would be a silent
+    # wrong-mode command).
+    from coopuavs.coopfc import battery_monitor as bm
+    from coopuavs.coopfc import fcu
+
+    assert set(STATE_CODES) == {fcu.BOOT, fcu.STANDBY, fcu.ARMED}
+    assert set(MODE_CODES) == {"", fcu.OFFBOARD, fcu.POS_HOLD, fcu.RTL,
+                               fcu.LAND}
+    assert set(FAILSAFE_CODES) == {"", "BATT_CRIT", "LINK_LOSS", "BATT_LOW",
+                                   "OFFBOARD_TIMEOUT"}
+    assert set(BATT_CODES) == {bm.NORMAL, bm.LOW, bm.CRITICAL}
+    for codes, names in ((STATE_CODES, STATE_NAMES),
+                         (MODE_CODES, MODE_NAMES),
+                         (FAILSAFE_CODES, FAILSAFE_NAMES),
+                         (BATT_CODES, BATT_NAMES)):
+        assert all(0 <= v <= 255 for v in codes.values())
+        assert {v: k for k, v in codes.items()} == names
+
+    # a real FCU STATUS encodes -> decodes back to the same strings
+    frame = encode_msg("STATUS", 1.5, STATE_CODES[fcu.ARMED],
+                       MODE_CODES[fcu.RTL], FAILSAFE_CODES["LINK_LOSS"],
+                       BATT_CODES[bm.LOW], 0.8)
+    ((mid, payload),) = FrameDecoder().feed(frame)
+    name, f = decode_msg(mid, payload)
+    assert name == "STATUS"
+    assert STATE_NAMES[f["state"]] == fcu.ARMED
+    assert MODE_NAMES[f["mode"]] == fcu.RTL
+    assert FAILSAFE_NAMES[f["failsafe"]] == "LINK_LOSS"
+    assert BATT_NAMES[f["batt"]] == bm.LOW
 
 
 def test_bad_msg_id_and_length_guard():

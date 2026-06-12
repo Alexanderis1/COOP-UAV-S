@@ -387,6 +387,25 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
 - GATE: bench ✓ + NEES ✓ + oracle ✓ (RotorPy + ArduPilot) + determinism ✓; perf per the
   2026-06-12 user re-scope: 1-vehicle RTF ≥3× (meas. 3.6–3.7×), 20-instance projection ≥1×
   (meas. 1.24–1.38×). STOPPED for user gate review per cadence.
+- [x] P3-R gate-review fixes (2026-06-12, 7-angle/20-verifier review of PR #10; 10 confirmed,
+      all fixed TDD-first, 13 new tests): **F1** GPS driver poll 50 Hz (was 10 — off-phase
+      from the 120 ms fix delivery, every bench fix reached the EKF 200 ms old, 60 ms past
+      lag_s, silently fused ~42 ms stale; new `ekf.late_meas` CBIT seam counts behind-horizon
+      stamps, pinned ==0 through real device timing; gps stale_after 15 keeps the 300 ms
+      window); **F2** touchdown datum frozen at LAND entry + armed `cmd_set_home` refuses
+      home z at/above vehicle (TOCTOU → mid-air disarm); **F3** EKF pos0/vel0 seeded from the
+      latest fix (origin prior chi-gated out any spawn >~870 m: PBIT NO_GPS_FUSION forever);
+      **F4** link decoder rejects length fields > registry MAX_PAYLOAD (corrupt len byte
+      stalled decode ~9 s → spurious LINK_LOSS RTL); **F5** arming seeds `_last_hb` (no-
+      heartbeat-ever flight had LINK_LOSS structurally disabled); **F6** param-table mag
+      declination threaded into EkfParams (split defaults = persistent yaw bias under
+      overlay); **F7** cmd_arm resets `_q_sp/_thrust/_sat` (re-arm ran up to 15 ticks on the
+      previous flight's terminal setpoints); **F8** EKF intake early-returns when diverged
+      (unbounded gps/baro/mag deque growth post-divergence); **F9** esc driver rejects
+      non-finite/non-positive frames like baro (NaN v_bus sustains the battery debounce —
+      NaN >= x is False — into latched CRITICAL → forced LAND); **F10** wire enum tables
+      (STATE/MODE/FAILSAFE/BATT codes) pinned in the link registry, cross-checked against the
+      fcu vocabulary. Full fast suite 550 + ruff + @slow/@perf/@oracle re-run green.
 
 ### P4 — Fleet integration (XL — riskiest; staged strangler)
 - [ ] P4-1 `sil/vehicle.py` FriendlyVehicle protocol-conformance test (pins full duck-type contract)
