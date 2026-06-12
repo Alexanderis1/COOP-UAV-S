@@ -6,7 +6,7 @@ requiring at least one kill, and that the safety layer keeps wrecks out of
 the CRITICAL zone.
 """
 
-import numpy as np
+import copy
 
 from coopuavs.sim import scenario as scenario_mod
 
@@ -66,3 +66,21 @@ def test_deterministic_given_seed():
     s1 = scenario_mod.build(SMALL_SCENARIO).run()
     s2 = scenario_mod.build(SMALL_SCENARIO).run()
     assert s1 == s2
+
+
+def test_raid_load_factor_airframe():
+    """The same raid on the 3-DOF load-factor airframe with terminal PN:
+    the kill chain and the safety invariant must hold, the run must stay
+    deterministic, and it must complete in the same number of world steps
+    (the fidelity bump is not allowed to cost Monte-Carlo throughput)."""
+    cfg = copy.deepcopy(SMALL_SCENARIO)
+    for u in cfg["interceptors"]:
+        u["airframe"] = "load_factor"
+        u["n_max"] = 4.0
+    sc = scenario_mod.build(cfg)
+    summary = sc.run()
+
+    assert summary["kills"] >= 1
+    assert summary["wrecks_by_zone"].get("CRITICAL", 0) == 0
+    assert scenario_mod.build(cfg).run() == summary
+    assert sc.world.dt == SMALL_SCENARIO["dt"]   # same tick, same cost

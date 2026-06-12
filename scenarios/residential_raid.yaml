@@ -98,16 +98,28 @@ sensors:
   - { type: acoustic, name: ac-nw, position: [-3500.0,  3000.0, 5.0] }
 
 interceptors:
-  # fast gun interceptors
-  - { id: hawk-1, home: [-500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-2, home: [-300.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-3, home: [ 300.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-4, home: [ 500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-5, home: [-2200.0, -1500.0, 400.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-6, home: [ 1700.0,   300.0, 400.0], effector: projectile, max_speed: 80.0 }
-  # slower net carriers — debris-friendly kills for low/slow targets
-  - { id: net-1,  home: [-100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
-  - { id: net-2,  home: [ 100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
+  # `airframe: load_factor` flies the 3-DOF body — lateral acceleration
+  # bounded by n_max g, so turn rate falls with airspeed (SIM-PHX-001) and
+  # the shooter hands the endgame to true proportional navigation. Omit it
+  # (default point_mass) for fast parameter sweeps at v0.1 fidelity.
+  # fast gun interceptors — missile-like dash airframes
+  - { id: hawk-1, home: [-500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0,
+      airframe: load_factor, n_max: 5.0 }
+  - { id: hawk-2, home: [-300.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0,
+      airframe: load_factor, n_max: 5.0 }
+  - { id: hawk-3, home: [ 300.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0,
+      airframe: load_factor, n_max: 5.0 }
+  - { id: hawk-4, home: [ 500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0,
+      airframe: load_factor, n_max: 5.0 }
+  - { id: hawk-5, home: [-2200.0, -1500.0, 400.0], effector: projectile, max_speed: 80.0,
+      airframe: load_factor, n_max: 5.0 }
+  - { id: hawk-6, home: [ 1700.0,   300.0, 400.0], effector: projectile, max_speed: 80.0,
+      airframe: load_factor, n_max: 5.0 }
+  # slower net carriers — quad-class agility, debris-friendly kills
+  - { id: net-1,  home: [-100.0, -2500.0, 400.0], effector: net, max_speed: 50.0,
+      airframe: load_factor, n_max: 3.0 }
+  - { id: net-2,  home: [ 100.0, -2500.0, 400.0], effector: net, max_speed: 50.0,
+      airframe: load_factor, n_max: 3.0 }
 
 # Ground anti-air gun turrets (PHY-TUR): effectors of last resort slaved to
 # the fused track picture and the same clearance interlock as the UAVs.
