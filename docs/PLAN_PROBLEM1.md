@@ -465,8 +465,24 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       loop on mailbox tasking, crash fence end-to-end (dead MC → silent → FCU failsafes home,
       sim never sees the exception), e2e kill re-validated through the MCU path. 7+6 tests
       test_sil_host.py + test_sitl_stage2.py; suite 591 fast green, ruff clean (2026-06-12)
-- [ ] P4-4 energy/telemetry rewire: ECM battery via FCU telemetry; UavState from MC estimates only
-      (truth quarantine holds); import-boundary test
+- [x] P4-4 energy/telemetry rewire (user decisions 2026-06-12: voltage-proxy + full land-dock):
+      STATUS wire msg += batt_frac f32 (BatteryMonitor.fraction(): loaded v_cell mapped
+      crit→0..4.20→1, conservative under sag; real SOC = P5 CELL_IMBALANCE); app battery =
+      telemetry property (synthetic drain model deleted); MC floor debounced 2 s (one-sample
+      spool-up sag read 0.11); FCU failsafe leads, app follows it home (post-mortem latched
+      reason ignored while disarmed). Rearm = physical cycle: RTB→LAND→touchdown+disarm on pad
+      → engine pad charger (set_pad, SOC ramp over recharge_s=turnaround) → BATT_RESET wire msg
+      (pack-swap semantics, ground-only, clears the upward latch) → re-arm → climb-out. Two
+      FCU fixes shaken out: (1) touchdown drops the EKF for ground re-alignment (the stand-stop
+      is IMU-unobservable; chi-gates locked out GPS/baro → 8 m/s free-running pad drift);
+      (2) OFFBOARD setpoints clamped to vel_max_h/up/down (PX4 convention — fleet overlays size
+      the envelope per airframe). MC loiter altitude 15 m (no ground contact: only FCU LAND
+      approaches the surface; legacy point-mass keeps z=0). mc/ import fence joined the coopfc
+      AST walk (allowed: mc.*, core.messages, core.ports, coopfc.link). KNOWN FINDING (out of
+      P4-4 scope, converges): vertical brake from fast climbs holds near-hover thrust for
+      seconds (~90 m overshoot at 20 m/s climb authority) — P3 velocity-controller envelope,
+      flagged for review. 6+2 tests test_sitl_energy.py + fence; 598 fast + @slow/@perf
+      coopfc flights re-run green, ruff clean (2026-06-12)
 - [ ] P4-5 sentinels as MC app + sitl twin of test_sentinel
 - [ ] P4-6 `tests/test_sitl_end_to_end.py`: ≥1 kill, 0 CRITICAL wrecks, determinism pin; sitl gets
       OWN re-baselined floors (3-seed CI + 10-seed `@slow`), never reuses pointmass pins

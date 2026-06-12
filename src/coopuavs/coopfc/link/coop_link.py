@@ -48,10 +48,13 @@ MSG = {
     3: ("SET_MODE", "<dB", ("stamp", "mode")),
     4: ("VEL_SP", "<dffff", ("stamp", "vx", "vy", "vz", "yaw")),
     5: ("SET_HOME", "<dfff", ("stamp", "x", "y", "z")),
-    6: ("STATUS", "<dBBBBf", ("stamp", "state", "mode", "failsafe",
-                              "batt", "sigma_pos_h")),
+    6: ("STATUS", "<dBBBBff", ("stamp", "state", "mode", "failsafe",
+                               "batt", "sigma_pos_h", "batt_frac")),
     7: ("NAV", "<dffffffffff", ("stamp", "qw", "qx", "qy", "qz",
                                 "px", "py", "pz", "vx", "vy", "vz")),
+    # Battery swapped/recharged on the pad (P4-4 rearm cycle): the FCU
+    # clears its upward-latched battery monitor — refused while armed.
+    8: ("BATT_RESET", "<d", ("stamp",)),
 }
 _BY_NAME = {name: (mid, fmt) for mid, (name, fmt, _) in MSG.items()}
 

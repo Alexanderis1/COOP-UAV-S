@@ -32,6 +32,16 @@ from .fcu_client import SitlBody
 # (the interceptors/airframe.py constant; duplicated by value here to
 # keep the import direction mc -> world-side packages closed).
 LOW_BATTERY_RTB = 0.15
+# The voltage-proxy fraction sags hard under transient load (arming
+# spool-up reads ~0.1 for one sample): like the FCU monitor, the MC
+# floor must hold continuously before it triggers.
+BATT_LOW_DEBOUNCE_S = 2.0
+# Idle/RTB hold point sits this far above the pad: the SITL plant has
+# no ground contact (deferred, user decision 2026-06-12), so only the
+# FCU's LAND mode — controlled descent + touchdown latch at the home
+# datum — may approach the surface. The legacy point-mass node keeps
+# sitting at z=0; this divergence is sitl-only and physical.
+LOITER_ALT = 15.0
 
 
 class InterceptorApp:
@@ -44,16 +54,19 @@ class InterceptorApp:
         self.ports = ports
         self.uav_id = uav_id
         self.home = np.asarray(home, dtype=float)
+        self._client = fcu_client
         self.body = SitlBody(fcu_client, self.home, max_speed,
                              clock=lambda: self.clock.now, max_accel=max_accel)
         self.max_speed = max_speed
+        # battery_minutes/cruise_speed are legacy-energy ctor compat: the
+        # P4-4 rewire reads the REAL pack through FCU telemetry instead.
         self.cruise_speed = cruise_speed if cruise_speed is not None else 0.6 * max_speed
         self.turnaround_s = turnaround_s
         self.mode = UavMode.IDLE
-        self.battery = 1.0
         self.link_quality = 1.0
-        self._drain_per_s = 1.0 / (battery_minutes * 60.0)
         self._rearm_until: float | None = None
+        self._batt_low_since: float | None = None
+        self._loiter = self.home + np.array([0.0, 0.0, LOITER_ALT])
 
         self.effector = effector
         self._ammo_capacity = effector.ammo
@@ -114,6 +127,12 @@ class InterceptorApp:
         if new_track != previous_track:
             self._fc.reset_engagement()
 
+    @property
+    def battery(self) -> float:
+        """The ECM pack through FCU telemetry (P4-4 rewire): the FCU's
+        voltage-proxy fraction, not a synthetic drain model."""
+        return self._client.batt_frac
+
     # ----------------------------------------------------------- main loop
 
     def tick(self, now: float) -> None:
@@ -128,9 +147,14 @@ class InterceptorApp:
 
         if self.mode == UavMode.REARM:
             if t >= (self._rearm_until or 0.0):
+                # Turnaround complete: pack swapped/recharged (the FCU
+                # clears its latched monitor), magazine restored, back
+                # to the fight. Battery itself reads from telemetry.
                 self._rearm_until = None
-                self.battery = 1.0
                 self.effector.ammo = self._ammo_capacity
+                self._client.request_batt_reset()
+                self._client.hold_arm = False
+                self._client.desired_mode = "OFFBOARD"
                 self.mode = UavMode.IDLE
             else:
                 self.body.command_velocity(np.zeros(3))
@@ -140,32 +164,56 @@ class InterceptorApp:
 
         track = self._target_picture() if self._task else None
 
+        # The FCU's battery failsafe leads (voltage sag trips LOW before
+        # the proxy fraction reaches the MC floor, and it is debounced
+        # FCU-side); the MC's own floor is debounced here so a one-sample
+        # spool-up sag does not bounce the vehicle off the line.
+        if self.battery < LOW_BATTERY_RTB:
+            if self._batt_low_since is None:
+                self._batt_low_since = t
+        else:
+            self._batt_low_since = None
+        batt_out = (
+            (self._batt_low_since is not None
+             and t - self._batt_low_since >= BATT_LOW_DEBOUNCE_S)
+            # The FCU latches its failsafe reason for the flight; once
+            # disarmed on the pad it is post-mortem, not an active state.
+            or (self._client.state == "ARMED"
+                and self._client.failsafe in ("BATT_LOW", "BATT_CRIT")))
+
         if self._rtb_ordered:
-            if self._at(self.home):
+            if self._at(self._loiter):
                 self._rtb_ordered = False
-                self.mode = UavMode.REARM
-                self._rearm_until = t + self.turnaround_s
+                self._enter_rearm(t)
             else:
-                self._fly_to(self.home)
+                self._fly_to(self._loiter)
                 self.mode = UavMode.RTB
-        elif self.battery < LOW_BATTERY_RTB or self.effector.ammo == 0:
-            if self._at(self.home):
-                self.mode = UavMode.REARM
-                self._rearm_until = t + self.turnaround_s
+        elif batt_out or self.effector.ammo == 0:
+            if self._at(self._loiter):
+                self._enter_rearm(t)
             else:
-                self._fly_to(self.home)
+                self._fly_to(self._loiter)
                 self.mode = UavMode.RTB
         elif track is None:
-            self._fly_to(self.home)
-            self.mode = UavMode.IDLE if self._at(self.home) else UavMode.TRANSIT
+            self._fly_to(self._loiter)
+            self.mode = (UavMode.IDLE if self._at(self._loiter)
+                         else UavMode.TRANSIT)
         elif self._role == "shooter":
             self._shooter_behaviour(track, t)
         else:
             self._support_behaviour(track)
 
         self.body.step(period)
-        self.battery = max(0.0, self.battery - self._drain_rate() * period)
         self._publish_state(t)
+
+    def _enter_rearm(self, t: float) -> None:
+        """Full land-dock cycle (P4-4 user decision): command LAND, hold
+        re-arming while the pad charger refills the real pack, take off
+        again when the turnaround completes."""
+        self.mode = UavMode.REARM
+        self._rearm_until = t + self.turnaround_s
+        self._client.hold_arm = True
+        self._client.desired_mode = "LAND"
 
     # ----------------------------------------------------------- behaviours
 
@@ -246,13 +294,6 @@ class InterceptorApp:
         if peer is not None and peer.max_speed > 0.0:
             return peer.max_speed
         return self.max_speed
-
-    def _drain_rate(self) -> float:
-        speed = float(np.linalg.norm(self.body.velocity))
-        factor = 1.0
-        if speed > self.cruise_speed:
-            factor += 2.0 * ((speed - self.cruise_speed) / max(self.cruise_speed, 1.0)) ** 2
-        return self._drain_per_s * factor
 
     def _fly_to(self, waypoint: np.ndarray) -> None:
         self.body.command_velocity(

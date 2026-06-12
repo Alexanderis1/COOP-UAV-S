@@ -33,11 +33,14 @@ from coopuavs.sim import scenario as scenario_mod
 from coopuavs.sim.adjudicator import EngagementAdjudicator
 
 DT = 0.05
-# Racer-class quad (T/W 3.6): the conservative 5 m/s default climb limit
-# would turn every intercept into a slow elevator ride; the sitl twins
-# fly with a representative climb/descent authority via the scenario
-# `sitl.fcu` overlay seam (params are data, SIM-RT-004).
-FCU_OVERLAY = {"fcu.vel_max_up": 20.0, "fcu.vel_max_down": 20.0}
+# Racer-class quad (T/W 3.6): the conservative defaults (15 m/s
+# horizontal, 5 m/s climb) would turn every intercept into a slow
+# elevator ride — and the FCU clamps OFFBOARD setpoints to these
+# envelope params (P4-4, PX4 convention), so the sitl twins fly with
+# representative authority via the scenario `sitl.fcu` overlay seam
+# (params are data, SIM-RT-004).
+FCU_OVERLAY = {"fcu.vel_max_h": 80.0, "fcu.vel_max_up": 20.0,
+               "fcu.vel_max_down": 20.0}
 
 
 class _Host:

@@ -47,10 +47,20 @@ VEL = np.array([50.0, 0.0, 0.0])
 
 
 class _StubClient:
-    """No wire: the twin pins tactical logic, not transport."""
+    """No wire: the twin pins tactical logic, not transport. Telemetry
+    reads as a healthy pack so the energy branch matches the legacy
+    host's full battery."""
     nav = None
+    state = "ARMED"
+    batt_frac = 1.0
+    failsafe = ""
+    desired_mode = "OFFBOARD"
+    hold_arm = False
 
     def tick(self, now, v_cmd, yaw_sp=0.0):
+        pass
+
+    def request_batt_reset(self):
         pass
 
 
@@ -243,7 +253,8 @@ def test_twin_denied_aborts_task():
 # ------------------------------------------------------- engine integration
 
 DT = 0.05
-FCU_OVERLAY = {"fcu.vel_max_up": 20.0, "fcu.vel_max_down": 20.0}
+FCU_OVERLAY = {"fcu.vel_max_h": 80.0, "fcu.vel_max_up": 20.0,
+               "fcu.vel_max_down": 20.0}
 
 
 def _hosted_engine(seed=9):
@@ -309,7 +320,8 @@ def test_mc_crash_goes_silent_and_fcu_flies_home():
     assert mcu.crashed and "MemoryError" in mcu.crash_reason
     fcu = eng.fcus[0]
     assert fcu.failsafe in ("OFFBOARD_TIMEOUT", "LINK_LOSS")
-    # Hovering at home when the MC died: RTL accepts immediately, LAND
-    # touches down at the home datum and disarms — the complete failsafe
-    # chain. (A vehicle away from home would still be in RTL.)
-    assert fcu.mode == RTL or (fcu.state == "STANDBY" and fcu.touchdown)
+    # The autonomous chain after a dead MC: RTL home, LAND from the
+    # loiter altitude, touchdown + disarm — wherever the window caught
+    # it, it is on that chain and no longer accepting the silence.
+    assert (fcu.mode in (RTL, "LAND")
+            or (fcu.state == "STANDBY" and fcu.touchdown))

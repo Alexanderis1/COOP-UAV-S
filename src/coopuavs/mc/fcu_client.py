@@ -33,6 +33,7 @@ from __future__ import annotations
 import numpy as np
 
 from coopuavs.coopfc.link.coop_link import (
+    FAILSAFE_NAMES,
     MODE_CODES,
     MODE_NAMES,
     MSG,
@@ -48,7 +49,13 @@ MC_SOURCE = 1          # HEARTBEAT.source: 0 = FCU, 1 = MC
 
 
 class FcuClient:
-    """One vehicle's MC-side link endpoint (up = MC->FCU, down = FCU->MC)."""
+    """One vehicle's MC-side link endpoint (up = MC->FCU, down = FCU->MC).
+
+    The MC steers the flight regime through ``desired_mode`` (default
+    OFFBOARD; the P4-4 rearm cycle sets LAND) and gates re-arming with
+    ``hold_arm`` (True while docked on the pad charger). A latched FCU
+    failsafe always wins: the client never commands a mode against it.
+    """
 
     def __init__(self, up, down):
         self._up = up
@@ -56,6 +63,9 @@ class FcuClient:
         self._dec = FrameDecoder()
         self.nav: dict | None = None        # latest NAV fields
         self.status: dict | None = None     # latest STATUS fields
+        self.desired_mode = "OFFBOARD"
+        self.hold_arm = False
+        self._batt_reset_pending = False
         self._last_hb: float | None = None
         self._last_arm: float | None = None
 
@@ -70,8 +80,22 @@ class FcuClient:
         return MODE_NAMES[self.status["mode"]] if self.status else ""
 
     @property
+    def failsafe(self) -> str:
+        return FAILSAFE_NAMES[self.status["failsafe"]] if self.status else ""
+
+    @property
     def failsafe_active(self) -> bool:
         return bool(self.status) and self.status["failsafe"] != 0
+
+    @property
+    def batt_frac(self) -> float:
+        """FCU-reported battery fraction (voltage proxy); 1.0 until the
+        first STATUS arrives."""
+        return self.status["batt_frac"] if self.status else 1.0
+
+    def request_batt_reset(self) -> None:
+        """Pack swapped/recharged on the pad: sent on the next tick."""
+        self._batt_reset_pending = True
 
     # -- wire ----------------------------------------------------------------------
 
@@ -98,14 +122,18 @@ class FcuClient:
         self._up.send(encode_msg("VEL_SP", now, float(v_cmd[0]),
                                  float(v_cmd[1]), float(v_cmd[2]),
                                  float(yaw_sp)), now)
+        if self._batt_reset_pending:
+            self._up.send(encode_msg("BATT_RESET", now), now)
+            self._batt_reset_pending = False
         if self.state == "STANDBY":
-            if self._last_arm is None or now - self._last_arm >= ARM_RETRY_S:
+            if not self.hold_arm and (self._last_arm is None
+                                      or now - self._last_arm >= ARM_RETRY_S):
                 self._up.send(encode_msg("ARM", now), now)
                 self._last_arm = now
-        elif (self.state == "ARMED" and self.mode != "OFFBOARD"
+        elif (self.state == "ARMED" and self.mode != self.desired_mode
                 and not self.failsafe_active):
             self._up.send(encode_msg("SET_MODE", now,
-                                     MODE_CODES["OFFBOARD"]), now)
+                                     MODE_CODES[self.desired_mode]), now)
 
 
 class SitlBody:

@@ -165,6 +165,7 @@ class SitlEngine:
                                 if heartbeat_hz else 0)
         self.links: list[_FcuLink | None] = [None] * n
         self.mcs: list = [None] * n            # VirtualMCU per vehicle (P4-3)
+        self._pads: list = [None] * n          # pad chargers (P4-4)
 
         starts = np.asarray([s for _, s in vehicles], dtype=float)
         self.state = np.zeros((n, 13))
@@ -229,6 +230,19 @@ class SitlEngine:
         if self.mcs[i] is not None:
             raise ValueError(f"vehicle {uav_id!r} already has an MC")
         self.mcs[i] = mcu
+
+    def set_pad(self, uav_id: str, pos, *, recharge_s: float = 90.0,
+                radius: float = 25.0) -> None:
+        """Pad charger (P4-4 rearm cycle, user decision: full land-dock):
+        a vehicle DISARMED within ``radius`` of its pad recharges the ECM
+        pack linearly to full over ``recharge_s``. Boundary-condition
+        model — the charger circuit itself is out of scope, so SOC is
+        driven directly (the cell relaxation v1 decays on its own)."""
+        if recharge_s <= 0.0 or radius <= 0.0:
+            raise ValueError("recharge_s and radius must be positive")
+        i = self.index[uav_id]
+        self._pads[i] = (float(pos[0]), float(pos[1]), float(pos[2]),
+                         float(radius) ** 2, 1.0 / float(recharge_s))
 
     # ------------------------------------------------------------- world seam
 
@@ -304,6 +318,8 @@ class SitlEngine:
                     fcu.cmd_velocity((v["vx"], v["vy"], v["vz"]), v["yaw"])
                 elif name == "SET_HOME":
                     fcu.cmd_set_home((v["x"], v["y"], v["z"]))
+                elif name == "BATT_RESET":
+                    fcu.cmd_batt_reset()
         nav = fcu.nav
         if nav is None:
             return    # nothing worth telemetering until alignment
@@ -316,7 +332,7 @@ class SitlEngine:
             link.down.send(encode_msg(
                 "STATUS", now, STATE_CODES[fcu.state], MODE_CODES[fcu.mode],
                 FAILSAFE_CODES[fcu.failsafe], BATT_CODES[fcu.batt.state],
-                nav.sigma_pos_h), now)
+                nav.sigma_pos_h, fcu.batt.fraction()), now)
 
     def _tick(self, now: float) -> None:
         # 1. devices sample truth (pre-step state, ZOH inputs)
@@ -383,6 +399,17 @@ class SitlEngine:
         if not flying.all():
             frozen = ~flying
             new[frozen] = st[frozen]
+            # Pad chargers (P4-4): docked = disarmed within pad radius.
+            batt = self.pt.battery
+            for i in np.flatnonzero(frozen):
+                pad = self._pads[i]
+                if pad is None:
+                    continue
+                dx = new[i, 0] - pad[0]
+                dy = new[i, 1] - pad[1]
+                dz = new[i, 2] - pad[2]
+                if dx * dx + dy * dy + dz * dz <= pad[3]:
+                    batt.soc[i] = min(1.0, batt.soc[i] + self._dt * pad[4])
         self.state = new
         self._wind = wind
         self._flying = flying

@@ -1200,6 +1200,45 @@ zero (the unmodeled ground reaction balances them). Real ground
 contact stays deferred (same decision): non-ARMED rows are frozen with
 zeroed velocity/rates, motors pre-spin to hover at arming.
 
+### P4-4 energy telemetry: voltage-proxy fraction (user decision 2026-06-12)
+
+`UavState.battery` in sitl mode is the FCU's voltage-proxy fraction
+(`BatteryMonitor.fraction()`): loaded per-cell voltage mapped linearly
+`crit_v_cell (3.30) → 0 .. full_v_cell (4.20) → 1`, shipped in STATUS as
+`batt_frac` f32. Deliberately conservative — sag under load reads as less
+remaining energy exactly when the MC should break off earlier. The proxy
+is noisy under transient load (arming spool-up reads ~0.1 for one
+sample), so the MC floor carries a 2 s debounce mirroring the FCU
+monitor's. Real SOC estimation (coulomb counting, per-cell) is P5
+CELL_IMBALANCE scope. The rearm cycle is physical (land-dock decision):
+the pad charger drives ECM SOC directly (boundary condition; the charger
+circuit is out of scope) and BATT_RESET carries pack-swap semantics —
+ground-only, clears the upward-latched monitor.
+
+### P4-4 touchdown ground recalibration
+
+The stand convention stops the airframe in one micro-tick at touchdown —
+a velocity step the IMU stream never expresses (contact dynamics are not
+modeled). The EKF's chi-square gates then *defend* the stale velocity
+belief against every GPS/baro correction (gate lockout: an 8 m/s
+free-running pad drift was measured, `div=False`, `late_meas=0`). The
+realistic remedy at our fidelity is the recalibrate-before-flight
+doctrine: touchdown drops the EKF and re-runs the static ground
+alignment from scratch (the existing BOOT machinery, ~2 s, GPS-seeded);
+PBIT holds re-arming until it is green. PX4's equivalent is its
+on-ground EKF handling (zero-velocity updates / state resets on land).
+
+### P4-4 OFFBOARD setpoint clamp (PX4 convention)
+
+`cmd_velocity` setpoints are now clamped in the FCU to the same
+`fcu.vel_max_h/up/down` envelope params the internal modes obey — an MC
+cannot command the airframe past its declared envelope. Scenario
+overlays size the envelope per airframe (the racer flies
+h=80/up=20/down=20). Known finding (flagged, not P4 scope): braking
+from a fast commanded climb holds near-hover thrust for several
+seconds (~90 m overshoot from a 20 m/s climb before converging) — P3
+velocity-controller envelope behavior worth a scoped review.
+
 ### P4-1 fleet-size invariance is a draw-history contract
 
 ORDERING §4 promises that adding a vehicle leaves existing vehicles'

@@ -193,6 +193,9 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
                              base_hz=sitl_cfg["base_hz"], app_factory=factory,
                              rng=world.rng_registry.stream(f"mc/{uid}"))
             engine.attach_mc(uid, mcu)
+            # Pad charger (P4-4): the recharge matches the MC turnaround.
+            engine.set_pad(uid, home,
+                           recharge_s=extra.get("turnaround_s", 90.0))
             shell = SitlShellUav(uid, world.bus, home, effector, mcu=mcu,
                                  **extra)
             uavs[uid] = shell
