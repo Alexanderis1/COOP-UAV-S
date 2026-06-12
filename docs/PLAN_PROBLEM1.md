@@ -360,8 +360,20 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       garbage skip, arrival times exact closed-form (not a tick early), back-to-back burst
       spacing, backpressure refuse+drain, idle-wire no history, run-twice. 11 tests
       `test_coopfc_link.py` (2026-06-12)
-- [ ] P3-8 bench acceptance flights: hover RMS <0.15 m calm / <1.0 m in 8 m/s+Dryden; 200 m
-      waypoint square cross-track <2 m; run-twice pins
+- [x] P3-8 `sil/bench.py` (physics + P2 hw devices w/ real noise/latency/quantization + one
+      FCU; frozen-stand boot, devices-sample-truth→FCU→actuators→plant micro-tick; Dryden
+      world-rotated) + acceptance flights. Hover gate SPLIT (user decision 2026-06-12,
+      RESEARCH.md): CONTROL error |est−hold| gets the plan numbers — <0.15 m calm / <1.0 m
+      in 8 m/s+Dryden w20=8 (measured 0.07–0.08 m both); TRUTH error gated at the GNSS
+      device budget 2.0 m RMS (measured 0.5–0.9 m; GM wander floor, RTK-class hover is out
+      of suite scope by design). 200 m waypoint square via MC-role OFFBOARD velocity guidance
+      on NAV telemetry: TRUTH cross-track <2 m (passes at face value). Run-twice bit-identical
+      (truth + nav + actuators). PERF gate re-scoped (user decision 2026-06-12, RESEARCH.md):
+      1-vehicle RTF ≥3× (measured 3.6–3.7×; the pre-P1 "≥20×" died with the N-independent
+      ~0.2 s/sim-s plant floor) + 20-instance projection ≥1× per the P4 fleet architecture
+      C20 = C_phys+dev(N=20) + 20·C_fcu(direct) — measured RTF 1.24–1.38×; enabled by a
+      sha256-verified VALUE-IDENTICAL selection-indexed EKF fusion refactor (`_fuse_sel`).
+      5 tests `test_coopfc_bench.py` (2 fast + 2 @slow + 1 @perf) (2026-06-12)
 - [ ] P3-9 `@oracle` ArduPilot SITL (WSL2) waypoint-square envelope comparison, procedure doc'd
 - [ ] P3-10 tuning-stop rule: tolerances unmet after budgeted tuning → STOP and replan (never
       loosen gates silently)

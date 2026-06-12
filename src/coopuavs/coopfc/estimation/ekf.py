@@ -202,6 +202,22 @@ class Ekf:
         ])
         self.last_gps_fuse: float | None = None
         self._denied_injected = False
+        # Every measurement model is a pure state SELECTION (H rows are
+        # unit vectors), so fusion uses indexed forms instead of 0/1 H
+        # matmuls — value-identical (the dropped terms are exact +0.0
+        # accumulations), ~2x cheaper per block (fleet perf, P3-8).
+        # Constant per-sensor R matrices, precomputed once:
+        self._R_gps_pos = np.diag(self._r_gps_pos)
+        self._R_gps_vel = np.diag(self._r_gps_vel)
+        self._R_baro = np.array([[self._r_baro]])
+        self._R_mag_yaw = np.array([[self._r_mag_yaw]])
+        # Prediction scratch (allocation-free per segment):
+        self._eye15 = np.eye(15)
+        self._F = np.eye(15)
+        self._Q = np.zeros((15, 15))
+        self._qidx = np.arange(3, 15)
+        self._t1 = np.empty((15, 15))
+        self._t2 = np.empty((15, 15))
 
     # ------------------------------------------------------------- intake
 
@@ -322,25 +338,31 @@ class Ekf:
         self.q = vec.quat_integrate(self.q, w, dt)
 
     def _predict_cov(self, q, w_mean, f_mean, dt) -> None:
-        """Error-state transition, Sola eq. 270 (first order, mean rates)."""
+        """Error-state transition, Sola eq. 270 (first order, mean rates).
+
+        Scratch buffers, not fresh allocations (the 50 Hz x N-vehicle
+        fleet path); identical arithmetic to the textbook form."""
         p = self.params
         rot = _rotmat(q)
         eye3 = np.eye(3)
-        F = np.eye(15)
+        F = self._F
+        np.copyto(F, self._eye15)
         F[DP, DV] = eye3 * dt
         F[DV, DTH] = -rot @ _skew(f_mean) * dt
         F[DV, DBA] = -rot * dt
         F[DTH, DTH] = eye3 - _skew(w_mean) * dt
         F[DTH, DBG] = -eye3 * dt
 
-        Q = np.zeros((15, 15))
-        Q[DV, DV] = eye3 * (p.accel_noise_density ** 2 * dt)
-        Q[DTH, DTH] = eye3 * (p.gyro_noise_density ** 2 * dt)
-        Q[DBG, DBG] = eye3 * (p.gyro_rw_sigma ** 2 * dt)
-        Q[DBA, DBA] = eye3 * (p.accel_rw_sigma ** 2 * dt)
+        Q = self._Q
+        qi = self._qidx
+        Q[qi, qi] = np.repeat(
+            [p.accel_noise_density ** 2 * dt, p.gyro_noise_density ** 2 * dt,
+             p.gyro_rw_sigma ** 2 * dt, p.accel_rw_sigma ** 2 * dt], 3)
 
-        P = F @ self.P @ F.T + Q
-        self.P = 0.5 * (P + P.T)
+        np.matmul(F, self.P, out=self._t1)
+        np.matmul(self._t1, F.T, out=self._t2)
+        self._t2 += Q
+        self.P = 0.5 * (self._t2 + self._t2.T)
         self._guard()
 
     def _guard(self) -> None:
@@ -379,13 +401,21 @@ class Ekf:
             if self.diverged:
                 return
 
-    def _fuse_block(self, innov: np.ndarray, H: np.ndarray, r_diag,
-                    gate: float, name: str,
-                    gain_rows: tuple[int, ...] | None = None) -> bool:
+    def _fuse_sel(self, idx: tuple[int, ...], innov: np.ndarray,
+                  r_cov: np.ndarray, gate: float, name: str,
+                  gain_rows: tuple[int, ...] | None = None) -> bool:
+        """Fuse a measurement whose H rows select state indices `idx`.
+
+        Indexed equivalents of the dense forms (value-identical — the
+        H matmuls only ever accumulated exact +0.0 terms):
+        S = P[idx,idx] + R; K = P[:,idx] S^-1; I - K H = I with K
+        subtracted from columns `idx`. Joseph form unchanged.
+        """
         if not np.all(np.isfinite(innov)):
             self.rejected["nonfinite"] += 1
             return False
-        S = H @ self.P @ H.T + np.diag(np.atleast_1d(r_diag))
+        ix = np.ix_(idx, idx)
+        S = self.P[ix] + r_cov
         try:
             S_inv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
@@ -399,7 +429,7 @@ class Ekf:
         tally = self.nis[name]
         tally[0] += nis
         tally[1] += 1
-        K = self.P @ H.T @ S_inv
+        K = self.P[:, idx] @ S_inv
         if gain_rows is not None:
             # Partial update (Brink 2017 partial-update Schmidt-KF
             # form): zero the gain outside `gain_rows`. The Joseph
@@ -410,9 +440,10 @@ class Ekf:
             K = np.where(keep[:, None], K, 0.0)
         dx = K @ innov
         self._inject(dx)
-        ikh = np.eye(15) - K @ H
+        ikh = self._eye15.copy()
+        ikh[:, idx] -= K
         # Joseph form keeps P symmetric PSD under roundoff.
-        P = ikh @ self.P @ ikh.T + K @ np.diag(np.atleast_1d(r_diag)) @ K.T
+        P = ikh @ self.P @ ikh.T + K @ r_cov @ K.T
         self.P = 0.5 * (P + P.T)
         self._guard()
         return True
@@ -429,19 +460,16 @@ class Ekf:
         self.b_a = (self.b_a[0] + dx[12], self.b_a[1] + dx[13], self.b_a[2] + dx[14])
 
     def _fuse_gps(self, pos, gvel) -> None:
-        H = np.zeros((3, 15))
-        H[:, DP] = np.eye(3)
         innov = np.array(pos) - np.array(self.p)
-        if self._fuse_block(innov, H, self._r_gps_pos, self.params.gps_gate,
-                            "gps_pos"):
+        if self._fuse_sel((0, 1, 2), innov, self._R_gps_pos,
+                          self.params.gps_gate, "gps_pos"):
             self.last_gps_fuse = self.state_time
             self._denied_injected = False
         if self.diverged:
             return
-        H = np.zeros((3, 15))
-        H[:, DV] = np.eye(3)
         innov = np.array(gvel) - np.array(self.v)
-        self._fuse_block(innov, H, self._r_gps_vel, self.params.gps_gate, "gps_vel")
+        self._fuse_sel((3, 4, 5), innov, self._R_gps_vel,
+                       self.params.gps_gate, "gps_vel")
 
     def _fuse_baro(self, alt_m: float) -> None:
         """Baro altitude, partial update: vertical channel only.
@@ -457,11 +485,9 @@ class Ekf:
         honesty gate caught it). Same colored-error mechanism as the
         mag yaw information floor above.
         """
-        H = np.zeros((1, 15))
-        H[0, 2] = 1.0
         innov = np.array([alt_m - self.p[2]])
-        self._fuse_block(innov, H, self._r_baro, self.params.baro_gate, "baro",
-                         gain_rows=(2, 5, 14))
+        self._fuse_sel((2,), innov, self._R_baro, self.params.baro_gate,
+                       "baro", gain_rows=(2, 5, 14))
 
     def _fuse_mag(self, field_ut) -> None:
         """Heading-only mag fusion (the PX4-EKF2 default).
@@ -502,9 +528,8 @@ class Ekf:
         # quietly collapsed during GNSS-denial and the predicted drift
         # under-claimed 4x). The dropped terms are O(sin(tilt)) and the
         # colored mag cannot legitimately fund tilt knowledge.
-        H = np.zeros((1, 15))
-        H[0, 8] = 1.0
-        self._fuse_block(innov, H, self._r_mag_yaw, self.params.mag_gate, "mag")
+        self._fuse_sel((8,), innov, self._R_mag_yaw, self.params.mag_gate,
+                       "mag")
 
     # -------------------------------------------------------------- output
 
@@ -514,6 +539,7 @@ class Ekf:
         q, v, p = self.q, self.v, self.p
         b_g, b_a = self.b_g, self.b_a
         dt = self._imu_dt
+        quat_rotate, quat_integrate = vec.quat_rotate, vec.quat_integrate
         for stamp, gyro, accel in self._imu:
             if stamp <= self.horizon + _STAMP_EPS:
                 continue
@@ -521,13 +547,13 @@ class Ekf:
                 break
             w = (gyro[0] - b_g[0], gyro[1] - b_g[1], gyro[2] - b_g[2])
             f = (accel[0] - b_a[0], accel[1] - b_a[1], accel[2] - b_a[2])
-            a_w = vec.quat_rotate(q, f)
+            a_w = quat_rotate(q, f)
             a_w = (a_w[0], a_w[1], a_w[2] - GRAVITY)
             p = (p[0] + v[0] * dt + 0.5 * a_w[0] * dt * dt,
                  p[1] + v[1] * dt + 0.5 * a_w[1] * dt * dt,
                  p[2] + v[2] * dt + 0.5 * a_w[2] * dt * dt)
             v = (v[0] + a_w[0] * dt, v[1] + a_w[1] * dt, v[2] + a_w[2] * dt)
-            q = vec.quat_integrate(q, w, dt)
+            q = quat_integrate(q, w, dt)
         g = self._last_gyro
         omega = (g[0] - b_g[0], g[1] - b_g[1], g[2] - b_g[2])
         d = np.diagonal(self.P)[:9] + self.budget9  # honest reporting

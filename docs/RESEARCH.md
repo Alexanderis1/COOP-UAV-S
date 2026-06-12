@@ -1105,3 +1105,44 @@ and the A/B diagnostic (baro on/off during denial) isolated the
 channel. The masked gain trades the small *real* tilt information in
 baro z-residuals (order f_horizontal/g) for killing the large fake
 component; true drift rises (pure DR), the claim becomes truthful.
+
+### P3-8 hover-accuracy gate semantics (user decision 2026-06-12)
+
+The plan's "hover RMS < 0.15 m calm" is physically unreachable against
+TRUTH with this device suite: the GNSS GM wander (sigma_h 1.2 m,
+tau 60 s) drags the EKF estimate, and a position-hold loop follows its
+estimate — published GNSS (non-RTK) position-hold accuracy is the
+1-1.5 m class, and centimeter-level hover requires RTK corrections
+(see e.g. RTK-vs-GPS hold comparisons:
+https://www.d1store.com.au/lounge/content/rtk-vs-gps-position-hold,
+https://thinkrobotics.com/blogs/tutorials/rtk-gps-setup-for-drones-complete-guide-to-centimeter-level-accuracy
+[vendor documentation, magnitudes only]). The gate therefore splits:
+
+- **control error** |estimate - hold setpoint|: plan numbers apply
+  (< 0.15 m calm, < 1.0 m at 8 m/s + Dryden w20 = 8). Measured
+  0.07-0.08 m both — the cascade rejects light-class turbulence to
+  the navigation floor.
+- **truth error** |truth - truth at capture|: gated at the device
+  budget, 2.0 m RMS (measured 0.5-0.9 m; GM wander over a 30 s window
+  wanders ~sqrt(2 sigma^2 (1-e^(-t/tau))) ~ 0.9 m at 1 sigma).
+
+The 200 m waypoint-square cross-track gate (< 2 m) stays TRUTH-based:
+the GM error is common-mode along a straight segment leg (measured
+~1 m class worst).
+
+### P3-8 perf gate re-scope (user decision 2026-06-12)
+
+"1-vehicle RTF >= 20x" predated P1: the batched plant RK4 costs
+~0.2 s CPU/sim-s INDEPENDENT of N (numpy small-batch overhead — the
+P1/P2 same-bound-for-N=20-and-30 measurements), capping any 1-vehicle
+bench near 5x regardless of flight-software cost. Re-scoped to
+**>= 3x measured** (3.6-3.7x) plus the requirement that actually
+matters for the design envelope, **20-instance projection >= 1x**
+per the P4 fleet architecture (one batched plant + device suite, N
+python FCUs): C20 = C_phys+dev(N=20) + 20 C_fcu. Passing this needed
+the EKF fusion path rewritten in selection-indexed form (every
+measurement model's H rows are unit vectors; the dense matmuls only
+accumulated exact +0.0 terms) — verified VALUE-IDENTICAL by sha256
+over the full state + covariance of a 20 s device-suite run before and
+after. Measured: C_fcu 0.023-0.027 s/sim-s direct, projection
+0.73-0.81 s/sim-s -> RTF 1.24-1.38x.
