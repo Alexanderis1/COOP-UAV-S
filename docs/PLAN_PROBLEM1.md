@@ -492,8 +492,14 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       0.001<|est−truth|<15 m) + airborne-only track formation; drained pack breaks the orbit
       off home through the FCU failsafe. 2 tests test_sitl_sentinel.py; legacy test_sentinel
       untouched green; suite 600 fast, ruff clean (2026-06-12)
-- [ ] P4-6 `tests/test_sitl_end_to_end.py`: ≥1 kill, 0 CRITICAL wrecks, determinism pin; sitl gets
-      OWN re-baselined floors (3-seed CI + 10-seed `@slow`), never reuses pointmass pins
+- [x] P4-6 `tests/test_sitl_end_to_end.py` over SITL_SMALL_SCENARIO (full stack: devices→EKF→
+      MC VirtualMCUs→coop_link→FCU→batched plant + unchanged C2/ROE/adjudication). Baseline
+      measured 2026-06-12 seeds 0..9: 10/10 kills, 0 leakers, 0 CRITICAL wrecks, t_end 32-66 s.
+      OWN floors (tripped floor = stop-and-replan): 3-seed CI kills≥1 each + CRITICAL==0 +
+      event-kind chain + in-flight truth-quarantine band (1e-3 < |est−truth| < 10 m); run-twice
+      determinism (events + summary equal); 10-seed @slow total kills ≥9/10 + CRITICAL==0.
+      Stage-1 kill smoke superseded into this suite. 4 tests; 601 fast + @slow e2e green,
+      ruff clean (2026-06-12)
 - [ ] P4-7 recorder/ICD additive fields + ICD_RUNTIME v0.4 same commit + legacy-recording parse test
 - [ ] P4-8 perf gate `@perf`: residential_raid sitl RTF ≥0.5× headless + committed profile; miss →
       pull fallback levers before proceeding

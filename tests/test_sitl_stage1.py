@@ -220,22 +220,6 @@ def test_sitl_scenario_build_wiring():
     assert seeker.uav is fv
 
 
-def test_sitl_small_scenario_kill():
-    sc = scenario_mod.build(SITL_SMALL_SCENARIO)
-    truth_vs_est = []
-
-    def probe(world):
-        fv = world.friendlies["u1"]
-        est = sc.uavs["u1"].body.position
-        truth_vs_est.append(float(np.linalg.norm(fv.position - est)))
-
-    summary = sc.run(on_step=probe)
-    assert summary["kills"] >= 1, summary
-    assert summary["wrecks_by_zone"].get("CRITICAL", 0) == 0
-    kinds = {e["kind"] for e in sc.world.events}
-    assert "kill" in kinds
-    # Truth quarantine is visible: the agent flies an estimate that is
-    # genuinely distinct from truth (GM wander class), yet bounded.
-    diffs = np.asarray(truth_vs_est[100:])           # past boot
-    assert diffs.max() > 1e-3, "estimate suspiciously equals truth"
-    assert diffs.max() < 10.0, f"nav error {diffs.max():.1f} m unbounded"
+# The 1-interceptor kill smoke grew into the P4-6 e2e suite
+# (test_sitl_end_to_end.py): 3-seed CI floor + run-twice determinism +
+# 10-seed @slow, all over SITL_SMALL_SCENARIO defined above.
