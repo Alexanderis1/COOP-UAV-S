@@ -566,10 +566,22 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       latch would deadlock recoveries the source machinery owns, e.g. touchdown realignment).
       Invariants tested: CRIT ⇒ inhibits arm+fire; mirror rows never command. 39 table-driven
       tests test_coopfc_cbit.py; 648 fast green, fence green, ruff clean (2026-06-12)
-- [ ] P5-1b FCU monitors at 50 Hz + 1 Hz (sched tasks after rate_mix, ORDERING "PWM→CBIT→link"):
-      IMU_STALE/RANGE/NOISE, GYRO_STUCK, GPS_LOSS/DEGRADED, BARO/MAG faults, EKF_INNOV/DIVERGED,
-      DR_BUDGET_LOW, MOTOR_RESPONSE(i) (cmd-vs-rpm), SAT_PERSIST, BATT mirrors, LINK_MC_LOSS,
-      SCHED_OVERRUN, PARAM_CRC, ALIGN_FAIL, WDOG_MISS — detection-latency test per monitor
+- [x] P5-1b FCU monitors at 50 Hz + 1 Hz (`cbit/monitors.py`, sched tasks after rate_mix,
+      ORDERING "PWM→CBIT→link"; observation-only — authority is P5-1c). Findings baked into
+      monitor design: (1) MAG_FAULT cannot ride innovation rejects — the EKF yaw-information
+      floor STOPS mag fusion once converged, so the monitor compares mag-derived yaw vs EKF yaw
+      directly (same tilt guard as fusion, 0.5 rad threshold); (2) SAT_PERSIST signature =
+      motors railed (±1e-3 margin — desat lands epsilon inside the clip), NOT axis_sat flags
+      (they oscillate with anti-windup); 3 s debounce so max-perf transients don't trip;
+      (3) GPS_DEGRADED needs windowed reject counts (multipath interleaves accepts → an
+      instantaneous streak never completes a debounce); (4) EKF_INNOV = reject streaks in ≥2
+      sensor families (one family = that sensor's own code); (5) MOTOR_RESPONSE = relative
+      rpm-share vs u-share deficit >12% (no motor constants needed), detail carries rotor index.
+      Fcu adds _sat_streak/_u_last/_align_retries counters + fcu.gyro_range/accel_range/
+      dr_sigma_budget params. 21 tests test_coopfc_cbit_monitors.py incl. no-fault-word-zero
+      baseline; perfectly-constant synthetic gyro frames correctly read as GYRO_STUCK (harness
+      dithers — live MEMS never repeats a sample). 669 fast + @slow bench/fcu/e2e/ekf-mc green,
+      ruff clean (2026-06-12)
 - [ ] P5-1c degraded-mode actions + wire export: FAILSAFE_ATT mode (level attitude + descent,
       EKF_DIVERGED response); CBIT entries in the failsafe priority chain (pinned order above);
       inhibit_arming joins cmd_arm; HEALTH wire msg (fault word + inhibit flags + degraded mode,

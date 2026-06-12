@@ -41,6 +41,8 @@ from typing import NamedTuple
 from coopuavs.coopfc.battery_monitor import (
     CRITICAL, LOW, NORMAL, BatteryMonitor, BattParams,
 )
+from coopuavs.coopfc.cbit import CbitEngine
+from coopuavs.coopfc.cbit.monitors import FcuMonitors
 from coopuavs.coopfc.control import (
     AttCtl, QuadXMixer, RateCtl, VelCtl,
 )
@@ -76,6 +78,12 @@ FCU_DEFAULTS = {
     "fcu.vel_max_h": 15.0,
     "fcu.vel_max_up": 5.0,
     "fcu.vel_max_down": 3.0,
+    # CBIT (P5-1b): IMU full-scale limits for the range monitor (defaults
+    # match the interceptor_devices ICM-42688 class: 2000 dps / 16 g) and
+    # the dead-reckoning position-sigma budget (DR_BUDGET_LOW).
+    "fcu.gyro_range_rad_s": 34.9,
+    "fcu.accel_range_m_s2": 157.0,
+    "fcu.dr_sigma_budget_m": 8.0,
 }
 
 BOOT = "BOOT"
@@ -173,6 +181,14 @@ class Fcu:
         self._sat = (0, 0, 0)
         self._last_imu = None
         self.touchdown = False
+        # CBIT observation counters (P5-1b; read by cbit/monitors.py):
+        # consecutive 400 Hz rate ticks with a blocked mixer axis, the
+        # latest mixer output, and alignment restarts this power-up.
+        self._sat_streak = 0
+        self._u_last = (0.0, 0.0, 0.0, 0.0)
+        self._align_retries = 0
+        self.cbit = CbitEngine()
+        self._cbit_mon = FcuMonitors(self, self.cbit)
 
         s = self.sched
         s.add("imu_drv", 400, self.imu_drv.tick)
@@ -186,6 +202,10 @@ class Fcu:
         s.add("pbit", 10, self._pbit_task)
         s.add("nav", 50, self._nav_task)
         s.add("rate_mix", 400, self._rate_mix_task)
+        # ORDERING pipeline slot: "... mixer -> PWM -> CBIT -> link" —
+        # the monitors observe the tick the pipeline just produced.
+        s.add("cbit_fast", 50, self._cbit_mon.fast)
+        s.add("cbit_slow", 1, self._cbit_mon.slow)
 
     # ------------------------------------------------------------- host API
 
@@ -314,6 +334,7 @@ class Fcu:
                         self.state = STANDBY
                     else:           # moved/vibrating: retry from scratch
                         self._aligner = self._new_aligner()
+                        self._align_retries += 1
                 return
             self.ekf.on_imu(imu.stamp, imu.gyro, imu.accel)
         if self.ekf is None:
@@ -463,6 +484,7 @@ class Fcu:
     def _rate_mix_task(self, now: float) -> None:
         if self.state != ARMED or self.nav is None:
             self.actuators.write((0.0, 0.0, 0.0, 0.0))
+            self._sat_streak = 0
             return
         # Rate feedback: latest gyro minus EKF bias (NavState is 50 Hz).
         imu = self._last_imu
@@ -473,4 +495,14 @@ class Fcu:
         torque = self.rate_ctl.update(rate_sp, omega, 1.0 / 400.0, self._sat)
         u, flags = self.mixer.mix(self._thrust, torque)
         self._sat = flags.axis_sat
+        # Persistent-saturation observable (CBIT): motors pinned at the
+        # rails. The per-axis flags oscillate with the anti-windup
+        # (demand backs off the tick after it pins), but railed outputs
+        # are the steady signature of unachievable demand. Margin, not
+        # equality: desaturation arithmetic lands epsilon inside the
+        # clip on some ticks (measured 5e-7) — still pinned.
+        self._sat_streak = (self._sat_streak + 1
+                            if any(ui <= 1e-3 or ui >= 0.999 for ui in u)
+                            else 0)
+        self._u_last = u
         self.actuators.write(u)

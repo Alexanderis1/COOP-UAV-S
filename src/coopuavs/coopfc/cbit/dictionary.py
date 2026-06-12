@@ -94,7 +94,9 @@ _ROWS = (
     FaultSpec("EKF_DIVERGED",   9, CRIT, False, 0.00, True,  True,  ACT_FAILSAFE_ATT),
     FaultSpec("DR_BUDGET_LOW", 10, WARN, False, 0.50, False, True,  ACT_RTL),
     FaultSpec("MOTOR_RESPONSE", 11, CRIT, True, 0.50, True,  True,  ACT_LAND),
-    FaultSpec("SAT_PERSIST",   12, WARN, False, 1.00, False, False, ACT_NONE),
+    # 3 s: a max-performance accel transient legitimately rails the
+    # motors for ~1-2 s; only demand the airframe cannot leave is a fault.
+    FaultSpec("SAT_PERSIST",   12, WARN, False, 3.00, False, False, ACT_NONE),
     FaultSpec("BATT_LOW",      13, WARN, False, 0.00, True,  False, ACT_RTL,  mirror=True),
     FaultSpec("BATT_CRIT",     14, CRIT, False, 0.00, True,  True,  ACT_LAND, mirror=True),
     FaultSpec("BATT_SAG_ANOM", 15, WARN, True,  2.00, False, False, ACT_NONE),
