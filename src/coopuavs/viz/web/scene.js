@@ -29,14 +29,24 @@ export class SceneView {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    // filmic tone mapping: realistic light falloff at no measurable cost
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
     container.appendChild(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.maxPolarAngle = Math.PI / 2.05;
 
-    this.amb = new THREE.AmbientLight(0xffffff, 0.45);
-    this.sun = new THREE.DirectionalLight(0xfff2d9, 0.8);
+    this.amb = new THREE.AmbientLight(0xffffff, 0.4);
+    this.hemi = new THREE.HemisphereLight(0x9db8d6, 0x3a4047, 0.5);
+    this.sun = new THREE.DirectionalLight(0xfff2d9, 0.9);
     this.sun.position.set(3000, 6000, 2000);
-    this.scene.add(this.amb, this.sun);
+    this.scene.add(this.amb, this.hemi, this.sun);
+
+    // gradient sky dome (HMI-MAP-006): redrawn only when daylight/precip move
+    this._sky = makeSkyDome();
+    this._skyKey = '';
+    this.scene.add(this._sky.mesh);
+    this._drawSky(0.35, 0);
 
     this.staticRoot = new THREE.Group();
     this.coverageGroup = new THREE.Group();   // sensor domes (layer)
@@ -47,7 +57,7 @@ export class SceneView {
     this.stations = new Map();  // id -> ringMat (occupancy colour)
     this.pickables = [];        // meshes with userData.pick (static side: turrets)
     this.ground = null;
-    this._groundMats = null;
+    this.zoneRaster = null;     // translucent civilian-presence overlay
     this.city = null;
 
     addEventListener('resize', () => {
@@ -93,21 +103,27 @@ export class SceneView {
       disposeGroup(g);
       g.clear();
     }
-    if (this._groundMats) {                  // the swapped-out layer material
-      this._groundMats.zones.map?.dispose();
-      this._groundMats.zones.dispose();
-      this._groundMats.plain.dispose();
-      this._groundMats = null;
-    }
     this.turrets.clear();
     this.stations.clear();
     this.city = null;
+    this.ground = null;
+    this.zoneRaster = null;
     this.pickables.length = 0;
     if (!sc || !sc.bounds) return;
 
     const [x0, y0, x1, y1] = sc.bounds;
 
-    // zone raster ground
+    // terrain: streets and lots baked from the building fabric, soil/scrub
+    // noise outside the urban area
+    this.ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(x1 - x0, y1 - y0),
+      new THREE.MeshLambertMaterial({ map: terrainTexture(sc) }));
+    this.ground.rotation.x = -Math.PI / 2;
+    this.ground.position.set((x0 + x1) / 2, -1, -(y0 + y1) / 2);
+    this.staticRoot.add(this.ground);
+
+    // zone raster (SIM-ENV-005): translucent overlay above the terrain so
+    // the civilian-presence map stays readable over realistic ground
     if (sc.grid && sc.grid.length) {
       const ny = sc.grid.length, nx = sc.grid[0].length;
       const cnv = document.createElement('canvas');
@@ -120,15 +136,14 @@ export class SceneView {
       const tex = new THREE.CanvasTexture(cnv);
       tex.magFilter = THREE.NearestFilter;
       tex.colorSpace = THREE.SRGBColorSpace;
-      this._groundMats = {
-        zones: new THREE.MeshLambertMaterial({ map: tex }),
-        plain: new THREE.MeshLambertMaterial({ color: 0x141a22 }),
-      };
-      this.ground = new THREE.Mesh(
-        new THREE.PlaneGeometry(x1 - x0, y1 - y0), this._groundMats.zones);
-      this.ground.rotation.x = -Math.PI / 2;
-      this.ground.position.set((x0 + x1) / 2, -1, -(y0 + y1) / 2);
-      this.staticRoot.add(this.ground);
+      this.zoneRaster = new THREE.Mesh(
+        new THREE.PlaneGeometry(x1 - x0, y1 - y0),
+        new THREE.MeshBasicMaterial({
+          map: tex, transparent: true, opacity: 0.34, depthWrite: false,
+        }));
+      this.zoneRaster.rotation.x = -Math.PI / 2;
+      this.zoneRaster.position.set((x0 + x1) / 2, -0.85, -(y0 + y1) / 2);
+      this.staticRoot.add(this.zoneRaster);
     }
 
     // city fabric: kind-textured instanced buildings, parks/water, zone
@@ -170,6 +185,11 @@ export class SceneView {
     for (const t of sc.turrets || []) {
       const group = new THREE.Group();
       group.position.copy(W(t.pos));
+      const plinth = new THREE.Mesh(
+        new THREE.CylinderGeometry(30, 34, 8, 16),
+        new THREE.MeshLambertMaterial({ color: 0x474e58 }));
+      plinth.position.y = 4;
+      group.add(plinth);
       const body = new THREE.Mesh(
         new THREE.BoxGeometry(40, 26, 40),
         new THREE.MeshLambertMaterial({ color: 0x6b7a8f }));
@@ -239,8 +259,7 @@ export class SceneView {
   setLayer(name, on) {
     if (name === 'coverage') this.coverageGroup.visible = on;
     else if (name === 'rings') this.ringsGroup.visible = on;
-    else if (name === 'grid' && this.ground && this._groundMats)
-      this.ground.material = on ? this._groundMats.zones : this._groundMats.plain;
+    else if (name === 'grid' && this.zoneRaster) this.zoneRaster.visible = on;
     else if (name === 'zoneborders') this.city?.setBorders(on);
     else if (name === 'rooftints') this.city?.setRoofTints(on);
   }
@@ -252,20 +271,49 @@ export class SceneView {
     ringMat.color.setHex(st.occupied > 0 ? 0xff9a3d : 0x49c97c);
   }
 
-  // SRS HMI-MAP-006: lighting + fog respond to frame.env
+  // SRS HMI-MAP-006: lighting, sky and fog respond to frame.env
   applyEnv(env) {
     if (!env) return;
     const d = clamp(env.daylight ?? 0.35, 0, 1);
     const p = clamp(env.precip ?? 0, 0, 1);
-    this.amb.intensity = 0.16 + 0.55 * d * (1 - 0.3 * p);
-    this.sun.intensity = 0.12 + 1.05 * d * (1 - 0.4 * p);
+    this.amb.intensity = 0.16 + 0.5 * d * (1 - 0.3 * p);
+    this.hemi.intensity = 0.22 + 0.55 * d * (1 - 0.35 * p);
+    this.sun.intensity = 0.12 + 1.15 * d * (1 - 0.45 * p);
+    this.sun.color.setHex(0xffc78f).lerp(new THREE.Color(0xfff4e2), d);
+    this._drawSky(d, p);
     const bg = NIGHT_BG.clone().lerp(DAY_BG, d);
     this.scene.background.copy(bg);
     const f = clamp(env.fog ?? 0, 0, 1);
-    this.scene.fog.color.copy(bg);
+    this.scene.fog.color.copy(this._sky.horizon);
     this.scene.fog.near = 9000 * (1 - f) + 220 * f;
     this.scene.fog.far = 26000 * (1 - f) + 2800 * f;
     this.city?.applyDaylight(d);     // windows glow at night (HMI-MAP-007)
+  }
+
+  // Vertical sky gradient with a warm dusk band; cheap 2x256 canvas, only
+  // redrawn when daylight/precip actually move.
+  _drawSky(d, p) {
+    const key = d.toFixed(2) + '|' + p.toFixed(2);
+    if (key === this._skyKey) return;
+    this._skyKey = key;
+    const grey = new THREE.Color(0x6a737b);
+    const zen = new THREE.Color(0x070d1c).lerp(new THREE.Color(0x6fa3d8), d).lerp(grey, p * 0.45);
+    const hor = new THREE.Color(0x141b2a).lerp(new THREE.Color(0xcfdde8), d).lerp(grey, p * 0.45);
+    const gnd = new THREE.Color(0x0a0d12).lerp(new THREE.Color(0x6e7a80), d).lerp(grey, p * 0.45);
+    // golden-hour glow around low sun (the default urban_raid dusk)
+    const warm = Math.exp(-(((d - 0.3) / 0.14) ** 2));
+    hor.lerp(new THREE.Color(0xe09a5a), warm * 0.45);
+    this._sky.horizon = hor;
+    const ctx = this._sky.cnv.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, '#' + zen.getHexString());
+    g.addColorStop(0.46, '#' + zen.clone().lerp(hor, 0.7).getHexString());
+    g.addColorStop(0.52, '#' + hor.getHexString());
+    g.addColorStop(0.56, '#' + gnd.getHexString());
+    g.addColorStop(1, '#' + gnd.clone().multiplyScalar(0.6).getHexString());
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 2, 256);
+    this._sky.tex.needsUpdate = true;
   }
 
   focus(pos3) {
@@ -278,11 +326,87 @@ export class SceneView {
 
   start(beforeRender) {
     this.renderer.setAnimationLoop(() => {
-      beforeRender?.(performance.now());
+      const now = performance.now();
+      beforeRender?.(now);
+      this.city?.tick(now);          // river ripple drift
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
     });
   }
+}
+
+// Inward-facing sphere with a vertical gradient texture; fog-exempt so the
+// horizon stays crisp.
+function makeSkyDome() {
+  const cnv = document.createElement('canvas');
+  cnv.width = 2; cnv.height = 256;
+  const tex = new THREE.CanvasTexture(cnv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(42000, 24, 12),
+    new THREE.MeshBasicMaterial({
+      map: tex, side: THREE.BackSide, fog: false, depthWrite: false,
+    }));
+  mesh.renderOrder = -1000;
+  mesh.frustumCulled = false;
+  return { mesh, cnv, tex, horizon: new THREE.Color(0x141b2a) };
+}
+
+// Street/lot ground plate generated from the building fabric: asphalt
+// corridors emerge as the gaps between expanded lots, scrubland outside.
+// One 2048^2 canvas built once per scene (canvas row 0 = north edge).
+function terrainTexture(sc) {
+  const [x0, y0, x1, y1] = sc.bounds;
+  const S = 2048;
+  const sx = S / (x1 - x0), sy = S / (y1 - y0);
+  const px = (x) => (x - x0) * sx;
+  const py = (y) => (y1 - y) * sy;
+  const cnv = document.createElement('canvas');
+  cnv.width = cnv.height = S;
+  const ctx = cnv.getContext('2d');
+  const frand = (i, s) =>
+    (((Math.imul(i + 1, 2654435761) ^ Math.imul(s + 7, 40503)) >>> 9) % 65536) / 65536;
+
+  // scrub/soil base with deterministic mottling
+  ctx.fillStyle = '#232c23';
+  ctx.fillRect(0, 0, S, S);
+  for (let i = 0; i < 9000; i++) {
+    ctx.globalAlpha = 0.2 + 0.3 * frand(i, 1);
+    ctx.fillStyle = ['#1d251d', '#2a352a', '#262e22', '#2e3a2e'][Math.floor(frand(i, 2) * 4)];
+    const r = 2 + frand(i, 3) * 7;
+    ctx.fillRect(frand(i, 4) * S, frand(i, 5) * S, r, r);
+  }
+  ctx.globalAlpha = 1;
+
+  const buildings = (sc.buildings || []).filter(
+    (b) => b.kind !== 'water' && b.rect);
+  // asphalt street corridors: union of lot rects expanded by ~half a street
+  ctx.fillStyle = '#24272c';
+  for (const b of buildings) {
+    const [bx0, by0, bx1, by1] = b.rect;
+    ctx.fillRect(px(bx0 - 55), py(by1 + 55),
+      (bx1 - bx0 + 110) * sx, (by1 - by0 + 110) * sy);
+  }
+  // lots: slightly lighter pavement so blocks read against the streets
+  ctx.fillStyle = '#2e3238';
+  for (const b of buildings) {
+    if (!(b.height > 0)) continue;
+    const [bx0, by0, bx1, by1] = b.rect;
+    ctx.fillRect(px(bx0 - 8), py(by1 + 8),
+      (bx1 - bx0 + 16) * sx, (by1 - by0 + 16) * sy);
+  }
+  // unifying grime pass
+  for (let i = 0; i < 4000; i++) {
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = frand(i, 6) < 0.5 ? '#000' : '#fff';
+    ctx.fillRect(frand(i, 7) * S, frand(i, 8) * S, 2 + frand(i, 9) * 4, 2 + frand(i, 9) * 4);
+  }
+  ctx.globalAlpha = 1;
+
+  const tex = new THREE.CanvasTexture(cnv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
 }
 
 export function makeGroundRing(center, radius, color, opacity = 0.35) {
