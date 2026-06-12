@@ -1,5 +1,12 @@
 # COOP-UAV-S — System Requirements Specification (SRS)
 
+> **Version 0.3 — urban environment, sentinels, interceptable debris.**
+> Adds: building-typed urban world model with civilian-presence zone
+> derivation (SIM-ENV-004/005/006), material-dependent sensor and fire
+> line-of-sight occlusion (SIM-SEN-005, SIM-EFF-006), live interceptable
+> debris (§4.11), sentinel surveillance UAVs (§3.9), charging stations
+> (§3.10), debris-intercept tasking (PHY-GCS-006/007) and engagement
+> attribution (SIM-GT-004).
 > **Version 0.2 — three-segment definition.**
 > Supersedes the implicit requirements scattered across
 > [README](../README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) v0.1.
@@ -247,6 +254,19 @@ over a metropolitan area.
   authorisation into a signed clearance token.
 - **PHY-GCS-005** — GCS power, shelter and comms shall support 24 h
   continuous operation and displacement (pack-up/set-up) in ≤ 30 min.
+- **PHY-GCS-006** — The C2/TEWA stack shall generate **debris-intercept
+  tasks** for falling wreckage whose predicted impact point lies in
+  DANGEROUS or CRITICAL ground: CRITICAL impacts shall be prioritised over
+  DANGEROUS impacts, debris predicted to land in SAFE ground shall not be
+  engaged, and debris tasks shall be assignable **only to kinetic
+  effectors capable of physical destruction** (projectile-gun UAVs and
+  anti-air turrets — never net or electronic-warfare effectors). The
+  optimisation objective is the minimisation of expected collateral damage
+  and loss of life as expressed by the ground-risk zone weights.
+- **PHY-GCS-007** — Weapon-target assignment shall be Pk-aware: a shooter
+  whose effector engagement envelope (range, off-axis, closing speed)
+  cannot achieve a viable kill probability against the track's estimated
+  kinematics shall not be assigned to that track.
 
 ### 3.7 Fixed effectors — anti-air gun turrets
 
@@ -275,6 +295,33 @@ over a metropolitan area.
   range, weather and illumination.
 - **PHY-SEN-004** — Acoustic pickets: detection below the radar horizon,
   engine-type cue, coarse bearing, short range.
+- **PHY-SEN-005** — All sensors (fixed and airborne) are line-of-sight
+  instruments: buildings and terrain shall mask or attenuate their
+  channels according to the obstructing material (see SIM-SEN-005 for the
+  simulation counterpart).
+
+### 3.9 Sentinel surveillance UAVs
+
+- **PHY-SNT-001** — The fleet shall include **unarmed sentinel UAVs**
+  carrying a gimballed EO/IR payload and a passive RF receiver, providing
+  persistent airborne overwatch of the defended urban area, in particular
+  of volumes masked from the fixed sensor network by buildings.
+- **PHY-SNT-002** — Sentinels shall fly pre-planned patrol orbits
+  (station, radius, altitude, speed) and feed their detections into the
+  common fusion picture through the same `detections` channel as the
+  fixed sensor network; they carry no effector and never receive
+  engagement tasks.
+- **PHY-SNT-003** — Sentinel endurance, energy management and
+  recharge/turnaround cycles follow the interceptor rules (PHY-UAV-013,
+  SIM-PHX-002), with patrol resumed automatically after turnaround.
+
+### 3.10 Charging and rearm stations
+
+- **PHY-CHG-001** — UAV bases shall be explicit **charging stations**
+  sited realistically on building rooftops or on ground pads adjacent to
+  buildings; each interceptor and sentinel is homed to exactly one
+  station, where it recharges and (for interceptors) rearms during the
+  turnaround cycle.
 
 ---
 
@@ -367,6 +414,17 @@ over a metropolitan area.
   horizon vs threat altitude.
 - **SIM-SEN-004** — Turret fire-control sensing (slaved optics/track input)
   shall be modelled with its own latency and error budget.
+- **SIM-SEN-005** — Sensor-to-target visibility shall be computed by a
+  2.5D ray-versus-building query against the SIM-ENV-004 building set,
+  with **material- and modality-dependent transmittance** per crossed
+  building: EO/IR and seekers are fully blocked by any opaque structure;
+  radar is blocked by concrete/brick and partially transmitted by
+  glass/steel and light-metal structures (two-way attenuation); passive RF
+  is partially attenuated per material; acoustic sensing diffracts around
+  structures with mild attenuation. Parks and water bodies do not
+  obstruct. The query shall be a pure function of static geometry
+  (deterministic, SIM-003) and cheap enough for every sensor-target pair
+  at sensor update rates.
 
 ### 4.6 Onboard software execution (software-in-the-loop)
 
@@ -415,14 +473,42 @@ over a metropolitan area.
   magazine and thermal limits per PHY-TUR-002.
 - **SIM-EFF-005** — Debris model: mechanism-dependent wreck ballistics
   (net ≈ 0.15 horizontal velocity retention vs projectile ≈ 0.65), fall
-  time, altitude-growing dispersion — used predictively in ROE and
-  generatively on kill, as in v0.1.
+  time, altitude-growing dispersion — used predictively in ROE and, since
+  v0.3, generatively on kill as a live falling object (§4.11).
+- **SIM-EFF-006** — Munition release and adjudication shall require
+  shooter-to-target **line of sight**: shots whose sight line crosses a
+  solid building are inhibited by fire control where the tactical picture
+  allows, and adjudicated as blocked (`fire_blocked_los`, no Pk roll) by
+  the sim-side adjudicator otherwise; blocked turret bursts still produce
+  stray rounds (SIM-EFF-003).
 
 ### 4.9 Environment, weather and lighting
 
 - **SIM-ENV-001** — World model: terrain and building geometry of the
   defended area, protected asset list, SAFE / DANGEROUS / CRITICAL risk
   raster (default DANGEROUS), kill-box derivation (`nearest_safe_cell`).
+- **SIM-ENV-004** — Every building shall carry a **kind**
+  (`residential_high`, `residential_low`, `school`, `hospital`,
+  `commercial`, `industrial`, `park`, `water`) and a **material**
+  (`concrete`, `brick`, `glass_steel`, `light_metal`, `wood`, `none`),
+  with kind-appropriate material defaults; kind drives civilian-presence
+  zoning (SIM-ENV-005) and material drives occlusion (SIM-SEN-005).
+- **SIM-ENV-005** — The risk raster shall be **derivable from building
+  kinds** (`zone_source: buildings`) as a civilian-presence map:
+  **CRITICAL (red) = civilians certainly present** — hospital and school
+  footprints plus a 100 m buffer, dense residential blocks plus a 50 m
+  buffer; **DANGEROUS (yellow) = civilians possibly present** — low
+  residential and commercial footprints plus kind-specific buffers and
+  the street fabric between them; **SAFE (green) = civilian-free ground**
+  — parks, water and restricted industrial ground. Hand-painted rect
+  zones (`zone_source: rects`) remain supported for legacy scenarios and
+  as manual overrides. The existing zone weights, collateral-cost and ROE
+  machinery consume the derived raster unchanged.
+- **SIM-ENV-006** — A deterministic, seeded **city generator** shall emit
+  a complete scenario definition (street-grid building layout with all
+  kinds of SIM-ENV-004, derived zones, charging stations, sensor and
+  fleet laydown, threat raid) so realistic urban scenarios are data, not
+  code (SIM-RT-004).
 - **SIM-ENV-002** — Weather state machine per scenario: wind profile,
   precipitation type/intensity, fog density, temperature — all coupled
   into flight physics (SIM-PHX-003) and sensors (SIM-SEN-003).
@@ -445,6 +531,37 @@ over a metropolitan area.
   replay the run in E3 and to compute the §7 metrics (detection latency
   per threat, classification/decoy timelines, intercept geometry, debris
   cost, ammunition economics).
+- **SIM-GT-004 (engagement attribution)** — Every fire, kill, miss and
+  blocked-shot event shall carry the **shooter identity, weapon
+  (effector) type, target identity, target kind (track or debris),
+  outcome and the engaged-time Pk**; the per-run metrics shall include
+  per-shooter and per-weapon engagement summaries (shots, hits, kills,
+  debris kills, mean Pk) so "who shot what with which weapon" is
+  answerable from the record and from the live display (HMI-MAP-002).
+
+### 4.11 Live debris and debris interception
+
+- **SIM-DEB-001** — A kill shall spawn one **live falling-debris object**
+  integrated per world tick: mechanism-dependent horizontal velocity
+  retention at spawn (SIM-EFF-005), gravity-accelerated fall capped at
+  terminal velocity, horizontal velocity preserved — numerically
+  consistent with the predictive footprint model used by ROE.
+- **SIM-DEB-002** — Each live debris object shall be published on a
+  dedicated `debris/state` topic with position, velocity, analytic
+  predicted ground-impact point, the risk-zone class under that point and
+  time-to-impact (this channel stands in for a debris-tracking radar;
+  fidelity class *representative*).
+- **SIM-DEB-003** — Debris whose predicted impact zone is DANGEROUS or
+  CRITICAL shall be interceptable per PHY-GCS-006 (kinetic effectors
+  only, CRITICAL before DANGEROUS, SAFE-bound debris never engaged); a
+  successful intercept removes the object and replaces it with
+  negligible-collateral fragments, and the run metrics shall credit the
+  averted zone cost (`debris_saved_cost`).
+- **SIM-DEB-004** — Fragments produced by intercepting debris shall be
+  modelled as negligible: debris interception shall not spawn further
+  interceptable objects (no recursive hazard).
+- **SIM-DEB-005** — Debris that reaches the ground impacts as a wreck,
+  scored against the risk map exactly as v0.1 instantaneous wrecks were.
 
 ---
 
@@ -486,6 +603,22 @@ over a metropolitan area.
 - **HMI-MAP-006** — The scene shall reflect simulated lighting and weather
   (night, fog, precipitation) so demonstrations communicate the sensing
   conditions (fed by SIM-ENV-002/003 over ICD-EVAL or scenario metadata).
+- **HMI-MAP-007** — Buildings shall be rendered by kind and material
+  (recognisable residential blocks, visually distinct hospitals and
+  schools, parks and water), charging stations shall be shown at their
+  rooftop/ground positions with occupancy state, and the red/yellow/green
+  civilian-presence zoning shall remain clearly readable even where
+  buildings stand on coloured ground (e.g. zone-tinted roofs and zone
+  border outlines), with an on-screen legend. UAV and threat models shall
+  be true-scale 3D airframes with zoom-aware magnification so they stay
+  visible at map scale and become 1:1 when viewed close (operator-
+  adjustable magnification).
+- **HMI-MAP-008** — Live debris shall be rendered in flight with its
+  predicted impact point coloured by the zone class beneath it;
+  engagements shall be visually attributable — weapon-coloured tracer
+  from shooter to target on every release, kill markers naming the
+  shooter, and debris-intercept effects (HMI counterpart of SIM-GT-004 /
+  SIM-DEB-002).
 
 ### 5.3 Threat display — acquired threats (production behaviour)
 
@@ -524,6 +657,11 @@ over a metropolitan area.
   (detection latency distribution, classification timelines, intercept
   outcomes, debris cost, ammo per kill), per run and per Monte-Carlo
   batch.
+- **HMI-EVAL-006** — The interface shall present a live **engagement
+  summary** (per shooter: weapon, shots, hits, kills; per weapon type:
+  the same aggregates) sourced from the SIM-GT-004 attribution fields,
+  and the event log shall render engagements human-readably
+  (`shooter → target [weapon] OUTCOME (pk)`).
 
 ### 5.5 Authorisations and human-on-the-loop control
 
@@ -618,10 +756,18 @@ bit-for-bit (SIM-002).
 | `engagement/result` | `EngagementResult` + debris footprint | adjudicator → C2, E3, ORC |
 | `c2/decision_log` | TEWA decisions, rationales | C2/ORC → E3 audit |
 | `env/conditions` | weather/lighting state | E2 (prod: met sensors) → E3 |
+| `debris/state` | `DebrisArray` (live falling debris, predicted impact + zone) | E2 (prod: debris-tracking radar) → C2, E3, ORC |
 
 - **ICD-001** — All channels shall carry versioned, schema-defined
   messages (dataclasses today, ROS 2 `.msg`/DDS at migration), transported
   over the simulated network layer (SIM-COM-001) when E2 is the peer.
+- **ICD-003** — The v0.3 runtime wire-schema extensions are normative and
+  documented in [ICD_RUNTIME.md](ICD_RUNTIME.md): building `kind` /
+  `material` / `name` and `stations` in the scene payload; `kind`
+  (interceptor/sentinel) on UAV states; a `debris` array, enriched
+  attribution fields on engagement events and station occupancy in
+  frames; `debris_intercepts`, `debris_saved_cost` and the
+  `engagements` summary in evaluation metrics.
 
 ### 6.2 Evaluation-only channels (this stage; absent in production)
 

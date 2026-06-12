@@ -16,16 +16,27 @@ export const CLS_SHORT = {
 };
 
 export const MODE_COLOR = {
-  IDLE: 0x6b7a8f, PURSUIT: 0x39d2ff, ENGAGE: 0xff5050,
-  BLOCKING: 0xffd166, HERDING: 0xb45cff, RTB: 0x7cfc9a,
+  IDLE: 0x6b7a8f, TRANSIT: 0x8fa3bd, PURSUIT: 0x39d2ff, ENGAGE: 0xff5050,
+  BLOCKING: 0xffd166, HERDING: 0xb45cff, PATROL: 0x7cd6c0, RTB: 0x7cfc9a,
+  REARM: 0x4f6f5a,
 };
 
-export const ZONE_COLORS = ['#1d4d2a', '#7a5a1e', '#7a1e1e'];   // SAFE / DANGEROUS / CRITICAL
+// Civilian-presence palette (SRS SIM-ENV-005 / HMI-MAP-007):
+// green = civilian-free, yellow = civilians possible, red = civilians present.
+export const ZONE_COLORS = ['#2c8a4a', '#d6a531', '#d23c3c'];   // SAFE / DANGEROUS / CRITICAL
 export const ZONE_NAMES = ['SAFE', 'DANGEROUS', 'CRITICAL'];
 export const ZONE_TINT = { SAFE: 0x49c97c, DANGEROUS: 0xffb347, CRITICAL: 0xff5050 };
 export const ZONE_CSS = { SAFE: '#49c97c', DANGEROUS: '#ffb347', CRITICAL: '#ff5050' };
+export const ZONE_LEGEND = {
+  SAFE: 'civilian-free', DANGEROUS: 'civilians possible', CRITICAL: 'civilians present',
+};
 
 export const SENSOR_COLOR = { radar: 0x4fc3f7, rf: 0xb45cff, eo_ir: 0x7cfc9a, acoustic: 0xffd166 };
+
+// Tracer colours per weapon (HMI-MAP-008 attribution).
+export const WEAPON_COLOR = {
+  projectile: 0xffd166, net: 0x39d2ff, turret_gun: 0xff9a3d,
+};
 
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -44,9 +55,44 @@ export function esc(s) {
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// Free every GPU resource under a three.js subtree (geometries, materials,
+// their textures). Only for trees whose resources are owned per-build —
+// never call it over shared module-level geometries.
+export function disposeGroup(root) {
+  root.traverse((o) => {
+    if (o.isInstancedMesh) o.dispose();      // instance attribute GPU buffers
+    o.geometry?.dispose();
+    if (!o.material) return;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      m.map?.dispose();
+      m.emissiveMap?.dispose();
+      m.dispose();
+    }
+  });
+}
+
 export function dist3(a, b) {
   const dx = (a[0] || 0) - (b[0] || 0), dy = (a[1] || 0) - (b[1] || 0), dz = (a[2] || 0) - (b[2] || 0);
   return Math.hypot(dx, dy, dz);
+}
+
+// Engagement event kinds rendered as "shooter → target [weapon] OUTCOME (pk)"
+// in the log (SRS HMI-EVAL-006); everything else falls back to k=v dump.
+export const ENGAGEMENT_EVENT = {
+  kill: 'KILL', miss: 'MISS', debris_neutralized: 'DEBRIS KILL',
+  fire_blocked_los: 'BLOCKED (LOS)', fire_no_target: 'NO TARGET',
+};
+
+export function fmtEngagement(ev) {
+  const outcome = ENGAGEMENT_EVENT[ev.kind];
+  if (!outcome || !ev.uav_id) return null;
+  const target = ev.enemy_id ?? ev.debris_id
+    ?? (ev.track_id != null ? `track #${ev.track_id}` : '?');
+  const weapon = ev.effector ?? '?';
+  const pk = ev.pk != null ? ` (pk ${(+ev.pk).toFixed(2)})` : '';
+  const saved = ev.saved_zone ? ` saved ${ev.saved_zone}` : '';
+  const zone = ev.debris_zone ? ` debris→${ev.debris_zone}` : '';
+  return `${ev.uav_id} → ${target} [${weapon}] ${outcome}${pk}${saved}${zone}`;
 }
 
 // Zone name at world (x, y); grid row j runs south -> north (matches v0.1 raster).

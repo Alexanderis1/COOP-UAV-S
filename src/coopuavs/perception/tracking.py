@@ -17,6 +17,15 @@ from ..core.messages import Detection, ThreatClass
 
 _track_ids = itertools.count(1)
 
+
+def reset_track_ids() -> None:
+    """Restart track numbering. Called by each new ``World`` (with
+    ``reset_message_seq``) so runs are reproducible run-to-run even when
+    several share one Python process — batch, serve, tests (SIM-003)."""
+    global _track_ids
+    _track_ids = itertools.count(1)
+
+
 _H = np.hstack([np.eye(3), np.zeros((3, 3))])   # position measurement model
 
 

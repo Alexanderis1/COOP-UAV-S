@@ -53,13 +53,14 @@ def add_enemy(world: World, drone_id: str, pos) -> EnemyDrone:
 
 def test_shot_resolves_against_the_aim_point_not_the_shooter():
     world = World(Environment.from_config(ENV_CFG))
-    # Fresh stream so the adjudication roll is its first draw (0.26 < Pk).
-    world.rng = np.random.default_rng(2)
     uav = InterceptorUav("u1", world.bus, home=np.zeros(3),
                          effector=projectile_gun(), max_speed=80.0)
     uav.body.position = np.array([0.0, 0.0, 300.0])
     uav.body.velocity = np.array([80.0, 0.0, 0.0])
     adj = EngagementAdjudicator(world, {"u1": uav})
+    # Fresh stream so the adjudication roll is its first draw (0.26 < Pk).
+    # The adjudicator rolls on its own registry stream since P0-6e.
+    adj._rng = np.random.default_rng(2)
 
     # A non-engaged airframe sits behind the launch rail, nearer the shooter
     # than the aim point — under shooter-distance resolution it ate the shot.

@@ -138,6 +138,16 @@ class Orchestrator(Node):
                            req, by="posture")
             return
 
+        if roe.reason == "debris_mitigation":
+            # Time-critical defensive act (SIM-DEB-003): wreckage is falling
+            # toward populated ground and the window is its fall time. The
+            # ROE branch is the human-pre-approved rule (SYS-004); only a
+            # global weapons hold stops it. Logged like every clearance.
+            self._clearance_pub.publish(roe)
+            self._decision("orc", f"auto-cleared (debris mitigation) — {rationale}",
+                           req, by="orc")
+            return
+
         if self.posture == "pre_authorized":
             self._clearance_pub.publish(roe)
             actor = "orc" if roe.decision == EngagementDecision.AUTHORIZED else "c2"

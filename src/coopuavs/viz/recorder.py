@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from ..core.messages import TrackArray, TurretState, UavState
 from ..core.node import Node
 from ..sim.world import World
@@ -75,19 +77,7 @@ class Recorder(Node):
             "run": dict(self.run_info),
             "tracks": [self._track_entry(trk)
                        for trk in (self._tracks.tracks if self._tracks else [])],
-            "uavs": [
-                {
-                    "id": u.uav_id,
-                    "pos": [round(float(x), 1) for x in u.position],
-                    "vel": [round(float(x), 1) for x in u.velocity],
-                    "mode": u.mode.value,
-                    "ammo": u.ammo,
-                    "battery": round(u.battery, 3),
-                    "task_id": u.task_id,
-                    "link": round(float(getattr(u, "link", 1.0)), 3),
-                }
-                for u in self._uavs.values()
-            ],
+            "uavs": [self._uav_entry(u) for u in self._uavs.values()],
             "turrets": [
                 {
                     "id": s.turret_id,
@@ -112,10 +102,67 @@ class Recorder(Node):
                  "zone": s["zone"].name}
                 for s in w.stray_impacts
             ],
+            "debris": self._debris_entries(),
+            "stations": self._station_entries(),
             "env": w.weather.as_dict(),
             "events": events,
             "decisions": decisions,
         }
+
+    def _uav_entry(self, u: UavState) -> dict:
+        entry = {
+            "id": u.uav_id,
+            "pos": [round(float(x), 1) for x in u.position],
+            "vel": [round(float(x), 1) for x in u.velocity],
+            "mode": u.mode.value,
+            "ammo": u.ammo,
+            "battery": round(u.battery, 3),
+            "task_id": u.task_id,
+            "link": round(float(getattr(u, "link", 1.0)), 3),
+            "kind": getattr(u, "kind", "interceptor"),
+            "effector": getattr(u, "effector", "") or None,
+        }
+        # Sitl-mode telemetry, additive only (ICD §2.2 v0.4): keys appear
+        # exactly when the platform reports them — a pointmass recording
+        # is byte-compatible with v0.3 parsers.
+        att = getattr(u, "attitude_q", None)
+        if att is not None:
+            entry["att"] = [round(float(q), 4) for q in att]
+        nav_q = getattr(u, "nav_quality", None)
+        if nav_q is not None:
+            entry["nav_q"] = round(float(nav_q), 2)
+        health = getattr(u, "health", None)
+        if health is not None:
+            entry["health"] = health
+        return entry
+
+    def _debris_entries(self) -> list[dict]:
+        """Live falling debris (ICD §2.2 v0.3): truth-derived display data,
+        same numbers the debris/state channel carries (SIM-DEB-002)."""
+        out = []
+        for deb in self.world.debris.values():
+            impact = deb.predicted_impact()
+            zone = self.world.env.risk_map.zone_at(impact[0], impact[1])
+            out.append({
+                "id": deb.debris_id,
+                "pos": [round(float(x), 1) for x in deb.position],
+                "vel": [round(float(x), 1) for x in deb.velocity],
+                "impact": [round(float(impact[0]), 1), round(float(impact[1]), 1), 0.0],
+                "zone": zone.name,
+                "t_impact": round(deb.time_to_impact(), 2),
+            })
+        return out
+
+    def _station_entries(self) -> list[dict]:
+        """Charging-pad occupancy: airframes physically on the pad."""
+        out = []
+        for st in self.world.env.stations:
+            occupied = sum(
+                1 for u in self.world.friendlies.values()
+                if float(np.linalg.norm(u.position - st.position)) < 30.0
+            )
+            out.append({"id": st.station_id, "occupied": occupied})
+        return out
 
     def _track_entry(self, trk) -> dict:
         # Predicted ground impact by linear projection of the track velocity
@@ -160,6 +207,8 @@ class Recorder(Node):
         for node in self.world.nodes:
             if isinstance(node, OnboardSeeker) or not isinstance(node, Sensor):
                 continue
+            if hasattr(node, "_platform"):
+                continue   # mounted sentinel payloads move with the airframe
             sensors.append({
                 "name": node.name,
                 "type": type_names.get(type(node), "radar"),
@@ -175,7 +224,14 @@ class Recorder(Node):
                 for a in env.assets
             ],
             "buildings": [
-                {"rect": list(b.rect), "height": b.height} for b in env.buildings
+                {
+                    "rect": list(b.rect),
+                    "height": b.height,
+                    "kind": b.kind.value,
+                    "material": b.material.value,
+                    "name": b.name,
+                }
+                for b in env.buildings
             ],
             "sensors": sensors,
             "turrets": [
@@ -186,6 +242,11 @@ class Recorder(Node):
             "homes": [
                 {"uav_id": uid, "pos": [float(x) for x in uav.home]}
                 for uid, uav in self.world.friendlies.items()
+            ],
+            "stations": [
+                {"id": st.station_id, "pos": [float(x) for x in st.position],
+                 "rooftop": st.rooftop}
+                for st in env.stations
             ],
             "run": dict(self.run_meta),
         }

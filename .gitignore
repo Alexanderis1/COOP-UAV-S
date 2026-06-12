@@ -6,3 +6,4 @@ runs/
 .venv/
 build/
 dist/
+.claude/

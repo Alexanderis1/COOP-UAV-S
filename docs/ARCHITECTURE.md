@@ -202,15 +202,50 @@ track ghosts that fade with `p_decoy`, interceptor status board, event log.
 ```
 src/coopuavs/
   core/         bus, node, messages          (the ROS 2 seam)
-  sim/          world, physics, environment, scenario, adjudicator
+  sim/          world, physics, environment, scenario, adjudicator,
+                occlusion (LOS grid), citygen, debris_objects
   threats/      enemy drone profiles + behaviours
   sensors/      radar, rf, eo_ir, acoustic, seeker
   perception/   tracking, fusion, classification
   c2/           threat_evaluation, assignment, roe, base_station
-  risk/         zones (risk map), debris (footprint model)
-  interceptors/ uav agent, guidance, cooperation, effectors
+  risk/         zones (risk map + derivation), debris (footprint model)
+  interceptors/ uav agent, sentinel, airframe, guidance, cooperation,
+                effectors
   viz/          recorder, server, web/index.html
 scenarios/      YAML battle definitions
 tests/          unit + end-to-end (deterministic) suite
 docs/           RESEARCH.md / ARCHITECTURE.md / ROADMAP.md
 ```
+
+## 6. v0.3 urban-environment additions (SRS v0.3)
+
+**Occlusion** (`sim/occlusion.py`, SIM-SEN-005 / SIM-EFF-006). Buildings
+are 2.5D boxes binned into a coarse grid built once per run. A
+sensor-to-target sight line is traversed with a 2D DDA; each candidate
+building is slab-tested in xy and height-checked over the crossed
+interval. Each crossing multiplies a per-material, per-channel
+transmittance into the result: EO/IR and seekers are binary-blocked,
+radar attenuates two-way, RF partially penetrates, acoustic diffracts at
+a flat factor. The adjudicator uses the same geometry (`clear()`) to
+score occluded shots as `fire_blocked_los` instead of rolling Pk.
+
+**Civilian-presence zoning** (`risk/zones.derive_zones`, SIM-ENV-005).
+With `zone_source: buildings`, the SAFE/DANGEROUS/CRITICAL raster is
+painted from building kinds in precedence order (SAFE base → DANGEROUS
+residential/commercial buffers → SAFE parks/water/industrial → CRITICAL
+hospital/school/dense-residential buffers), so red means civilians are
+certainly under the debris, yellow possibly, green not at all. ROE and
+collateral costing consume the raster unchanged.
+
+**Live debris** (`sim/debris_objects.py`, SRS §4.11). A kill now spawns
+a falling object stepped by the world; `debris/state` publishes its
+predicted impact and zone. The C2 turns non-SAFE-bound debris into
+intercept tasks for projectile UAVs and turrets (CRITICAL before
+DANGEROUS); a hit removes the object and credits the averted zone cost
+(`debris_saved_cost`). SAFE-bound debris is left to fall.
+
+**Sentinels and stations** (`interceptors/sentinel.py`, PHY-SNT-*).
+Unarmed patrol UAVs carry EO/IR + RF sensor instances that publish
+ordinary `detections`; the shared `UavAirframe` base gives them the
+interceptor battery/RTB/turnaround cycle, homed — like interceptors — to
+explicit rooftop/ground `ChargingStation`s.

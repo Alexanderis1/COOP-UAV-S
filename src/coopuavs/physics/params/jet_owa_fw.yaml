@@ -1,0 +1,41 @@
+# Tier-J jet one-way-attack threat (fast OWA/decoy class): ~300 kg, 2.2 m
+# span, 120 m/s cruise, throttle-proportional jet thrust (no prop washout).
+# INVENTED-BUT-SELF-CONSISTENT; pinned by tests/test_fixedwing.py.
+# Inertias in B&M FRD axes (converted at load).
+name: jet_owa_fw
+type: fixedwing
+mass: 300.0                       # kg
+inertia_frd: {jx: 40.0, jy: 120.0, jz: 150.0, jxz: 4.0}  # kg m^2
+wing: {s: 1.2, b: 2.2, c: 0.55, e: 0.85}
+stall: {alpha0: 0.25, m_blend: 50.0}
+prop: {model: jet, t_max: 1500.0}                        # N
+aero:
+  CL0: 0.10
+  CL_alpha: 3.9
+  CL_q: 4.5
+  CL_de: 0.40
+  CD_p: 0.025
+  CD_q: 0.0
+  CD_de: 0.01
+  Cm0: 0.01
+  Cm_alpha: -1.8
+  Cm_q: -25.0
+  Cm_de: -1.1
+  CY0: 0.0
+  CY_beta: -0.60
+  CY_p: 0.0
+  CY_r: 0.0
+  CY_da: 0.0
+  CY_dr: 0.12
+  Cl0: 0.0
+  Cl_beta: -0.07
+  Cl_p: -0.40
+  Cl_r: 0.08
+  Cl_da: 0.12
+  Cl_dr: 0.008
+  Cn0: 0.0
+  Cn_beta: 0.07
+  Cn_p: -0.03
+  Cn_r: -0.09
+  Cn_da: -0.008
+  Cn_dr: -0.06

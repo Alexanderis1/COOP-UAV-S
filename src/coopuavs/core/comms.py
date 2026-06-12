@@ -95,6 +95,9 @@ class CommsModel:
         self._queue: list[tuple[float, int, Callable, Any]] = []
         self._seq = itertools.count()
         self._stats: dict[str, deque] = defaultdict(deque)   # id -> (t, ok)
+        # Own stream (DESIGN_REVIEW 5.1): loss/jitter rolls must not depend
+        # on how many sensor draws happened earlier in the tick.
+        self._rng = world.rng_registry.stream("comms")
 
         world.bus.router = self
         world.comms = self
@@ -128,13 +131,13 @@ class CommsModel:
             loss = self.link_loss(endpoint, t)
             ok = True
             if loss > 0.0:
-                ok = float(self.world.rng.random()) >= loss
+                ok = float(self._rng.random()) >= loss
             self._note(endpoint, t, ok)
             if not ok:
                 return                                # packet lost on this hop
         latency = self.latency_s
         if self.jitter_s > 0.0:
-            latency = max(0.0, float(self.world.rng.normal(self.latency_s, self.jitter_s)))
+            latency = max(0.0, float(self._rng.normal(self.latency_s, self.jitter_s)))
         heapq.heappush(self._queue, (t + latency, next(self._seq), callback, msg))
 
     # -- world integration ---------------------------------------------------------

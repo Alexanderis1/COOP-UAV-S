@@ -21,8 +21,10 @@ from ..risk.zones import ZONE_WEIGHTS
 from .world import World
 
 # Event kinds counted as munition releases (one fire event = one shot;
-# a turret burst is one trigger pull).
-SHOT_EVENT_KINDS = {"kill", "miss", "fire_no_target"}
+# a turret burst is one trigger pull). Debris intercepts and LOS-blocked
+# releases spend ammunition too.
+SHOT_EVENT_KINDS = {"kill", "miss", "fire_no_target", "debris_neutralized",
+                    "fire_blocked_los"}
 AUTH_EVENT_KINDS = {"auth_request", "auth_approved", "auth_denied", "auth_expired"}
 
 
@@ -108,6 +110,38 @@ class EvalTracker(Node):
             if "latency" in ev
         ]
 
+        # Engagement attribution (SIM-GT-004): who shot what with which
+        # weapon, per shooter and per weapon class. Events carry the ICD
+        # weapon name directly (turret bursts log "turret_gun").
+        by_shooter: dict[str, dict] = {}
+        by_weapon: dict[str, dict] = {}
+        for ev in events:
+            if ev["kind"] not in SHOT_EVENT_KINDS or "uav_id" not in ev:
+                continue
+            shooter = ev["uav_id"]
+            weapon = ev.get("effector", "unknown")
+            for row in (
+                by_shooter.setdefault(shooter, {
+                    "weapon": weapon, "shots": 0, "hits": 0, "kills": 0,
+                    "debris_kills": 0, "_pks": []}),
+                by_weapon.setdefault(weapon, {
+                    "shots": 0, "hits": 0, "kills": 0,
+                    "debris_kills": 0, "_pks": []}),
+            ):
+                row["shots"] += 1
+                if ev["kind"] == "kill":
+                    row["hits"] += 1
+                    row["kills"] += 1
+                elif ev["kind"] == "debris_neutralized":
+                    row["hits"] += 1
+                    row["debris_kills"] += 1
+                if "pk" in ev:
+                    row["_pks"].append(ev["pk"])
+        for table in (by_shooter, by_weapon):
+            for row in table.values():
+                pks = row.pop("_pks")
+                row["mean_pk"] = round(float(np.mean(pks)), 3) if pks else None
+
         return {
             "detection": {
                 "acquired": sum(e.acquired for e in enemies),
@@ -126,6 +160,13 @@ class EvalTracker(Node):
                 "wrecks_by_zone": self.world._wrecks_by_zone(),
                 "strays_by_zone": self.world._strays_by_zone(),
                 "debris_cost": round(float(debris_cost), 3),
+                # Debris interception credit (SIM-DEB-003): zone cost the
+                # defence averted by destroying wreckage before impact.
+                "debris_intercepts": len(self.world.debris_intercepted),
+                "debris_saved_cost": round(float(sum(
+                    ZONE_WEIGHTS[d["saved_zone"]]
+                    for d in self.world.debris_intercepted
+                )), 3),
             },
             "auth": {
                 "requests": len(auth["auth_request"]),
@@ -135,6 +176,10 @@ class EvalTracker(Node):
                 "mean_latency": (
                     round(float(np.mean(auth_latencies)), 2) if auth_latencies else None
                 ),
+            },
+            "engagements": {
+                "by_shooter": by_shooter,
+                "by_weapon": by_weapon,
             },
         }
 

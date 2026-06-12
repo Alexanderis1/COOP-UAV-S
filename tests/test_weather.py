@@ -84,3 +84,34 @@ def test_wind_displaces_enemy_truth():
     windy_pos = windy.enemies["owa-1"].position
     # Wind FROM the west pushes the truth track further east.
     assert windy_pos[0] > calm_pos[0] + 50.0
+
+
+def test_wind_does_not_drag_docked_rearming_uav():
+    """A REARMing airframe is clamped to its pad. Rooftop stations put pads
+    at z>1, where the wind loop used to drift the 'docked' airframe hundreds
+    of metres off the station mid-turnaround (PHY-CHG-001)."""
+    from coopuavs.core.messages import UavMode
+    from coopuavs.interceptors.effectors import projectile_gun
+    from coopuavs.interceptors.uav import InterceptorUav
+
+    env = Environment.from_config({"bounds": [-2000.0, -2000.0, 2000.0, 2000.0]})
+    world = World(env, dt=0.05, seed=3)
+    world.weather = WeatherState(world.rng, wind_speed=12.0,
+                                 wind_dir_deg=270.0, gust_std=0.0)
+    home = np.array([0.0, 0.0, 40.0])
+    docked = InterceptorUav("u1", world.bus, home=home,
+                            effector=projectile_gun(), max_speed=80.0)
+    docked.mode = UavMode.REARM
+    docked._rearm_until = 1e9
+    hovering = InterceptorUav("u2", world.bus, home=home.copy(),
+                              effector=projectile_gun(), max_speed=80.0)
+    for uav in (docked, hovering):
+        world.friendlies[uav.uav_id] = uav
+        world.add_node(uav)
+
+    world.step()
+    # Positive control: the airborne airframe is displaced by the same wind.
+    assert float(np.linalg.norm(hovering.position - home)) > 0.1
+    for _ in range(200):
+        world.step()
+    assert np.allclose(docked.position, home, atol=1e-9)

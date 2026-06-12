@@ -38,9 +38,12 @@ function send(type, data = {}) {
 }
 
 function setLayer(key, on) {
-  if (key === 'coverage' || key === 'rings' || key === 'grid') view.setLayer(key, on);
+  if (['coverage', 'rings', 'grid', 'zoneborders', 'rooftints'].includes(key))
+    view.setLayer(key, on);
   else ents.setLayer(key, on);
 }
+
+function setMag(v) { ents.setMagnification(v); }
 
 function select(sel) {
   state.selection = sel;
@@ -78,7 +81,7 @@ function focus(ref) {
   view.focus(mid);
 }
 
-const panels = new Panels({ state, send, focus, setLayer, mode });
+const panels = new Panels({ state, send, focus, setLayer, setMag, mode });
 
 // --------------------------------------------------------- message routing
 function handleOps(msg) {

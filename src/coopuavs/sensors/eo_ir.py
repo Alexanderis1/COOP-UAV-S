@@ -47,7 +47,10 @@ class EoIrSensor(Sensor):
         # the model is documented in :mod:`coopuavs.sim.weather`.
         return self.world.weather.eo_ir_range_factor()
 
-    def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
+        # trans is binary for EO/IR (any solid building blocks the view);
+        # the base class already skipped fully-masked sight lines.
         if self.rng.random() > self.pd:
             return None
         rel = enemy.position - self.position

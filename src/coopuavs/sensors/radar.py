@@ -19,6 +19,8 @@ from .base import Sensor
 
 
 class Radar(Sensor):
+    channel = "radar"
+
     def __init__(
         self,
         name,
@@ -40,7 +42,8 @@ class Radar(Sensor):
     def weather_factor(self) -> float:
         return self.world.weather.radar_range_factor()
 
-    def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
         rel = enemy.position - self.position
         rng_m = float(np.linalg.norm(rel))
         elevation = np.arcsin(np.clip(rel[2] / (rng_m + 1e-9), -1, 1))
@@ -51,8 +54,9 @@ class Radar(Sensor):
         # normalised so a reference_rcs target at half (weather-effective) max
         # range has snr = 1 and thus sees pd_max / 2; pd_max is the asymptotic
         # ceiling approached at close range. Precipitation mildly shrinks the
-        # effective range.
+        # effective range. Building transmittance applies two-way (SIM-SEN-005).
         snr = (enemy.rcs / self.reference_rcs) * (0.5 * self.effective_range() / (rng_m + 1e-9)) ** 4
+        snr *= trans ** 2
         pd = self.pd_max * snr / (1.0 + snr)
         if self.rng.random() > pd:
             return None

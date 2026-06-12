@@ -15,11 +15,14 @@ from typing import Callable
 import numpy as np
 
 from ..core.bus import MessageBus
-from ..core.messages import reset_message_seq
+from ..core.messages import UavMode, reset_message_seq
 from ..core.node import Node
+from ..core.rng import RngRegistry
+from ..perception.tracking import reset_track_ids
 from ..risk.debris import DebrisModel
 from ..threats.enemy_drone import EnemyDrone
 from .environment import Environment
+from .occlusion import OcclusionGrid
 from .weather import WeatherState
 
 
@@ -35,16 +38,29 @@ class World:
         self.dt = dt
         self.t = 0.0
         self.bus = MessageBus()
-        # Restart message numbering with the world clock: run N of a batch
-        # must produce the same recording as the same seed run standalone.
+        # Restart message and track numbering with the world clock: run N of
+        # a batch must produce the same recording as the same seed run
+        # standalone.
         reset_message_seq()
+        reset_track_ids()
         self.rng = np.random.default_rng(seed)
-        self.debris_model = DebrisModel(self.rng)
-        self.weather = weather or WeatherState(self.rng)
+        # Name-keyed per-consumer streams (DESIGN_REVIEW 5.1): consumers are
+        # migrating off the shared call-order-coupled `self.rng` one at a
+        # time (PLAN_PROBLEM1 P0-6); new randomness must use the registry.
+        self.rng_registry = RngRegistry(seed)
+        self.debris_model = DebrisModel(self.rng_registry.stream("debris"))
+        self.weather = weather or WeatherState(self.rng_registry.stream("weather"))
+        # Building LOS occlusion (SIM-SEN-005/SIM-EFF-006); scenarios may
+        # disable it (`occlusion: {enabled: false}` restores v0.1 sensing).
+        self.occlusion = OcclusionGrid(env.buildings, env.bounds)
 
         # Simulated network layer (SIM-COM-001); attached by the CommsModel
         # itself when the scenario builds one. None = synchronous bus.
         self.comms = None
+
+        # SITL micro-step scheduler (SIM-SIL-002); installed by the sitl
+        # build path. None = pure macro-step world, the v0.x behavior.
+        self.micro = None
 
         self.enemies: dict[str, EnemyDrone] = {}
         # Friendly truth registry (sim-side only): interceptor airframes by
@@ -56,6 +72,18 @@ class World:
         self.events: list[dict] = []
         self.wrecks: list[dict] = []
         self.stray_impacts: list[dict] = []   # {"t", "pos", "zone", "shooter"}
+        # Live falling debris (SIM-DEB-001) and the intercepts credited to
+        # the defence (SIM-DEB-003). Each object carries a stable negative
+        # pseudo-track id for the task/clearance correlation chain.
+        self.debris: dict[str, object] = {}
+        self.debris_intercepted: list[dict] = []
+        self._debris_seq = 0
+
+    def next_debris_ref(self) -> int:
+        # Offset past small sentinels: FireClearance.track_id defaults to -1,
+        # which must never alias a real debris pseudo-track.
+        self._debris_seq += 1
+        return -(100 + self._debris_seq)
 
     # -- construction ----------------------------------------------------------
 
@@ -97,14 +125,42 @@ class World:
                                threat_class=enemy.threat_class.value,
                                warhead=enemy.profile.warhead)
 
+        # Debris falls between the enemies and the nodes: a wreck spawned by
+        # last tick's adjudication is integrated before the sensors and the
+        # C2 see this tick (SIM-DEB-001).
+        for deb in list(self.debris.values()):
+            deb.step(self.dt)
+            if deb.landed:
+                impact = deb.position
+                zone = self.env.risk_map.zone_at(impact[0], impact[1])
+                self.wrecks.append({
+                    "t": self.t, "enemy_id": deb.source_id,
+                    "pos": [float(impact[0]), float(impact[1]), 0.0],
+                    "zone": zone, "effector": deb.mechanism.value,
+                })
+                self.log_event("debris_impact", debris_id=deb.debris_id,
+                               zone=zone.name)
+                del self.debris[deb.debris_id]
+
+        if self.micro is not None:
+            # K micro-ticks inside this macro step (SIM-SIL-002): the fleet
+            # SITL engine hangs its rate groups here, so the sensors and C2
+            # below see this tick's flown state.
+            self.micro.run_macro_step(self.t, self.dt)
+
         for node in self.nodes:
             node.maybe_update(self.t, self.dt)
 
         if windy:
             # Truth-side wind displacement of friendly airframes (SIM-PHX-003);
-            # the agents fight the drift through their velocity loops.
+            # the agents fight the drift through their velocity loops. A
+            # REARMing airframe is docked to its pad (rooftop stations sit
+            # well above the z>1 altitude gate), not airborne. SITL vehicles
+            # opt out (FriendlyVehicle.wind_displaced=False): they feel wind
+            # as a plant force in the micro-loop, never as displacement.
             for uav in self.friendlies.values():
-                if uav.position[2] > 1.0:
+                if (uav.position[2] > 1.0 and uav.mode != UavMode.REARM
+                        and getattr(uav, "wind_displaced", True)):
                     uav.body.position += self.weather.wind_at(uav.position[2]) * self.dt
 
         self.t += self.dt
@@ -126,6 +182,7 @@ class World:
                 and not self._spawn_queue
                 and self.enemies
                 and not any(e.alive for e in self.enemies.values())
+                and not self.debris   # let the last wrecks land or be killed
             ):
                 break
         return self.summary()
@@ -146,6 +203,7 @@ class World:
             "armed_leakers": len(armed_leakers),
             "wrecks_by_zone": self._wrecks_by_zone(),
             "strays_by_zone": self._strays_by_zone(),
+            "debris_intercepted": len(self.debris_intercepted),
             "events": len(self.events),
         }
 

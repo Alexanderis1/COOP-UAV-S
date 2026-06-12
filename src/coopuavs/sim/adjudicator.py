@@ -25,13 +25,26 @@ import numpy as np
 from ..core.messages import EngagementResult, FireRequest, Header
 from ..core.node import Node
 from ..interceptors.uav import InterceptorUav
+from ..risk.debris import retention_jitter, velocity_retention
 from ..sim.physics import GRAVITY
+from .debris_objects import FallingDebris
 from .world import World
+
+def _pos3(p) -> list[float]:
+    """Engagement events carry the adjudicated target position so the
+    display can draw shooter-to-target tracers without a track lookup
+    (HMI-MAP-008)."""
+    return [round(float(p[0]), 1), round(float(p[1]), 1), round(float(p[2]), 1)]
+
 
 # Effective lethal radius of one HE/frag round against a small airframe, m.
 TURRET_LETHAL_RADIUS = 2.0
 # Fraction of target speed treated as unpredictable lateral motion over TOF.
-TURRET_EVASION_FACTOR = 0.3
+# 0.15 models lead-corrected fire control against largely ballistic cruise
+# profiles (v0.3 hit-rate review: at 0.3 the evasion term dominated sigma
+# beyond ~400 m and turrets sprayed hopeless 2-5% bursts — pure stray-round
+# pollution; the residual 15% covers weave and estimate error).
+TURRET_EVASION_FACTOR = 0.15
 
 
 class EngagementAdjudicator(Node):
@@ -47,8 +60,21 @@ class EngagementAdjudicator(Node):
         self.turrets = turrets or {}
         self._result_pub = self.create_publisher("engagement/result")
         self.create_subscription("engagement/fire", self._on_fire)
+        # Own stream (DESIGN_REVIEW 5.1): kill rolls and stray dispersion
+        # must not depend on how many draws preceded them in the tick.
+        self._rng = world.rng_registry.stream("adjudicator")
+
+    def _event_effector(self, effector, shooter_id: str) -> str:
+        """Weapon name on engagement events (ICD: net|projectile|turret_gun):
+        turret bursts report 'turret_gun'. The wire messages and the wreck
+        mechanism keep the physical EffectorType (a turret round throws the
+        wreck like any projectile)."""
+        return "turret_gun" if shooter_id in self.turrets else effector.value
 
     def _on_fire(self, msg: FireRequest) -> None:
+        if msg.target_kind == "debris":
+            self._on_debris_fire(msg)
+            return
         if msg.uav_id in self.turrets:
             self._on_turret_fire(msg, self.turrets[msg.uav_id])
             return
@@ -63,16 +89,31 @@ class EngagementAdjudicator(Node):
         )
 
         if target is not None:
+            if not self.world.occlusion.clear(uav.position, target.position):
+                # A building stands in the sight line (SIM-EFF-006): the
+                # munition cannot reach the target; no Pk roll.
+                self.world.log_event(
+                    "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
+                    effector=uav.effector.type.value, pos=_pos3(target.position),
+                )
+                self._result_pub.publish(result)
+                return
             rel = target.position - uav.position
             pk_true = uav.effector.p_kill(rel, uav.velocity, target.velocity)
-            if self.world.rng.random() < pk_true:
+            result.pk = pk_true
+            result.effector = uav.effector.type
+            if self._rng.random() < pk_true:
                 self._register_kill(result, target, uav.effector.type, msg.uav_id, pk_true)
             else:
                 self.world.log_event(
-                    "miss", uav_id=msg.uav_id, enemy_id=target.id, pk=round(pk_true, 3)
+                    "miss", uav_id=msg.uav_id, enemy_id=target.id,
+                    effector=uav.effector.type.value, pk=round(pk_true, 3),
+                    target_kind="track", pos=_pos3(target.position),
                 )
         else:
-            self.world.log_event("fire_no_target", uav_id=msg.uav_id)
+            self.world.log_event("fire_no_target", uav_id=msg.uav_id,
+                                 effector=uav.effector.type.value,
+                                 target_kind="track")
 
         self._result_pub.publish(result)
 
@@ -88,6 +129,19 @@ class EngagementAdjudicator(Node):
         target = self._nearest_enemy(msg.predicted_intercept, gate=150.0)
         n_rounds = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
 
+        if target is not None and not self.world.occlusion.clear(
+                turret.position, target.position):
+            # Masked by a building (SIM-EFF-006): the burst cannot connect,
+            # but the rounds were fired and still land somewhere.
+            self.world.log_event(
+                "fire_blocked_los", uav_id=msg.uav_id, enemy_id=target.id,
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                pos=_pos3(target.position),
+            )
+            self._stray_rounds(turret, msg.predicted_intercept, n_rounds)
+            self._result_pub.publish(result)
+            return
+
         if target is not None:
             dist = float(np.linalg.norm(target.position - turret.position))
             tof = dist / turret.muzzle_velocity
@@ -98,16 +152,24 @@ class EngagementAdjudicator(Node):
                 + (TURRET_EVASION_FACTOR * float(np.linalg.norm(target.velocity)) * tof) ** 2
             p_round = 1.0 - float(np.exp(-(TURRET_LETHAL_RADIUS**2) / (2.0 * sigma2 + 1e-9)))
             p_burst = 1.0 - (1.0 - p_round) ** n_rounds
-            if self.world.rng.random() < p_burst:
+            result.pk = p_burst
+            result.effector = msg.effector
+            if self._rng.random() < p_burst:
                 self._register_kill(result, target, msg.effector, msg.uav_id, p_burst)
                 stray_rounds = max(0, n_rounds - 1)   # the killing round stops
             else:
                 self.world.log_event(
-                    "miss", uav_id=msg.uav_id, enemy_id=target.id, pk=round(p_burst, 3)
+                    "miss", uav_id=msg.uav_id, enemy_id=target.id,
+                    effector=self._event_effector(msg.effector, msg.uav_id),
+                    pk=round(p_burst, 3),
+                    target_kind="track", pos=_pos3(target.position),
                 )
                 stray_rounds = n_rounds
         else:
-            self.world.log_event("fire_no_target", uav_id=msg.uav_id)
+            self.world.log_event("fire_no_target", uav_id=msg.uav_id,
+                                 effector=self._event_effector(msg.effector,
+                                                               msg.uav_id),
+                                 target_kind="track")
             stray_rounds = n_rounds
 
         self._stray_rounds(turret, msg.predicted_intercept, stray_rounds)
@@ -133,7 +195,7 @@ class EngagementAdjudicator(Node):
         tof = dist / turret.muzzle_velocity
 
         for _ in range(n):
-            err = self.world.rng.normal(0.0, turret.dispersion_mrad * 1e-3, 2)
+            err = self._rng.normal(0.0, turret.dispersion_mrad * 1e-3, 2)
             d = u + e1 * err[0] + e2 * err[1]
             v0 = d / np.linalg.norm(d) * turret.muzzle_velocity
             # Ballistic time to ground: z0 + v0z t - g t^2 / 2 = 0.
@@ -150,27 +212,129 @@ class EngagementAdjudicator(Node):
                 "shooter": turret.turret_id,
             })
 
+    # -- debris interception (SIM-DEB-003) ----------------------------------------
+
+    def _on_debris_fire(self, msg: FireRequest) -> None:
+        """A kinetic shot at a falling wreck: hit removes the object (its
+        fragments are negligible, SIM-DEB-004), miss lets it keep falling.
+        Both shooter families resolve here."""
+        result = EngagementResult(
+            header=Header(stamp=self.world.t),
+            task_id=msg.task_id, track_id=msg.track_id, uav_id=msg.uav_id,
+            effector=msg.effector, target_kind="debris",
+        )
+        turret = self.turrets.get(msg.uav_id)
+        deb = self.world.debris.get(msg.debris_id)
+        if deb is None:
+            # Landed or already neutralized while the round was in flight.
+            self.world.log_event("fire_no_target", uav_id=msg.uav_id,
+                                 effector=self._event_effector(msg.effector,
+                                                               msg.uav_id),
+                                 target_kind="debris", debris_id=msg.debris_id)
+            self._result_pub.publish(result)
+            return
+
+        shooter_pos = turret.position if turret is not None \
+            else self.uavs[msg.uav_id].position
+        if not self.world.occlusion.clear(shooter_pos, deb.position):
+            self.world.log_event(
+                "fire_blocked_los", uav_id=msg.uav_id, debris_id=deb.debris_id,
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                target_kind="debris", pos=_pos3(deb.position),
+            )
+            if turret is not None:
+                n = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
+                self._stray_rounds(turret, msg.predicted_intercept, n)
+            self._result_pub.publish(result)
+            return
+
+        if turret is not None:
+            dist = float(np.linalg.norm(deb.position - turret.position))
+            tof = dist / turret.muzzle_velocity
+            n_rounds = msg.rounds if msg.rounds > 0 else turret.rounds_per_burst
+            sigma2 = (turret.dispersion_mrad * 1e-3 * dist) ** 2 \
+                + (TURRET_EVASION_FACTOR * float(np.linalg.norm(deb.velocity)) * tof) ** 2
+            p_round = 1.0 - float(np.exp(-(TURRET_LETHAL_RADIUS**2) / (2.0 * sigma2 + 1e-9)))
+            pk = 1.0 - (1.0 - p_round) ** n_rounds
+        else:
+            uav = self.uavs[msg.uav_id]
+            rel = deb.position - uav.position
+            pk = uav.effector.p_kill(rel, uav.velocity, deb.velocity)
+
+        result.pk = pk
+        if self._rng.random() < pk:
+            impact = deb.predicted_impact()
+            saved_zone = self.world.env.risk_map.zone_at(impact[0], impact[1])
+            del self.world.debris[deb.debris_id]
+            self.world.debris_intercepted.append({
+                "t": round(self.world.t, 3), "debris_id": deb.debris_id,
+                "shooter": msg.uav_id,
+                "effector": self._event_effector(msg.effector, msg.uav_id),
+                "saved_zone": saved_zone,
+            })
+            result.hit = True
+            self.world.log_event(
+                "debris_neutralized", uav_id=msg.uav_id,
+                debris_id=deb.debris_id,
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                saved_zone=saved_zone.name, pk=round(pk, 3),
+                target_kind="debris", pos=_pos3(deb.position),
+            )
+            stray = max(0, (msg.rounds or getattr(turret, "rounds_per_burst", 1)) - 1) \
+                if turret is not None else 0
+        else:
+            self.world.log_event(
+                "miss", uav_id=msg.uav_id, debris_id=deb.debris_id,
+                effector=self._event_effector(msg.effector, msg.uav_id),
+                pk=round(pk, 3),
+                target_kind="debris", pos=_pos3(deb.position),
+            )
+            stray = (msg.rounds if msg.rounds > 0
+                     else turret.rounds_per_burst) if turret is not None else 0
+        if turret is not None and stray > 0:
+            self._stray_rounds(turret, msg.predicted_intercept, stray)
+        self._result_pub.publish(result)
+
     # -- shared kill bookkeeping --------------------------------------------------
 
     def _register_kill(self, result: EngagementResult, target, effector_type,
                        shooter_id: str, pk: float) -> None:
         target.kill()
-        impact = self.world.debris_model.sample_impact(
-            target.position, target.velocity, effector_type
+        # The wreck becomes a live falling object (SIM-DEB-001): mechanism-
+        # dependent horizontal velocity retention with the same jitter the
+        # predictive footprint samples, integrated by the world until it
+        # lands or is intercepted.
+        retention = velocity_retention(effector_type) \
+            * float(retention_jitter(self._rng))
+        vel = np.array([target.velocity[0] * retention,
+                        target.velocity[1] * retention, 0.0])
+        deb = FallingDebris(
+            debris_id=f"deb-{target.id}",
+            source_id=target.id,
+            position=target.position,
+            velocity=vel,
+            mechanism=effector_type,
+            spawn_t=self.world.t,
+            track_ref=self.world.next_debris_ref(),
         )
+        self.world.debris[deb.debris_id] = deb
+        impact = deb.predicted_impact()
         zone = self.world.env.risk_map.zone_at(impact[0], impact[1])
-        self.world.wrecks.append(
-            {"t": self.world.t, "enemy_id": target.id, "pos": impact.tolist(),
-             "zone": zone, "effector": effector_type.value}
-        )
         result.hit = True
         result.debris_impact = np.array([impact[0], impact[1], 0.0])
         result.debris_zone = zone
+        result.effector = effector_type
+        result.pk = pk
         self.world.log_event(
             "kill", uav_id=shooter_id, enemy_id=target.id,
             threat_class=target.threat_class.value,
-            effector=effector_type.value,
+            effector=self._event_effector(effector_type, shooter_id),
             debris_zone=zone.name, pk=round(pk, 3),
+            target_kind="track", pos=_pos3(target.position),
+        )
+        self.world.log_event(
+            "debris_spawn", debris_id=deb.debris_id, enemy_id=target.id,
+            zone=zone.name, t_impact=round(deb.time_to_impact(), 2),
         )
 
     def _nearest_enemy(self, aim_point: np.ndarray, gate: float = 300.0):

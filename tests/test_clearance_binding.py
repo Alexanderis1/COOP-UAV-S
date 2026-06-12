@@ -127,6 +127,39 @@ def test_retasking_invalidates_clearance_state():
     assert fires == []                         # re-requests, does not fire
 
 
+def test_no_clearance_request_below_the_release_floor():
+    """Request and release thresholds must not invert: a pk the release gate
+    would refuse (>= request floor, < release floor) used to consume the
+    clearance token, abort, and re-request every cycle — operator auth-spam
+    under human_confirm with no shot ever fired."""
+    from coopuavs.interceptors.uav import MIN_PK_TO_RELEASE, MIN_PK_TO_REQUEST
+    assert MIN_PK_TO_REQUEST >= MIN_PK_TO_RELEASE
+
+    bus = MessageBus()
+    requests, fires = [], []
+    bus.subscribe("engagement/fire_request", requests.append)
+    bus.subscribe("engagement/fire", fires.append)
+    uav = InterceptorUav("u1", bus, home=np.array([0.0, 0.0, 0.0]),
+                         effector=projectile_gun(), max_speed=80.0)
+    # Quality window holds (optimal range, 12.4 deg off-axis) but the fast
+    # crosser caps pk at ~0.294 — below the 0.30 release floor.
+    uav.body.position = np.array([0.0, 0.0, 300.0])
+    off = np.radians(12.4)
+    uav.body.velocity = 60.0 * np.array([np.cos(off), np.sin(off), 0.0])
+    bus.publish("engagement/tasks", [task_for(track_id=1, task_id=7)])
+    bus.publish("tracks", TrackArray(header=Header(stamp=0.0), tracks=[Track(
+        header=Header(stamp=0.0), track_id=1,
+        position=np.array([80.0, 0.0, 300.0]),
+        velocity=np.array([-190.0, 0.0, 0.0]),
+    )]))
+    pk = uav.effector.p_kill(np.array([80.0, 0.0, 0.0]) ,
+                             uav.body.velocity, np.array([-190.0, 0.0, 0.0]))
+    assert MIN_PK_TO_REQUEST - 0.06 < pk < MIN_PK_TO_RELEASE   # in the old band
+    uav.update(0.0, 0.1)
+    assert requests == []                      # never asks for what it won't release
+    assert fires == []
+
+
 def test_stale_denied_does_not_clear_the_new_task():
     bus = MessageBus()
     uav = make_engaged_uav(bus)

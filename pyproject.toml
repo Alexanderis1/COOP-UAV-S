@@ -29,9 +29,20 @@ where = ["src"]
 # The dashboard frontend ships inside the package: without this, wheel and
 # sdist installs lack viz/web and `coopuavs serve` has nothing to serve.
 "coopuavs.viz" = ["web/*"]
+# Airframe parameter files ship with the physics core (P1).
+"coopuavs.physics" = ["params/*.yaml"]
+# Device-suite parameter files ship with the hw models (P2).
+"coopuavs.hw" = ["params/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Default run stays fast: opt into the heavy suites with e.g. `pytest -m slow`.
+addopts = '--strict-markers -m "not slow and not perf and not oracle"'
+markers = [
+    "slow: long-running statistical suites (Monte-Carlo, Allan variance, NEES/NIS)",
+    "perf: performance benchmarks with CPU-time/RTF gates",
+    "oracle: comparisons against committed offline oracle traces (RotorPy, ArduPilot SITL)",
+]
 
 [tool.ruff]
 line-length = 100

@@ -79,3 +79,37 @@ def test_fast_target_gets_support():
     tasks = assignment.allocate([assess(1)], tracks, uavs, speeds, rm, t=0.0)
     assert len(tasks) == 1
     assert len(tasks[0].support_ids) == 2
+
+
+def test_net_preferred_for_slow_target_projectile_for_fast():
+    """PHY-GCS-007 positive control: the envelope-aware chooser must
+    actively pick the net for a slow crosser (higher pk proxy) — not merely
+    avoid it for fast ones via the eligible-or-available fallback."""
+    rm, _ = setup()
+    speeds = {"net-1": 60.0, "hawk-1": 60.0}
+    uavs = [uav("net-1", [0, -500, 0]), uav("hawk-1", [0, 500, 0])]
+    effectors = {"net-1": "net", "hawk-1": "projectile"}
+
+    slow = {1: track(1, [3000, 0, 500], [-8, 0, 0])}
+    tasks = assignment.allocate([assess(1)], slow, uavs, speeds, rm, t=0.0,
+                                uav_effectors=effectors)
+    assert tasks[0].shooter_id == "net-1"
+
+    fast = {1: track(1, [3000, 0, 500], [-150, 0, 0])}
+    tasks = assignment.allocate([assess(1)], fast, uavs, speeds, rm, t=0.0,
+                                uav_effectors=effectors)
+    assert tasks[0].shooter_id == "hawk-1"     # net out of speed envelope
+
+
+def test_zero_closing_speed_effector_does_not_crash(monkeypatch):
+    """An effector registered with max_closing_speed 0 (disabled/custom) must
+    not raise ZeroDivisionError in the pk proxy; the platform still gets the
+    saturation-corner blocking task."""
+    rm, speeds = setup()
+    monkeypatch.setitem(assignment.EFFECTOR_CAPS, "disabled", (0.5, 0.0))
+    tracks = {1: track(1, [3000, 0, 1000], [-55, 0, 0])}
+    tasks = assignment.allocate(
+        [assess(1)], tracks, [uav("u1", [0, 0, 0])], speeds, rm, t=0.0,
+        uav_effectors={"u1": "disabled"},
+    )
+    assert tasks and tasks[0].shooter_id == "u1"

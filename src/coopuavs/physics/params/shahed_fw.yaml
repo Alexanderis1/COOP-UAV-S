@@ -1,0 +1,42 @@
+# Tier-S delta-wing OWA threat (Shahed-136 class): ~200 kg, 2.5 m span,
+# 50 m/s cruise. INVENTED-BUT-SELF-CONSISTENT -- mass/span/cruise from open
+# reporting (docs/RESEARCH.md operational baseline); aero derivatives are
+# plausible-class values pinned by tests/test_fixedwing.py (trim, Cm_alpha,
+# stall, damping signs). Inertias in B&M FRD axes (converted at load).
+name: shahed_fw
+type: fixedwing
+mass: 200.0                       # kg
+inertia_frd: {jx: 31.0, jy: 82.0, jz: 100.0, jxz: 3.0}   # kg m^2
+wing: {s: 1.6, b: 2.5, c: 0.65, e: 0.85}                 # m^2, m, m, Oswald
+stall: {alpha0: 0.30, m_blend: 50.0}                     # rad, sigmoid sharpness
+prop: {model: prop, s_prop: 0.42, c_prop: 1.0, k_motor: 80.0}
+aero:
+  CL0: 0.40
+  CL_alpha: 3.8        # /rad (AR 3.9 lifting-line)
+  CL_q: 5.0
+  CL_de: 0.50
+  CD_p: 0.035
+  CD_q: 0.0
+  CD_de: 0.01
+  Cm0: 0.02
+  Cm_alpha: -1.5       # /rad, statically stable
+  Cm_q: -20.0
+  Cm_de: -1.0
+  CY0: 0.0
+  CY_beta: -0.50
+  CY_p: 0.0
+  CY_r: 0.0
+  CY_da: 0.0
+  CY_dr: 0.15
+  Cl0: 0.0
+  Cl_beta: -0.08
+  Cl_p: -0.45
+  Cl_r: 0.10
+  Cl_da: 0.15
+  Cl_dr: 0.01
+  Cn0: 0.0
+  Cn_beta: 0.06        # weathervane stable
+  Cn_p: -0.04
+  Cn_r: -0.08
+  Cn_da: -0.01
+  Cn_dr: -0.07

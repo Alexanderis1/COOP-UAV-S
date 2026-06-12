@@ -185,3 +185,24 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
   background: var(--panel-solid); border: 1px solid var(--warn); color: var(--warn);
   border-radius: 6px; padding: 6px 14px; display: none;
 }
+
+/* ---- zone legend (HMI-MAP-007) ------------------------------------------- */
+#zone-legend .lg-row { display: flex; align-items: center; gap: 7px; margin: 2px 0; }
+#zone-legend .sw {
+  width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto;
+  border: 1px solid #00000060;
+}
+
+/* ---- engagements table (HMI-EVAL-006) ------------------------------------- */
+#engage-body table { width: 100%; border-collapse: collapse; font-size: 11px; }
+#engage-body th { color: var(--dim); font-weight: normal; text-align: right; padding: 1px 4px; }
+#engage-body th:first-child, #engage-body td:first-child { text-align: left; }
+#engage-body td { text-align: right; padding: 1px 4px; }
+#engage-body tr.focusable { cursor: pointer; }
+#engage-body tr.focusable:hover td { color: #fff; }
+#engage-empty { color: var(--dim); }
+
+/* ---- engagement log outcomes ---------------------------------------------- */
+#log-list .debris_neutralized { color: #7cd6c0; }
+#log-list .fire_blocked_los { color: var(--dim); }
+#log-list .debris_spawn, #log-list .debris_impact { color: #b9c3cf; }

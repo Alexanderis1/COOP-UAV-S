@@ -25,6 +25,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.messages import (
+    DebrisArray,
     EffectorType,
     EngagementDecision,
     FireClearance,
@@ -33,6 +34,7 @@ from ..core.messages import (
     Track,
     TrackArray,
     TurretState,
+    ZoneClass,
 )
 from ..core.node import Node
 from ..c2.base_station import KILL_RECONFIRM_GRACE_S, TRACK_FRESH_S
@@ -42,6 +44,11 @@ from .world import World
 
 FIRE_TOPIC = "engagement/fire"
 STATE_TOPIC = "turret/state"
+
+# Debris-intercept priority boost over threat tracks (PHY-GCS-006): a
+# wreck already falling on populated ground is a certain impact, a track
+# is a possible one. CRITICAL-bound debris outranks everything in arc.
+DEBRIS_PRIORITY = {ZoneClass.DANGEROUS: 1.2, ZoneClass.CRITICAL: 1.6}
 
 
 class GroundTurret(Node):
@@ -59,13 +66,20 @@ class GroundTurret(Node):
         muzzle_velocity: float = 850.0,   # m/s
         dispersion_mrad: float = 3.0,     # 1-sigma per axis
         decoy_threshold: float = 0.7,     # don't spend rounds on likely decoys
-        min_pk: float = 0.03,             # don't spray at hopeless geometry
+        min_pk: float = 0.12,             # don't spray at hopeless geometry
+        # (v0.3 hit-rate review: at 0.03 turrets opened fire at ranges where
+        # a burst had a 2-5% chance and every miss landed 5 stray rounds on
+        # the city; holding to ~0.12 concentrates fire inside ~600 m where
+        # bursts actually connect and strays drop proportionally.)
         settle_deg: float = 2.0,
         clearance_window: float = 3.0,    # s an AUTHORIZED token stays valid
         rate_hz: float = 10.0,
     ):
         super().__init__(turret_id, world.bus, rate_hz=rate_hz)
         self.turret_id = turret_id
+        # Static survey geometry only (firing-arc masking, SIM-EFF-004) —
+        # the turret still never reads ground-truth enemy state.
+        self._occlusion = world.occlusion
         self.position = np.asarray(position, dtype=float)
         self.slew_az_dps = slew_az_dps
         self.slew_el_dps = slew_el_dps
@@ -86,6 +100,10 @@ class GroundTurret(Node):
         self.target_track: int | None = None
 
         self._tracks: dict[int, Track] = {}
+        self._debris_tracks: dict[int, Track] = {}   # pseudo-tracks, ref-keyed
+        # track_ref -> (debris_id, impact zone) for fire-message correlation
+        # and the zone-driven priority boost.
+        self._debris_by_ref: dict[int, tuple[str, ZoneClass]] = {}
         self._peer_claims: dict[str, int | None] = {}
         self._denied: dict[int, float] = {}   # track_id -> denial time (TTL)
         self._killed: dict[int, float] = {}   # track_id -> kill report time
@@ -99,6 +117,7 @@ class GroundTurret(Node):
         self._request_pub = self.create_publisher("engagement/fire_request")
         self._fire_pub = self.create_publisher(FIRE_TOPIC)
         self.create_subscription("tracks", self._on_tracks)
+        self.create_subscription("debris/state", self._on_debris)
         self.create_subscription(STATE_TOPIC, self._on_peer_state)
         self.create_subscription("engagement/clearance", self._on_clearance)
         self.create_subscription("engagement/result", self._on_result)
@@ -107,6 +126,24 @@ class GroundTurret(Node):
 
     def _on_tracks(self, msg: TrackArray) -> None:
         self._tracks = {trk.track_id: trk for trk in msg.tracks}
+
+    def _on_debris(self, msg: DebrisArray) -> None:
+        """Interceptable debris enters target selection as pseudo-tracks
+        (PHY-GCS-006): only wreckage falling toward populated ground —
+        SAFE-bound debris is left alone."""
+        self._debris_tracks = {}
+        self._debris_by_ref = {}
+        for d in msg.debris:
+            if d.impact_zone == ZoneClass.SAFE:
+                continue
+            self._debris_tracks[d.track_ref] = Track(
+                header=d.header,
+                track_id=d.track_ref,
+                position=np.asarray(d.position, dtype=float),
+                velocity=np.asarray(d.velocity, dtype=float),
+                p_decoy=0.0,
+            )
+            self._debris_by_ref[d.track_ref] = (d.debris_id, d.impact_zone)
 
     def _on_peer_state(self, msg: TurretState) -> None:
         if msg.turret_id != self.turret_id:
@@ -126,11 +163,13 @@ class GroundTurret(Node):
         if msg.uav_id != self.turret_id:
             return
         if msg.decision == EngagementDecision.DENIED:
-            if msg.track_id >= 0:
-                self._denied[msg.track_id] = msg.header.stamp
-                if msg.track_id == self.target_track:
-                    self.target_track = None
-                    self._await_until = 0.0
+            # Debris pseudo-tracks (negative ids) start the TTL too: under
+            # weapons_hold the turret otherwise keeps the lay and re-requests
+            # the same falling object every 2 s until it lands.
+            self._denied[msg.track_id] = msg.header.stamp
+            if msg.track_id == self.target_track:
+                self.target_track = None
+                self._await_until = 0.0
             return
         if msg.track_id != self.target_track:
             return                       # stale token for an abandoned lay
@@ -202,22 +241,38 @@ class GroundTurret(Node):
             if tid is not None and pid < self.turret_id
         }
         best, best_priority = None, 0.0
-        for trk in self._tracks.values():
+        candidates = list(self._tracks.values()) + list(self._debris_tracks.values())
+        for trk in candidates:
             denied_t = self._denied.get(trk.track_id)
             if (denied_t is not None and t - denied_t < DENIAL_TTL_S) \
                     or trk.track_id in claimed or trk.track_id in self._killed:
                 continue
             if trk.p_decoy >= self.decoy_threshold:
                 continue
+            if trk.time_since_update > TRACK_FRESH_S:
+                # Coasted estimate: the airframe behind it is unconfirmed
+                # (often already dead or crashed) — a burst at it is a
+                # guaranteed fire_no_target plus five strays on the city.
+                continue
             pos = trk.position + trk.velocity * max(0.0, t - trk.header.stamp)
             dist = float(np.linalg.norm(pos - self.position))
             if dist > self.max_range:
+                continue
+            if not self._occlusion.clear(self.position, pos):
+                # Firing-arc masking (SIM-EFF-004): the static building
+                # geometry is survey data a real fire-control computer has;
+                # a lay through a rooftop only wastes the magazine.
                 continue
             # Ammunition discipline: hold fire until the burst has a real
             # chance — dispersion x range x target speed says when.
             if self._expected_pk(dist, trk.speed) < self.min_pk:
                 continue
             priority = (1.0 - trk.p_decoy) * (1.0 - dist / self.max_range)
+            if trk.track_id < 0:
+                # Falling wreck headed for populated ground: certain impact
+                # beats a possible one (PHY-GCS-006, CRITICAL > DANGEROUS).
+                _, zone = self._debris_by_ref[trk.track_id]
+                priority *= DEBRIS_PRIORITY.get(zone, 1.2)
             if trk.track_id == self.target_track:
                 priority *= 1.3            # hysteresis: keep a settled lay
             if priority > best_priority:
@@ -255,8 +310,17 @@ class GroundTurret(Node):
         p_round = 1.0 - float(np.exp(-(TURRET_LETHAL_RADIUS**2) / (2.0 * sigma2 + 1e-9)))
         return 1.0 - (1.0 - p_round) ** self.rounds_per_burst
 
+    def _target_kind(self, track_id: int) -> tuple[str, str]:
+        """(target_kind, debris_id) for the fire-message correlation: a
+        negative id is a debris pseudo-track (SIM-DEB-003)."""
+        if track_id < 0:
+            debris_id, _ = self._debris_by_ref.get(track_id, ("", None))
+            return "debris", debris_id
+        return "track", ""
+
     def _request_clearance(self, track: Track, aim: np.ndarray, dist: float, t: float) -> None:
         self._await_until = t + 2.0
+        kind, debris_id = self._target_kind(track.track_id)
         self._request_pub.publish(
             FireRequest(
                 header=Header(stamp=t),
@@ -266,6 +330,8 @@ class GroundTurret(Node):
                 effector=EffectorType.PROJECTILE,
                 predicted_intercept=aim.copy(),
                 p_kill=self._expected_pk(dist, track.speed),
+                target_kind=kind,
+                debris_id=debris_id,
             )
         )
 
@@ -276,6 +342,7 @@ class GroundTurret(Node):
         n = min(self.rounds_per_burst, self.magazine)
         self.magazine -= n
         self._next_burst_ok = t + n / self.rate_of_fire
+        kind, debris_id = self._target_kind(track.track_id)
         self._fire_pub.publish(
             FireRequest(
                 header=Header(stamp=t),
@@ -286,6 +353,8 @@ class GroundTurret(Node):
                 predicted_intercept=aim.copy(),
                 p_kill=self._expected_pk(dist, track.speed),
                 rounds=n,
+                target_kind=kind,
+                debris_id=debris_id,
             )
         )
 

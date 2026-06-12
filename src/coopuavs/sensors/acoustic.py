@@ -26,6 +26,8 @@ _ACOUSTIC_LIKELIHOODS: dict[ThreatClass, dict[ThreatClass, float]] = {
 
 
 class AcousticSensor(Sensor):
+    channel = "acoustic"
+
     def __init__(
         self,
         name,
@@ -42,11 +44,13 @@ class AcousticSensor(Sensor):
         # Wind masking noise and rain hiss raise the detection floor.
         return self.world.weather.acoustic_range_factor()
 
-    def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
         rel = enemy.position - self.position
         rng_m = float(np.linalg.norm(rel))
-        # Audibility falls off with (weather-effective) range.
-        if self.rng.random() > self.pd * (1.0 - rng_m / self.effective_range()):
+        # Audibility falls off with (weather-effective) range; buildings in
+        # the path muffle but rarely silence (diffraction, SIM-SEN-005).
+        if self.rng.random() > self.pd * trans * (1.0 - rng_m / self.effective_range()):
             return None
         los = rel / (rng_m + 1e-9)
 

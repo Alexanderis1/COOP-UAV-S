@@ -37,27 +37,84 @@ function buildScene(seed, duration) {
     { name: 'POWER PLANT', pos: [1800, 1200, 0], value: 80 },
     { name: 'FUEL DEPOT', pos: [-2200, -900, 0], value: 60 },
   ];
+  // ---- city fabric: street-grid blocks with kinds (mirrors citygen)
+  const rng = mulberry32(7);
+  const buildings = [
+    { rect: [-6000, -120, 6000, 120], height: 0, kind: 'water', name: 'river' },
+    { rect: [520, 880, 820, 1120], height: 28, kind: 'hospital', name: 'hospital' },
+    { rect: [-1120, -880, -880, -680], height: 12, kind: 'school', name: 'school-a' },
+    { rect: [1380, 1880, 1620, 2080], height: 12, kind: 'school', name: 'school-b' },
+    { rect: [-1750, 750, -1250, 1150], height: 0, kind: 'park', name: 'west-park' },
+    { rect: [1550, -1350, 2050, -1000], height: 0, kind: 'park', name: 'east-park' },
+  ];
+  const step = 300, half = 112;
+  for (let cy = -2550; cy <= 2550; cy += step) {
+    if (Math.abs(cy) < 280) continue;            // river corridor
+    for (let cx = -2550; cx <= 2550; cx += step) {
+      const r = Math.hypot(cx, cy);
+      if (r > 2700) continue;
+      if (buildings.some((b) => b.rect && cx + half > b.rect[0] - 40 && cx - half < b.rect[2] + 40
+          && cy + half > b.rect[1] - 40 && cy - half < b.rect[3] + 40)) continue;
+      const roll = rng();
+      let kind, h;
+      if (roll < 0.07) { kind = 'park'; h = 0; }
+      else if (Math.abs(cx) < 260) { kind = 'commercial'; h = 22 + rng() * 35; }
+      else if (r < 1300) { kind = roll < 0.8 ? 'residential_high' : 'commercial'; h = kind === 'commercial' ? 22 + rng() * 35 : 30 + rng() * 42; }
+      else { kind = roll < 0.9 ? 'residential_low' : 'commercial'; h = kind === 'commercial' ? 18 + rng() * 22 : 7 + rng() * 7; }
+      const hw = half * (0.78 + rng() * 0.17), hh = half * (0.78 + rng() * 0.17);
+      buildings.push({ rect: [cx - hw, cy - hh, cx + hw, cy + hh], height: +h.toFixed(1), kind });
+    }
+  }
+  for (let iy = 0; iy < 3; iy++) {
+    for (let ix = 0; ix < 4; ix++) {
+      const cx = 3400 + ix * 520, cy = -4400 + iy * 480;
+      buildings.push({ rect: [cx - 190, cy - 160, cx + 190, cy + 160],
+        height: +(8 + rng() * 8).toFixed(1), kind: 'industrial' });
+    }
+  }
+  // ---- zone grid DERIVED from building kinds (SIM-ENV-005 semantics)
   const grid = [];
+  const overlaps = (x, y, b, m) => x > b.rect[0] - m && x < b.rect[2] + m
+    && y > b.rect[1] - m && y < b.rect[3] + m;
   for (let j = 0; j < n; j++) {
     const row = [];
     for (let i = 0; i < n; i++) {
       const x = bounds[0] + (i + 0.5) * cell, y = bounds[1] + (j + 0.5) * cell;
-      let z = Math.hypot(x, y) < 3600 ? 1 : 0;
-      for (const a of assets)
-        if (Math.hypot(x - a.pos[0], y - a.pos[1]) < 650) z = 2;
+      let z = 0;
+      for (const b of buildings) {
+        const k = b.kind;
+        // buffers mirror risk/zones._DANGEROUS_BUFFER
+        if (k === 'residential_low' && overlaps(x, y, b, 60)) z = Math.max(z, 1);
+        if (k === 'commercial' && overlaps(x, y, b, 40)) z = Math.max(z, 1);
+        if ((k === 'residential_high') && overlaps(x, y, b, 150)) z = Math.max(z, 1);
+        if ((k === 'hospital' || k === 'school') && overlaps(x, y, b, 200)) z = Math.max(z, 1);
+      }
+      for (const b of buildings) {
+        const k = b.kind;
+        if ((k === 'hospital' || k === 'school') && overlaps(x, y, b, 100)) z = 2;
+        if (k === 'residential_high' && overlaps(x, y, b, 50)) z = 2;
+      }
+      for (const b of buildings)
+        if ((b.kind === 'park' || b.kind === 'water' || b.kind === 'industrial')
+            && overlaps(x, y, b, 0) && z < 2) z = 0;
       row.push(z);
     }
     grid.push(row);
   }
-  const rng = mulberry32(7);
-  const buildings = [];
-  for (let k = 0; k < 16; k++) {
-    const x = (rng() - 0.5) * 5600, y = (rng() - 0.5) * 5600;
-    const w = 90 + rng() * 220, d = 90 + rng() * 220, h = 40 + rng() * 160;
-    buildings.push({ rect: [x - w / 2, y - d / 2, x + w / 2, y + d / 2], height: h });
-  }
+  const stations = [
+    { id: 'cs-base-1', pos: [-450, -2600, 0], rooftop: false },
+    { id: 'cs-base-2', pos: [450, -2600, 0], rooftop: false },
+    { id: 'cs-comm-1', pos: [60, -2250, 30], rooftop: true },
+    { id: 'cs-ind-1', pos: [3400, -4400, 14], rooftop: true },
+    { id: 'cs-north-1', pos: [-2400, 2400, 0], rooftop: false },
+  ];
+  const homes = [];
+  for (let i = 0; i < 20; i++)
+    homes.push({ uav_id: `hawk-${i + 1}`, pos: stations[i % stations.length].pos.slice() });
+  for (let i = 0; i < 10; i++)
+    homes.push({ uav_id: `sent-${i + 1}`, pos: stations[i % stations.length].pos.slice() });
   return {
-    bounds, cell_size: cell, grid, assets, buildings,
+    bounds, cell_size: cell, grid, assets, buildings, stations,
     sensors: [
       { name: 'radar_north', type: 'radar', pos: [0, 4200, 0], range: 5200 },
       { name: 'rf_west', type: 'rf', pos: [-4600, 500, 0], range: 6800 },
@@ -68,7 +125,7 @@ function buildScene(seed, duration) {
       { id: 'tur_east', pos: [2600, 200, 0], range: 1500 },
       { id: 'tur_west', pos: [-2300, 700, 0], range: 1500 },
     ],
-    homes: [0, 1, 2, 3].map((i) => ({ uav_id: `hawk-${i + 1}`, pos: [(i - 1.5) * 240, -2600, 0] })),
+    homes,
     run: { name: 'mock-raid', seed, duration, eval: true },
   };
 }
@@ -205,12 +262,30 @@ export class MockServer {
     }
     this.spawnQueue.sort((a, b) => a.t - b.t);
 
-    this.uavs = this.scene.homes.map((h, i) => ({
-      id: h.uav_id, home: h.pos.slice(), pos: [h.pos[0], h.pos[1], 0],
-      vel: [0, 0, 0], mode: 'IDLE', ammo: 4, battery: 1, task: null,
-      effector: i % 2 === 0 ? 'net' : 'projectile', link: 0.98,
-      fireAt: null, lastAuthT: -99, authId: null,
-    }));
+    this.uavs = this.scene.homes
+      .filter((h) => h.uav_id.startsWith('hawk'))
+      .map((h, i) => ({
+        id: h.uav_id, home: h.pos.slice(), pos: [h.pos[0], h.pos[1], h.pos[2] || 0],
+        vel: [0, 0, 0], mode: 'IDLE', ammo: 4, battery: 1, task: null, kind: 'interceptor',
+        effector: i % 3 === 2 ? 'net' : 'projectile', link: 0.98,
+        fireAt: null, lastAuthT: -99, authId: null,
+      }));
+    // sentinels: unarmed patrol orbits feeding the picture (PHY-SNT-*)
+    this.sentinels = this.scene.homes
+      .filter((h) => h.uav_id.startsWith('sent'))
+      .map((h, i) => ({
+        id: h.uav_id, home: h.pos.slice(), pos: [h.pos[0], h.pos[1], h.pos[2] || 0],
+        vel: [0, 0, 0], mode: 'TRANSIT', battery: 1, link: 0.97, kind: 'sentinel',
+        orbit: {
+          cx: 3000 * Math.sin(i * 0.628), cy: 3000 * Math.cos(i * 0.628),
+          r: 700, alt: 320, w: 25 / 700,
+        },
+        ang: i * 1.7,
+      }));
+    this.debris = [];          // live falling wreckage (SIM-DEB-001)
+    this.debrisSeq = 0;
+    this.m2 = { debrisInt: 0, debrisSaved: 0 };
+    this.engage = {};          // shooter -> tally for metrics.engagements
     this.turrets = this.scene.turrets.map((t) => ({
       id: t.id, pos: t.pos.slice(), range: t.range, az: 0, el: 0, ammo: 480,
       state: 'idle', target: null, alignT: 0, burstT: 0, authId: null, lastAuthT: -99,
@@ -415,6 +490,59 @@ export class MockServer {
       }
     }
 
+    // sentinels: climb to the orbit, then fly it
+    for (const s of this.sentinels) {
+      const o = s.orbit;
+      const onSta = Math.abs(Math.hypot(s.pos[0] - o.cx, s.pos[1] - o.cy) - o.r) < 150
+        && Math.abs(s.pos[2] - o.alt) < 60;
+      if (onSta) { s.mode = 'PATROL'; s.ang += o.w * dt; }
+      else s.mode = 'TRANSIT';
+      const wp = [o.cx + o.r * Math.sin(s.ang + 0.15), o.cy + o.r * Math.cos(s.ang + 0.15), o.alt];
+      const dx = wp[0] - s.pos[0], dy = wp[1] - s.pos[1], dz = wp[2] - s.pos[2];
+      const d = Math.hypot(dx, dy, dz);
+      const spd = Math.min(28, d);
+      if (d > 1) {
+        s.vel = [(dx / d) * spd, (dy / d) * spd, (dz / d) * spd];
+        s.pos = [s.pos[0] + s.vel[0] * dt, s.pos[1] + s.vel[1] * dt, Math.max(0, s.pos[2] + s.vel[2] * dt)];
+      }
+      s.battery = clamp(s.battery - 0.0006 * dt, 0.2, 1);
+    }
+
+    // live debris: fall, get intercepted over populated ground, or land
+    for (let i = this.debris.length - 1; i >= 0; i--) {
+      const d = this.debris[i];
+      d.vel[2] = Math.max(d.vel[2] - 9.81 * dt, -45);
+      d.pos = [d.pos[0] + d.vel[0] * dt, d.pos[1] + d.vel[1] * dt, d.pos[2] + d.vel[2] * dt];
+      d.t_impact = Math.max(0, d.pos[2] / 45);
+      d.impact = [d.pos[0] + d.vel[0] * d.t_impact, d.pos[1] + d.vel[1] * d.t_impact, 0];
+      d.zone = zoneAt(this.scene, d.impact[0], d.impact[1]);
+      // a turret intercepts red/yellow-bound debris mid-fall (kinetic only,
+      // in range, with rounds left — like the real adjudicator)
+      if (d.zone !== 'SAFE' && d.pos[2] < 500 && d.pos[2] > 120 && this.rng() < 0.06) {
+        const tu = this.turrets.find((x) => x.ammo > 0
+          && Math.hypot(d.pos[0] - x.pos[0], d.pos[1] - x.pos[1], d.pos[2]) < x.range);
+        if (tu) {
+          tu.ammo = Math.max(0, tu.ammo - 12);
+          this.m.shots++;
+          this._tally(tu.id, 'turret_gun', 'debris');
+          this._event({
+            kind: 'debris_neutralized', uav_id: tu.id, debris_id: d.id,
+            effector: 'turret_gun', saved_zone: d.zone, pk: +(0.5 + this.rng() * 0.3).toFixed(2),
+            pos: d.pos.map((v) => +v.toFixed(1)), target_kind: 'debris',
+          });
+          this.m2.debrisInt++;
+          this.m2.debrisSaved += d.zone === 'CRITICAL' ? 25 : 1;
+          this.debris.splice(i, 1);
+          continue;
+        }
+      }
+      if (d.pos[2] <= 0) {
+        this.wrecks.push({ pos: [d.pos[0], d.pos[1], 0], zone: d.zone, mechanism: d.mechanism });
+        this._event({ kind: 'debris_impact', debris_id: d.id, zone: d.zone });
+        this.debris.splice(i, 1);
+      }
+    }
+
     // pending authorisations: posture auto-clear + expiry
     for (const a of this.auths.values()) {
       if (a.resolved) continue;
@@ -458,14 +586,21 @@ export class MockServer {
           tu.ammo = Math.max(0, tu.ammo - 12);
           this.m.shots++;
           if (best.cls === 'decoy') this.m.decoyShots++;
-          this._event({ kind: 'fire', shooter: tu.id, track_id: best.track_id, effector: 'projectile' });
-          if (this.rng() < 0.3) this._kill(best, 'projectile', tu.id);
-          else if (this.rng() < 0.55) {
-            const over = 1.5 + this.rng();
-            const sx = tu.pos[0] + dx * over, sy = tu.pos[1] + dy * over;
-            const z = zoneAt(this.scene, sx, sy);
-            this.strays.push({ pos: [sx, sy, 0], zone: z });
-            this._event({ kind: 'stray', shooter: tu.id, zone: z });
+          this._tally(tu.id, 'turret_gun');
+          if (this.rng() < 0.3) this._kill(best, 'projectile', tu.id, 'turret_gun');
+          else {
+            this._event({
+              kind: 'miss', uav_id: tu.id, enemy_id: best.id,
+              effector: 'turret_gun', pk: +(0.15 + this.rng() * 0.25).toFixed(2),
+              pos: best.pos.map((v) => +v.toFixed(1)), target_kind: 'track',
+            });
+            if (this.rng() < 0.55) {
+              const over = 1.5 + this.rng();
+              const sx = tu.pos[0] + dx * over, sy = tu.pos[1] + dy * over;
+              const z = zoneAt(this.scene, sx, sy);
+              this.strays.push({ pos: [sx, sy, 0], zone: z });
+              this._event({ kind: 'stray', shooter: tu.id, zone: z });
+            }
           }
         }
       } else tu.state = 'tracking';
@@ -494,12 +629,17 @@ export class MockServer {
     u.ammo = Math.max(0, u.ammo - 1);
     this.m.shots++;
     if (e.cls === 'decoy') this.m.decoyShots++;
-    this._event({ kind: 'fire', shooter: u.id, track_id: e.track_id, effector: mech });
+    this._tally(u.id, mech);
     if (this.rng() < eff.p_kill) {
       this._kill(e, mech, u.id);
       this._uavIdle(u);
     } else {
-      this._event({ kind: 'miss', shooter: u.id, track_id: e.track_id });
+      // miss events match the real adjudicator: enemy_id, no track_id
+      this._event({
+        kind: 'miss', uav_id: u.id, enemy_id: e.id,
+        effector: mech, pk: +(eff.p_kill * (0.4 + this.rng() * 0.5)).toFixed(2),
+        pos: e.pos.map((v) => +v.toFixed(1)), target_kind: 'track',
+      });
       if (mech === 'projectile' && this.rng() < 0.5) {
         const sx = e.pos[0] + (this.rng() - 0.5) * 700, sy = e.pos[1] + (this.rng() - 0.5) * 700;
         const z = zoneAt(this.scene, sx, sy);
@@ -509,15 +649,42 @@ export class MockServer {
     }
   }
 
-  _kill(e, mechanism, shooter) {
+  _kill(e, mechanism, shooter, weapon = mechanism) {
     e.alive = false; e.killed = true;
     this.m.kills++;
+    const r = this.engage[shooter];
+    if (r) { r.hits++; r.kills++; }
+    // the wreck becomes live falling debris (SIM-DEB-001)
     const drift = mechanism === 'net' ? 0.15 : 0.65;
-    const wx = e.pos[0] + e.vel[0] * drift * 2, wy = e.pos[1] + e.vel[1] * drift * 2;
-    const zone = zoneAt(this.scene, wx, wy);
-    this.wrecks.push({ pos: [wx, wy, 0], zone, mechanism });
-    this._event({ kind: 'kill', shooter, track_id: e.track_id, mechanism, zone });
+    const deb = {
+      id: `deb-${++this.debrisSeq}`, mechanism,
+      pos: e.pos.slice(), vel: [e.vel[0] * drift, e.vel[1] * drift, 0],
+      t_impact: e.pos[2] / 45, impact: [e.pos[0], e.pos[1], 0], zone: 'SAFE',
+    };
+    deb.impact = [e.pos[0] + deb.vel[0] * deb.t_impact, e.pos[1] + deb.vel[1] * deb.t_impact, 0];
+    deb.zone = zoneAt(this.scene, deb.impact[0], deb.impact[1]);
+    this.debris.push(deb);
+    // kill events match the real adjudicator: enemy_id + ICD weapon name
+    // (turret bursts log turret_gun), no track_id
+    this._event({
+      kind: 'kill', uav_id: shooter, enemy_id: e.id,
+      effector: weapon, pk: +(0.4 + this.rng() * 0.4).toFixed(2),
+      debris_zone: deb.zone, pos: e.pos.map((v) => +v.toFixed(1)),
+      target_kind: 'track',
+    });
+    this._event({ kind: 'debris_spawn', debris_id: deb.id, zone: deb.zone,
+      t_impact: +deb.t_impact.toFixed(1) });
     if (e.assigned) this._unassign(e);
+  }
+
+  _tally(shooter, weapon, kind = 'track') {
+    let r = this.engage[shooter];
+    if (!r) {
+      r = { weapon, shots: 0, hits: 0, kills: 0, debris_kills: 0 };
+      this.engage[shooter] = r;
+    }
+    r.shots++;
+    if (kind === 'debris') { r.hits++; r.debris_kills++; }
   }
 
   // ------------------------------------------------------------- auth flow
@@ -648,18 +815,35 @@ export class MockServer {
       t: +this.t.toFixed(1),
       run: { status: this.status, speed: this.speed, posture: this.posture },
       tracks,
-      uavs: this.uavs.map((u) => ({
-        id: u.id, pos: u.pos.map((v) => +v.toFixed(1)), vel: u.vel.map((v) => +v.toFixed(1)),
-        mode: u.mode, ammo: u.ammo, battery: +u.battery.toFixed(3),
-        task_id: u.task ? (this.enemies.find((e) => e.id === u.task)?.track_id ?? null) : null,
-        link: +u.link.toFixed(2),
-      })),
+      uavs: [
+        ...this.uavs.map((u) => ({
+          id: u.id, pos: u.pos.map((v) => +v.toFixed(1)), vel: u.vel.map((v) => +v.toFixed(1)),
+          mode: u.mode, ammo: u.ammo, battery: +u.battery.toFixed(3),
+          task_id: u.task ? (this.enemies.find((e) => e.id === u.task)?.track_id ?? null) : null,
+          link: +u.link.toFixed(2), kind: 'interceptor', effector: u.effector,
+        })),
+        ...this.sentinels.map((s) => ({
+          id: s.id, pos: s.pos.map((v) => +v.toFixed(1)), vel: s.vel.map((v) => +v.toFixed(1)),
+          mode: s.mode, ammo: 0, battery: +s.battery.toFixed(3),
+          task_id: null, link: +s.link.toFixed(2), kind: 'sentinel', effector: null,
+        })),
+      ],
       turrets: this.turrets.map((tu) => ({
         id: tu.id, az: +tu.az.toFixed(1), el: +tu.el.toFixed(1),
         ammo: tu.ammo, state: tu.state, target: tu.target,
       })),
       wrecks: this.wrecks,
       strays: this.strays,
+      debris: this.debris.map((d) => ({
+        id: d.id, pos: d.pos.map((v) => +v.toFixed(1)), vel: d.vel.map((v) => +v.toFixed(1)),
+        impact: d.impact.map((v) => +v.toFixed(1)), zone: d.zone,
+        t_impact: +d.t_impact.toFixed(1),
+      })),
+      stations: this.scene.stations.map((st) => ({
+        id: st.id,
+        occupied: [...this.uavs, ...this.sentinels].filter((u) =>
+          Math.hypot(u.pos[0] - st.pos[0], u.pos[1] - st.pos[1]) < 30 && u.pos[2] < 40).length,
+      })),
       env: this._env(),
       events: this.pendEvents.splice(0),
       decisions: this.pendDecisions.splice(0),
@@ -700,11 +884,24 @@ export class MockServer {
         debris_cost: +(
           this.wrecks.reduce((s, w) => s + ZCOST[w.zone], 0) +
           this.strays.reduce((s, w) => s + ZCOST[w.zone] * 0.4, 0)).toFixed(0),
+        debris_intercepts: this.m2.debrisInt,
+        debris_saved_cost: +this.m2.debrisSaved.toFixed(1),
       },
       auth: {
         ...this.authStats,
         mean_latency: this.m.authLat.length
           ? +(this.m.authLat.reduce((a, b) => a + b, 0) / this.m.authLat.length).toFixed(1) : null,
+      },
+      engagements: {
+        by_shooter: this.engage,
+        // shooter rows already carry the ICD weapon name (turret_gun)
+        by_weapon: Object.values(this.engage).reduce((acc, r) => {
+          const row = acc[r.weapon]
+            || (acc[r.weapon] = { shots: 0, hits: 0, kills: 0, debris_kills: 0 });
+          row.shots += r.shots; row.hits += r.hits;
+          row.kills += r.kills; row.debris_kills += r.debris_kills;
+          return acc;
+        }, {}),
       },
     };
   }

@@ -1,0 +1,198 @@
+{
+ "label": "after",
+ "scenario": "residential_raid.yaml",
+ "seeds": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9
+ ],
+ "rows": [
+  {
+   "seed": 0,
+   "kills": 7,
+   "leakers": 2,
+   "armed_leakers": 1,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 2
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 207
+   },
+   "debris_intercepted": 5,
+   "shots": 54,
+   "t_end": 206.25
+  },
+  {
+   "seed": 1,
+   "kills": 7,
+   "leakers": 2,
+   "armed_leakers": 0,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 4,
+    "SAFE": 1
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 57
+   },
+   "debris_intercepted": 2,
+   "shots": 25,
+   "t_end": 189.0
+  },
+  {
+   "seed": 2,
+   "kills": 7,
+   "leakers": 2,
+   "armed_leakers": 0,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 3
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 36
+   },
+   "debris_intercepted": 4,
+   "shots": 26,
+   "t_end": 202.15
+  },
+  {
+   "seed": 3,
+   "kills": 6,
+   "leakers": 3,
+   "armed_leakers": 1,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "SAFE": 2,
+    "DANGEROUS": 1
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 86
+   },
+   "debris_intercepted": 3,
+   "shots": 32,
+   "t_end": 204.85
+  },
+  {
+   "seed": 4,
+   "kills": 6,
+   "leakers": 3,
+   "armed_leakers": 1,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 3
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 136
+   },
+   "debris_intercepted": 3,
+   "shots": 48,
+   "t_end": 200.65
+  },
+  {
+   "seed": 5,
+   "kills": 5,
+   "leakers": 4,
+   "armed_leakers": 3,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 1,
+    "SAFE": 1
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 115
+   },
+   "debris_intercepted": 3,
+   "shots": 33,
+   "t_end": 202.3
+  },
+  {
+   "seed": 6,
+   "kills": 6,
+   "leakers": 3,
+   "armed_leakers": 1,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 3
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 121
+   },
+   "debris_intercepted": 3,
+   "shots": 37,
+   "t_end": 205.25
+  },
+  {
+   "seed": 7,
+   "kills": 6,
+   "leakers": 3,
+   "armed_leakers": 1,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "SAFE": 1,
+    "DANGEROUS": 2
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 148
+   },
+   "debris_intercepted": 3,
+   "shots": 40,
+   "t_end": 200.85
+  },
+  {
+   "seed": 8,
+   "kills": 7,
+   "leakers": 2,
+   "armed_leakers": 0,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 4,
+    "SAFE": 1
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 48
+   },
+   "debris_intercepted": 2,
+   "shots": 27,
+   "t_end": 202.75
+  },
+  {
+   "seed": 9,
+   "kills": 7,
+   "leakers": 2,
+   "armed_leakers": 0,
+   "enemies_total": 9,
+   "wrecks_by_zone": {
+    "DANGEROUS": 3,
+    "SAFE": 2
+   },
+   "strays_by_zone": {
+    "DANGEROUS": 42
+   },
+   "debris_intercepted": 2,
+   "shots": 21,
+   "t_end": 200.55
+  }
+ ],
+ "aggregate_10seed": {
+  "kills": 64,
+  "shots": 343,
+  "leakers": 26,
+  "critical_wrecks": 0
+ },
+ "floors_5seed": {
+  "kills": 33,
+  "shots": 185,
+  "shots_per_kill": 5.606,
+  "floor_kills_min": 10,
+  "floor_shots_per_kill_max": 9.0,
+  "pass": true
+ }
+}

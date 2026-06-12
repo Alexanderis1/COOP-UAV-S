@@ -20,6 +20,8 @@ from .base import Sensor
 
 
 class RfSensor(Sensor):
+    channel = "rf"
+
     def __init__(
         self,
         name,
@@ -34,8 +36,10 @@ class RfSensor(Sensor):
         self.bearing_sigma = np.deg2rad(bearing_sigma_deg)
         self.pd = pd
 
-    def observe(self, enemy: EnemyDrone, t: float) -> Detection | None:
-        if self.rng.random() > self.pd:
+    def observe(self, enemy: EnemyDrone, t: float,
+                trans: float = 1.0) -> Detection | None:
+        # Building attenuation thins the received signal (SIM-SEN-005).
+        if self.rng.random() > self.pd * trans:
             return None
         rel = enemy.position - self.position
         rng_m = float(np.linalg.norm(rel))

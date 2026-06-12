@@ -1,22 +1,38 @@
-// entities.js — pooled dynamic 3D entities: fused tracks, interceptor UAVs,
-// wrecks, strays, predicted impacts, trails, labels, and the evaluation
-// ghost overlay (SRS HMI-EVAL-001/002). Meshes are indexed by id and reused
-// across frames; never recreated per frame.
+// entities.js — pooled dynamic 3D entities: fused tracks, friendly UAVs
+// (interceptors + sentinels), live debris, wrecks, strays, predicted
+// impacts, weapon tracers, kill markers, trails, labels, and the
+// evaluation ghost overlay (SRS HMI-EVAL-001/002, HMI-MAP-007/008).
+//
+// Airframes are true-scale procedural models (models.js) with zoom-aware
+// magnification: scale = max(1, magFactor · cameraDistance · K) — 1:1 when
+// viewed close, visible from across the 12 km map when zoomed out.
+// Meshes are indexed by id and reused across frames; never recreated.
 import * as THREE from 'three';
 import { setW, W } from './scene.js';
-import { CLS_COLOR, MODE_COLOR, ZONE_TINT, argmaxClass, clamp } from './util.js';
+import {
+  CLS_COLOR, MODE_COLOR, WEAPON_COLOR, ZONE_TINT, argmaxClass, clamp,
+} from './util.js';
+import {
+  disposeModel, makeDebrisChunk, makeGhostModel, makeThreatModel, makeUavModel,
+} from './models.js';
 
-const TRACK_GEO = new THREE.OctahedronGeometry(26, 0);
-const UAV_GEO = new THREE.ConeGeometry(16, 44, 4);
-const GHOST_GEO = new THREE.ConeGeometry(22, 60, 6);
 const TRUTH_GEO = new THREE.OctahedronGeometry(11, 0);
 const WRECK_NET_GEO = new THREE.OctahedronGeometry(15, 0);
 const WRECK_PROJ_GEO = new THREE.TetrahedronGeometry(18, 0);
 const STRAY_GEO = new THREE.ConeGeometry(9, 22, 4);
 const IMPACT_GEO = new THREE.RingGeometry(34, 46, 32);
+const DEBRIS_IMPACT_GEO = new THREE.RingGeometry(20, 30, 24);
 const FLASH_GEO = new THREE.SphereGeometry(40, 12, 8);
+const TRACER_HEAD_GEO = new THREE.SphereGeometry(6, 8, 6);
+const KILL_RING_GEO = new THREE.RingGeometry(30, 38, 28);
 
 const TRAIL_MAX = 140;
+// Zoom-aware magnification: scale = max(1, mag · cameraDistance · MAG_K).
+// 1:1 inside ~250 m at mag 1; ×24 at the default 6 km framing.
+const MAG_K = 0.004;
+// Label sprites counter their parent's scale and track camera distance so
+// they stay readable at any zoom.
+const LABEL_K = 0.047;
 
 class Trail {
   constructor(color) {
@@ -43,6 +59,16 @@ class Trail {
     this.geo.setDrawRange(0, this.count);
   }
   setColor(c) { this.line.material.color.setHex(c); }
+  dispose() {
+    this.geo.dispose();
+    this.line.material.dispose();
+  }
+}
+
+function disposeLabel(label) {
+  if (!label) return;
+  label.tex.dispose();
+  label.spr.material.dispose();
 }
 
 function makeLabel() {
@@ -67,6 +93,17 @@ function setLabel(l, text, color) {
   l.tex.needsUpdate = true;
 }
 
+// orient a nose-+Z model group along an ENU velocity
+const _dir = new THREE.Vector3();
+const _aim = new THREE.Vector3();
+function orient(group, vel) {
+  const v = vel || [0, 0, 0];
+  if (Math.hypot(v[0], v[1], v[2]) < 1) return;
+  _dir.set(v[0], v[2], -v[1]).normalize();
+  _aim.copy(group.position).add(_dir);
+  group.lookAt(_aim);
+}
+
 export class Entities {
   constructor(view, { onAcquired } = {}) {
     this.view = view;
@@ -74,22 +111,29 @@ export class Entities {
     this.root = new THREE.Group();
     view.scene.add(this.root);
     this.groups = {};
-    for (const g of ['tracks', 'uavs', 'ghosts', 'truth', 'wrecks', 'strays', 'impacts', 'trails', 'fx'])
+    for (const g of ['tracks', 'uavs', 'ghosts', 'truth', 'debris', 'wrecks',
+                     'strays', 'impacts', 'trails', 'fx', 'tracers'])
       this.groups[g] = new THREE.Group(), this.root.add(this.groups[g]);
 
     this.tracks = new Map();   // id -> rec
     this.uavs = new Map();
     this.ghosts = new Map();
     this.truthMarks = new Map();
+    this.debris = new Map();   // debris id -> rec
     this.wrecks = new Map();   // index -> rec
     this.strays = new Map();
     this.flashes = [];
+    this.tracers = [];
+    this.killMarks = [];
     this.ghostSeen = new Map();  // enemy id -> last acquired bool
 
     this.labelsVisible = true;
+    this.debrisVisible = true;
     this.recvWall = 0;
     this.effSpeed = 0;
     this.extrapolate = true;
+    this.magFactor = 1;        // model magnification slider (0 = strict 1:1)
+    this._lastTick = 0;        // render-frame dt for animations
 
     // selection ring
     this.selection = null;       // {kind, id}
@@ -101,17 +145,95 @@ export class Entities {
     this.root.add(this.selRing);
 
     view.extraPickables = () =>
-      [this.groups.tracks, this.groups.uavs, this.groups.ghosts];
+      [this.groups.tracks, this.groups.uavs, this.groups.ghosts, this.groups.debris];
   }
 
   reset() {
-    for (const m of [this.tracks, this.uavs, this.ghosts, this.truthMarks, this.wrecks, this.strays])
+    for (const [m, dispose] of [
+      [this.tracks, (r) => this._disposeTrack(r)],
+      [this.uavs, (r) => this._disposeUav(r)],
+      [this.ghosts, (r) => this._disposeGhost(r)],
+      [this.truthMarks, (r) => this._disposeTruth(r)],
+      [this.debris, (r) => this._disposeDebris(r)],
+      [this.wrecks, (r) => this._disposeBareMesh(this.groups.wrecks, r)],
+      [this.strays, (r) => this._disposeBareMesh(this.groups.strays, r)],
+    ]) {
+      for (const rec of m.values()) dispose(rec);
       m.clear();
+    }
+    this._disposeFx();
     for (const k in this.groups) this.groups[k].clear();
-    this.flashes.length = 0;
     this.ghostSeen.clear();
     this.selRing.visible = false;
     this.selection = null;
+  }
+
+  // ---- per-kind GPU disposal (shared module geometries stay alive) ----
+  _disposeTrack(rec) {
+    this.groups.tracks.remove(rec.mesh);
+    disposeModel(rec.model);
+    disposeLabel(rec.label);
+    this.groups.trails.remove(rec.trail.line);
+    rec.trail.dispose();
+    this.groups.impacts.remove(rec.impactRing, rec.impactLine);
+    rec.impactRing.material.dispose();       // geometry is the shared IMPACT_GEO
+    rec.impactLine.geometry.dispose();
+    rec.impactLine.material.dispose();
+  }
+
+  _disposeUav(rec) {
+    this.groups.uavs.remove(rec.mesh);
+    disposeModel(rec.model);
+    disposeLabel(rec.label);
+    this.groups.trails.remove(rec.trail.line);
+    rec.trail.dispose();
+  }
+
+  _disposeDebris(rec) {
+    this.groups.debris.remove(rec.mesh, rec.ring, rec.line);
+    disposeModel(rec.model);
+    rec.ring.material.dispose();             // geometry is shared
+    rec.line.geometry.dispose();
+    rec.line.material.dispose();
+    this.groups.trails.remove(rec.trail.line);
+    rec.trail.dispose();
+  }
+
+  _disposeGhost(rec) {
+    this.groups.ghosts.remove(rec.mesh);
+    disposeModel(rec.model);
+  }
+
+  _disposeTruth(rec) {
+    this.groups.truth.remove(rec.mesh);
+    rec.mesh.material.dispose();
+  }
+
+  _disposeBareMesh(group, rec) {
+    group.remove(rec.mesh);
+    rec.mesh.material.dispose();             // geometry is shared
+  }
+
+  _disposeFx() {
+    for (const f of this.flashes) {
+      this.groups.fx.remove(f.m);
+      f.m.material.dispose();
+    }
+    this.flashes.length = 0;
+    for (const tr of this.tracers) {
+      this.groups.tracers.remove(tr.line, tr.head);
+      tr.line.geometry.dispose();
+      tr.line.material.dispose();
+      tr.head.material.dispose();
+    }
+    this.tracers.length = 0;
+    for (const k of this.killMarks) {
+      this.groups.fx.remove(k.ring, k.spr);
+      k.ring.material.dispose();
+      k.spr.material.map.dispose();
+      k.spr.material.dispose();
+    }
+    this.killMarks.length = 0;
   }
 
   setLayer(name, on) {
@@ -120,6 +242,13 @@ export class Entities {
       this.groups.ghosts.visible = on;
       this.groups.truth.visible = on;
     } else if (name === 'trails') this.groups.trails.visible = on;
+    else if (name === 'debris') {
+      this.groups.debris.visible = on;
+      // debris trails live in the shared trails group: hide them per-line
+      // or the grey streaks keep drawing with no source object
+      this.debrisVisible = on;
+      for (const rec of this.debris.values()) rec.trail.line.visible = on;
+    } else if (name === 'tracers') this.groups.tracers.visible = on;
     else if (name === 'labels') {
       this.labelsVisible = on;
       for (const m of [this.tracks, this.uavs])
@@ -127,10 +256,15 @@ export class Entities {
     }
   }
 
+  setMagnification(f) { this.magFactor = f; }
+
   select(sel) { this.selection = sel; }
 
   entityPos(kind, id) {
-    const map = { track: this.tracks, uav: this.uavs, ghost: this.ghosts, truth: this.truthMarks }[kind];
+    const map = {
+      track: this.tracks, uav: this.uavs, ghost: this.ghosts,
+      truth: this.truthMarks, debris: this.debris,
+    }[kind];
     if (kind === 'turret') {
       const t = this.view.turrets.get(id);
       return t ? t.group.position.clone() : null;
@@ -139,27 +273,42 @@ export class Entities {
     return rec ? rec.mesh.position.clone() : null;
   }
 
+  // swap a record's airframe model in place (class belief changed)
+  _swapModel(rec, group, make) {
+    const old = rec.model;
+    const newModel = make();
+    newModel.group.position.copy(old.group.position);
+    newModel.group.quaternion.copy(old.group.quaternion);
+    newModel.group.scale.copy(old.group.scale);
+    newModel.group.userData.pick = old.group.userData.pick;
+    if (rec.label) newModel.group.add(rec.label.spr);
+    group.remove(old.group);
+    disposeModel(old);
+    group.add(newModel.group);
+    rec.model = newModel;
+    rec.mesh = newModel.group;
+  }
+
   // --------------------------------------------------------------- frame
   applyFrame(f) {
     this.recvWall = performance.now();
     const run = f.run || {};
     this.effSpeed = (this.extrapolate && run.status === 'running') ? (run.speed || 1) : 0;
 
-    // ---- fused tracks
+    // ---- fused tracks (true-scale threat models, class-swapped on belief)
     const liveT = new Set();
     for (const t of f.tracks || []) {
       if (t.id == null) continue;
       liveT.add(t.id);
       let rec = this.tracks.get(t.id);
+      const cls = argmaxClass(t.belief);
       if (!rec) {
-        const mesh = new THREE.Mesh(TRACK_GEO, new THREE.MeshLambertMaterial({
-          transparent: true, emissiveIntensity: 0.5,
-        }));
-        mesh.userData.pick = { kind: 'track', id: t.id };
+        const model = makeThreatModel(cls);
+        model.group.userData.pick = { kind: 'track', id: t.id };
         const label = makeLabel();
-        label.spr.position.y = 46;
+        label.spr.position.y = 2.6;
         label.spr.visible = this.labelsVisible;
-        mesh.add(label.spr);
+        model.group.add(label.spr);
         const trail = new Trail(0xffe14d);
         this.groups.trails.add(trail.line);
         const impactRing = new THREE.Mesh(IMPACT_GEO, new THREE.MeshBasicMaterial({
@@ -173,17 +322,23 @@ export class Entities {
         }));
         impactLine.frustumCulled = false;
         this.groups.impacts.add(impactRing, impactLine);
-        rec = { mesh, label, trail, impactRing, impactLine, base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
-        this.groups.tracks.add(mesh);
+        rec = { model, mesh: model.group, cls, label, trail, impactRing, impactLine,
+                base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
+        this.groups.tracks.add(model.group);
         this.tracks.set(t.id, rec);
+      } else if (rec.cls !== cls) {
+        // classification swung to another airframe: swap the model
+        rec.cls = cls;
+        this._swapModel(rec, this.groups.tracks, () => makeThreatModel(cls));
       }
       rec.data = t;
-      const cls = argmaxClass(t.belief);
       const col = CLS_COLOR[cls] ?? 0xffe14d;
-      rec.mesh.material.color.setHex(col);
-      rec.mesh.material.emissive.setHex(col);
-      rec.mesh.material.opacity = clamp(0.95 - 0.65 * (t.p_decoy || 0), 0.2, 1);
+      rec.model.accent.color.setHex(col);
+      rec.model.accent.emissive.setHex(col);
+      const op = clamp(0.95 - 0.65 * (t.p_decoy || 0), 0.2, 1);
+      for (const m of rec.model.mats) m.opacity = op;
       setW(rec.mesh.position, t.pos);
+      orient(rec.mesh, t.vel);
       rec.base.pos = t.pos || [0, 0, 0];
       rec.base.vel = t.vel || [0, 0, 0];
       rec.trail.setColor(col);
@@ -202,56 +357,96 @@ export class Entities {
         p.needsUpdate = true;
       }
     }
-    this._prune(this.tracks, liveT, (rec) => {
-      this.groups.tracks.remove(rec.mesh);
-      this.groups.trails.remove(rec.trail.line);
-      this.groups.impacts.remove(rec.impactRing, rec.impactLine);
-    });
+    this._prune(this.tracks, liveT, (rec) => this._disposeTrack(rec));
 
-    // ---- interceptor UAVs
+    // ---- friendly UAVs (interceptor gun/net, sentinel)
     const liveU = new Set();
     for (const u of f.uavs || []) {
       if (u.id == null) continue;
       liveU.add(u.id);
       let rec = this.uavs.get(u.id);
       if (!rec) {
-        const mesh = new THREE.Mesh(UAV_GEO, new THREE.MeshLambertMaterial({ emissiveIntensity: 0.45 }));
-        mesh.userData.pick = { kind: 'uav', id: u.id };
+        const model = makeUavModel(u.kind, u.effector);
+        model.group.userData.pick = { kind: 'uav', id: u.id };
         const label = makeLabel();
-        label.spr.position.y = 40;
+        label.spr.position.y = 1.4;
         label.spr.visible = this.labelsVisible;
-        mesh.add(label.spr);
+        model.group.add(label.spr);
         const trail = new Trail(0x39d2ff);
         this.groups.trails.add(trail.line);
-        rec = { mesh, label, trail, base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
-        this.groups.uavs.add(mesh);
+        rec = { model, mesh: model.group, label, trail,
+                base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
+        this.groups.uavs.add(model.group);
         this.uavs.set(u.id, rec);
       }
       rec.data = u;
       const mode = String(u.mode || 'IDLE').toUpperCase();
       const col = MODE_COLOR[mode] ?? 0x39d2ff;
-      rec.mesh.material.color.setHex(col);
-      rec.mesh.material.emissive.setHex(col);
+      rec.model.accent.color.setHex(col);
+      rec.model.accent.emissive.setHex(col);
       setW(rec.mesh.position, u.pos);
+      orient(rec.mesh, u.vel);
       rec.base.pos = u.pos || [0, 0, 0];
       rec.base.vel = u.vel || [0, 0, 0];
-      // nose toward velocity
-      const v = u.vel || [0, 0, 0];
-      if (Math.hypot(v[0], v[1], v[2]) > 1) {
-        const dir = new THREE.Vector3(v[0], v[2], -v[1]).normalize();
-        rec.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      }
       rec.trail.setColor(col);
       rec.trail.push(rec.mesh.position);
-      setLabel(rec.label, `${u.id} ${mode}`, '#9adcff');
+      const tag = u.kind === 'sentinel' ? '◉' : (u.effector === 'net' ? '⊞' : '╪');
+      setLabel(rec.label, `${tag} ${u.id} ${mode}`, '#9adcff');
     }
-    this._prune(this.uavs, liveU, (rec) => {
-      this.groups.uavs.remove(rec.mesh);
-      this.groups.trails.remove(rec.trail.line);
-    });
+    this._prune(this.uavs, liveU, (rec) => this._disposeUav(rec));
 
     // ---- turrets (static meshes owned by SceneView)
     for (const tu of f.turrets || []) this.view.updateTurret(tu);
+
+    // ---- charging-station occupancy
+    for (const st of f.stations || []) this.view.updateStation(st);
+
+    // ---- live falling debris with zone-coloured predicted impact
+    const liveD = new Set();
+    for (const d of f.debris || []) {
+      if (d.id == null) continue;
+      liveD.add(d.id);
+      let rec = this.debris.get(d.id);
+      if (!rec) {
+        const model = makeDebrisChunk();
+        model.group.userData.pick = { kind: 'debris', id: d.id };
+        const trail = new Trail(0x8b9099);
+        trail.line.visible = this.debrisVisible;
+        this.groups.trails.add(trail.line);
+        const ring = new THREE.Mesh(DEBRIS_IMPACT_GEO, new THREE.MeshBasicMaterial({
+          transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false,
+        }));
+        ring.rotation.x = -Math.PI / 2;
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(
+          [new THREE.Vector3(), new THREE.Vector3()]);
+        const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({
+          transparent: true, opacity: 0.5,
+        }));
+        line.frustumCulled = false;
+        this.groups.debris.add(model.group, ring, line);
+        rec = { model, mesh: model.group, trail, ring, line,
+                spin: 1 + Math.abs((hash32(d.id) % 100) / 50),
+                base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
+        this.debris.set(d.id, rec);
+      }
+      rec.data = d;
+      setW(rec.mesh.position, d.pos);
+      rec.base.pos = d.pos || [0, 0, 0];
+      rec.base.vel = d.vel || [0, 0, 0];
+      rec.trail.push(rec.mesh.position);
+      const zoneCol = ZONE_TINT[d.zone] ?? 0xffb347;
+      rec.ring.material.color.setHex(zoneCol);
+      rec.line.material.color.setHex(zoneCol);
+      rec.ring.position.set(d.impact?.[0] || 0, 2, -(d.impact?.[1] || 0));
+      const p = rec.line.geometry.attributes.position;
+      p.setXYZ(0, rec.mesh.position.x, rec.mesh.position.y, rec.mesh.position.z);
+      p.setXYZ(1, d.impact?.[0] || 0, 2, -(d.impact?.[1] || 0));
+      p.needsUpdate = true;
+    }
+    this._prune(this.debris, liveD, (rec) => this._disposeDebris(rec));
+
+    // ---- engagement attribution FX (HMI-MAP-008): weapon tracers + kill marks
+    for (const ev of f.events || []) this._engagementFx(ev);
 
     // ---- wrecks (mechanism-distinct shape, zone-tinted)
     const liveW = new Set();
@@ -268,7 +463,8 @@ export class Entities {
       rec.mesh.material.color.setHex(ZONE_TINT[wk.zone] ?? 0x888888);
       rec.mesh.position.set(wk.pos?.[0] || 0, 8, -(wk.pos?.[1] || 0));
     });
-    this._prune(this.wrecks, liveW, (rec) => this.groups.wrecks.remove(rec.mesh));
+    this._prune(this.wrecks, liveW,
+      (rec) => this._disposeBareMesh(this.groups.wrecks, rec));
 
     // ---- stray-round impacts
     const liveS = new Set();
@@ -287,13 +483,60 @@ export class Entities {
       rec.mesh.material.color.setHex(ZONE_TINT[s.zone] ?? 0xff5050);
       rec.mesh.position.set(s.pos?.[0] || 0, 11, -(s.pos?.[1] || 0));
     });
-    this._prune(this.strays, liveS, (rec) => this.groups.strays.remove(rec.mesh));
+    this._prune(this.strays, liveS,
+      (rec) => this._disposeBareMesh(this.groups.strays, rec));
+  }
+
+  // tracer + kill-mark effects from engagement events
+  _engagementFx(ev) {
+    const kinds = { kill: 1, miss: 1, debris_neutralized: 1, fire_blocked_los: 1 };
+    if (!kinds[ev.kind] || !ev.uav_id) return;
+    const from = this.entityPos('uav', ev.uav_id) || this.entityPos('turret', ev.uav_id);
+    const to = Array.isArray(ev.pos) ? W(ev.pos)
+      : (ev.debris_id ? this.entityPos('debris', ev.debris_id) : null);
+    if (!from || !to) return;
+    const weapon = this.view.turrets.has(ev.uav_id) ? 'turret_gun' : (ev.effector || 'projectile');
+    this._tracer(from, to, WEAPON_COLOR[weapon] ?? 0xffd166,
+      ev.kind === 'fire_blocked_los');
+    if (ev.kind === 'kill' || ev.kind === 'debris_neutralized')
+      this._killMark(to, ev.uav_id, ev.kind === 'debris_neutralized');
+  }
+
+  _tracer(from, to, color, blocked = false) {
+    const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+      color, transparent: true, opacity: blocked ? 0.25 : 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    line.frustumCulled = false;
+    const head = new THREE.Mesh(TRACER_HEAD_GEO, new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: blocked ? 0.3 : 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    head.position.copy(from);
+    this.groups.tracers.add(line, head);
+    this.tracers.push({ line, head, from, to, t0: performance.now(), dur: 550 });
+  }
+
+  _killMark(pos, shooter, isDebris) {
+    const ring = new THREE.Mesh(KILL_RING_GEO, new THREE.MeshBasicMaterial({
+      color: isDebris ? 0x7cd6c0 : 0xff5050, transparent: true, opacity: 0.9,
+      side: THREE.DoubleSide, depthWrite: false,
+    }));
+    ring.position.copy(pos);
+    ring.rotation.x = -Math.PI / 2;
+    const label = makeLabel();
+    setLabel(label, `${shooter} ✕${isDebris ? ' debris' : ''}`, isDebris ? '#7cd6c0' : '#ff8080');
+    label.spr.position.copy(pos);
+    label.spr.scale.set(420, 79, 1);
+    this.groups.fx.add(ring, label.spr);
+    this.killMarks.push({ ring, spr: label.spr, t0: performance.now(), dur: 3000 });
   }
 
   // --------------------------------------------------------------- truth
   // Ghost rule (ICD §4, SRS HMI-EVAL-001/002): enemies with acquired==false
-  // are grey wireframe ghosts at true position; on acquisition: flash +
-  // subtle grey truth marker remains while eval is on.
+  // are grey wireframe ghosts (true airframe shape) at true position; on
+  // acquisition: flash + subtle grey truth marker remains while eval is on.
   applyTruth(tr) {
     const liveG = new Set(), liveM = new Set();
     for (const e of tr.enemies || []) {
@@ -310,23 +553,17 @@ export class Entities {
         liveG.add(e.id);
         let rec = this.ghosts.get(e.id);
         if (!rec) {
-          const mesh = new THREE.Mesh(GHOST_GEO, new THREE.MeshBasicMaterial({
-            color: 0x9aa4b0, wireframe: true, transparent: true, opacity: 0.4,
-          }));
-          mesh.userData.pick = { kind: 'ghost', id: e.id };
-          this.groups.ghosts.add(mesh);
-          rec = { mesh, base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
+          const model = makeGhostModel(e.cls);
+          model.group.userData.pick = { kind: 'ghost', id: e.id };
+          this.groups.ghosts.add(model.group);
+          rec = { model, mesh: model.group, base: { pos: [0, 0, 0], vel: [0, 0, 0] }, data: null };
           this.ghosts.set(e.id, rec);
         }
         rec.data = e;
         setW(rec.mesh.position, e.pos);
+        orient(rec.mesh, e.vel);
         rec.base.pos = e.pos || [0, 0, 0];
         rec.base.vel = e.vel || [0, 0, 0];
-        const v = e.vel || [0, 0, 0];
-        if (Math.hypot(v[0], v[1], v[2]) > 1) {
-          const dir = new THREE.Vector3(v[0], v[2], -v[1]).normalize();
-          rec.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-        }
       } else {
         // acquired & alive: thin grey truth marker so truth-vs-track offset shows
         liveM.add(e.id);
@@ -345,12 +582,14 @@ export class Entities {
         rec.base.vel = e.vel || [0, 0, 0];
       }
     }
-    this._prune(this.ghosts, liveG, (rec) => this.groups.ghosts.remove(rec.mesh));
-    this._prune(this.truthMarks, liveM, (rec) => this.groups.truth.remove(rec.mesh));
+    this._prune(this.ghosts, liveG, (rec) => this._disposeGhost(rec));
+    this._prune(this.truthMarks, liveM, (rec) => this._disposeTruth(rec));
   }
 
   // production mode / eval drop: remove every eval-only visual
   clearEval() {
+    for (const rec of this.ghosts.values()) this._disposeGhost(rec);
+    for (const rec of this.truthMarks.values()) this._disposeTruth(rec);
     this.ghosts.clear(); this.truthMarks.clear(); this.ghostSeen.clear();
     this.groups.ghosts.clear(); this.groups.truth.clear();
   }
@@ -372,16 +611,38 @@ export class Entities {
 
   // ------------------------------------------------------------- render tick
   tick(now) {
+    // render-frame dt so animation speed is monitor-rate independent
+    const fdt = clamp((now - this._lastTick) / 1000, 0, 0.1);
+    this._lastTick = now;
     // smooth extrapolation between 5 Hz frames (live/mock running only)
     const dt = clamp((now - this.recvWall) / 1000, 0, 0.5) * this.effSpeed;
     if (dt > 0) {
-      for (const m of [this.tracks, this.uavs, this.ghosts, this.truthMarks]) {
+      for (const m of [this.tracks, this.uavs, this.ghosts, this.truthMarks, this.debris]) {
         for (const rec of m.values()) {
           const b = rec.base;
           rec.mesh.position.set(
             b.pos[0] + b.vel[0] * dt,
             (b.pos[2] || 0) + (b.vel[2] || 0) * dt,
             -(b.pos[1] + b.vel[1] * dt));
+        }
+      }
+    }
+    // zoom-aware magnification (HMI-MAP-007): true scale near, visible far
+    const cam = this.view.camera.position;
+    for (const m of [this.tracks, this.uavs, this.ghosts, this.debris]) {
+      for (const rec of m.values()) {
+        const d = cam.distanceTo(rec.mesh.position);
+        const s = Math.max(1, this.magFactor * d * MAG_K);
+        rec.mesh.scale.setScalar(s);
+        if (rec.label) {
+          // labels stay screen-readable: world size ∝ camera distance,
+          // divided by the parent's scale
+          const lw = Math.max(40, LABEL_K * d);
+          rec.label.spr.scale.set(lw / s, lw * 0.1875 / s, 1);
+        }
+        if (rec.spin) {        // tumbling debris (rad/s, frame-rate independent)
+          rec.mesh.rotation.x += 0.96 * rec.spin * fdt;
+          rec.mesh.rotation.z += 0.66 * rec.spin * fdt;
         }
       }
     }
@@ -398,6 +659,44 @@ export class Entities {
         f.m.material.opacity = 0.9 * (1 - a);
       }
     }
+    // weapon tracers: head flies from→to, then the line fades
+    for (let i = this.tracers.length - 1; i >= 0; i--) {
+      const tr = this.tracers[i];
+      const a = (now - tr.t0) / tr.dur;
+      if (a >= 2.2) {
+        this.groups.tracers.remove(tr.line, tr.head);
+        tr.line.material.dispose(); tr.line.geometry.dispose();
+        tr.head.material.dispose();
+        this.tracers.splice(i, 1);
+      } else if (a <= 1) {
+        tr.head.position.lerpVectors(tr.from, tr.to, a);
+      } else {
+        tr.head.visible = false;
+        // ~0.94/frame at 60 Hz, expressed per-second for any refresh rate
+        tr.line.material.opacity *= Math.pow(0.024, fdt);
+      }
+    }
+    // kill marks: ring expands, label floats up, both fade
+    for (let i = this.killMarks.length - 1; i >= 0; i--) {
+      const k = this.killMarks[i];
+      const a = (now - k.t0) / k.dur;
+      if (a >= 1) {
+        this.groups.fx.remove(k.ring, k.spr);
+        k.ring.material.dispose();
+        k.spr.material.map.dispose();
+        k.spr.material.dispose();
+        this.killMarks.splice(i, 1);
+      } else {
+        k.ring.scale.setScalar(1 + a * 2.5);
+        k.ring.material.opacity = 0.9 * (1 - a);
+        k.spr.position.y += 33 * fdt;        // float rate in m/s, not m/frame
+        k.spr.material.opacity = 1 - a * a;
+        // zoom-aware label size: a fixed 420 m sprite buries the view at
+        // true-scale close zoom
+        const lw = Math.max(60, LABEL_K * 1.35 * cam.distanceTo(k.spr.position));
+        k.spr.scale.set(lw, lw * 0.1875, 1);
+      }
+    }
     // selection ring follows selected entity
     if (this.selection) {
       const p = this.entityPos(this.selection.kind, this.selection.id);
@@ -409,4 +708,10 @@ export class Entities {
       } else this.selRing.visible = false;
     } else this.selRing.visible = false;
   }
+}
+
+function hash32(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
 }

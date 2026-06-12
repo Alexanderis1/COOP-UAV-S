@@ -917,3 +917,439 @@ A 6-week-shaped learning path for one engineer (parallelizable across teammates 
   ground truth.
 - One relevant MDPI paper (Electronics 12(4):829, ground risk estimation) is flagged
   **RETRACTED** on the publisher page — do not cite it.
+
+---
+
+## P1 physics core - equation sources (added 2026-06-11)
+
+Per-equation traceability for `src/coopuavs/physics/` (plan rule: one
+citation per implemented equation; module docstrings carry the same
+references next to the code). Items marked **[standard reference, URL not
+verified]** follow the convention of the Verification notes above; every
+equation is additionally pinned by an analytic unit test, so no citation
+below is load-bearing for correctness.
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| Quaternion kinematics `q_dot = 1/2 q (x) (0, w)` | `rigid_body.quat_derivative` | J. Sola, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508 (2017), eq. (199). |
+| Euler rotational dynamics `w_dot = J^-1 (tau - w x Jw)` | `rigid_body.derivatives` | Beard & McLain, *Small Unmanned Aircraft* (Princeton UP, 2012), eq. 3.15-3.17. [standard reference] |
+| Classic RK4, per-step quaternion renorm | `rigid_body.rk4_step` | Press et al., *Numerical Recipes*, 3rd ed., sec. 17.1. [standard reference] |
+| ISA troposphere T/p/rho/a | `atmosphere.py` | U.S. Standard Atmosphere 1976 (NOAA-S/T 76-1562); ICAO Doc 7488. [standard reference] |
+| Dryden forming filters + low-altitude sigma/L table | `dryden.py` | MIL-F-8785C, *Flying Qualities of Piloted Airplanes* (1980), sec. 3.7.2; transfer-function forms as in Beard & McLain sec. 4.4. |
+| Rotor thrust `kf w^2`, yaw reaction `km w^2`, allocation | `multirotor.wrench` | Mahony, Kumar & Corke, *Multirotor aerial vehicles*, IEEE Robotics & Automation Magazine 19(3), 2012. [standard reference] |
+| Ground effect `T_IGE/T_OGE = 1/(1-(R/4z)^2)` | `multirotor._ground_effect` | Cheeseman & Bennett, *The effect of the ground on a helicopter rotor in forward flight*, ARC R&M 3021 (1955). [standard reference] |
+| Linear rotor drag `f = -D v_air_body` | `multirotor.wrench` | Faessler, Franchi & Scaramuzza, *Differential flatness of quadrotor dynamics subject to rotor drag...*, IEEE RA-L 3(2), 2018. |
+| Brushless motor/ESC: `i=(dV-Ke w)/Rw`, `J_r w_dot = Kt i - k_q w^2`, `Ke=Kt=60/(2 pi KV)` | `motor.py` | Standard DC-machine model; multirotor application per Mahony et al. 2012. [standard reference] |
+| Thevenin 1-RC battery ECM + OCV(SOC) | `battery.py` | Chen & Rincon-Mora, *Accurate electrical battery model capable of predicting runtime and I-V performance*, IEEE Trans. Energy Conversion 21(2), 2006. |
+| Implicit DC-bus fixed point `v_bus = (OCV - V1 + (R0/R_w) Ke sum(theta_r w_r)) / (1 + R0 sum(theta_r^2)/R_w)`, `i_bus = (sum(theta_r^2) v_bus - Ke sum(theta_r w_r)) / R_w` | `powertrain.py` | No external source: closed-form simultaneous (Kirchhoff) solution of the two component models above, at pre-step omega/SOC/V1. Stability rationale: the quasi-static armature plus the ECM R0 feedthrough give any explicit one-step-lag composition a loop gain `g = R0 sum(theta_r^2)/R_w` (= 3.6 theta^2 for interceptor_quad, 2.0 theta^2 for fpv_quad) — a fixed-point iteration that diverges for g > 1 (above ~hover throttle) at ANY dt, so the loop must be solved implicitly. Bus current is then clamped to the YAML `i_bus_max_a` (ESC/BMS limit, ~1.5x steady full-throttle draw) and bus voltage to [3.0, 4.2] V/cell. |
+| Fixed-wing aero: blended lift 4.9-4.10, induced drag 4.11, lateral set 4.14, prop 4.15, stability->body 4.19 | `fixedwing.py` (FRD verbatim, `M=diag(1,-1,-1)` flip to FLU) | Beard & McLain 2012, ch. 4. [standard reference] |
+| Slab-method segment vs AABB | `collision.py` | Ericson, *Real-Time Collision Detection* (2005), sec. 5.3.3 (Kay-Kajiya). [standard reference] |
+| Oracle simulator | `scripts/oracle/export_rotorpy.py` | Folk, Paulos & Kumar, *RotorPy: a Python-based multirotor simulator...*, arXiv:2306.04485 (2023); rotorpy 2.1.2. |
+
+Airframe parameter files (`physics/params/*.yaml`) are
+invented-but-self-consistent (no public data for these classes) and are
+pinned by trim/terminal/envelope tests - the YAML headers say so explicitly.
+
+Known model-validity limitations (gate review 2, 2026-06-11; both kept
+as-is by decision, with the same warnings carried in the code):
+
+- **B&M eq. 4.15 windmill drag** (`fixedwing.py`): at throttle cut the
+  verbatim prop model produces NEGATIVE thrust
+  `~ -1/2 rho S_prop C_prop Va^2` — about -643 N for shahed_fw at 50 m/s
+  cruise, ~2.5x the total aero drag (~260 N). Faithful to the book away
+  from its design point; P6 threat behaviors must not model throttle-cut
+  glides / engine-out trajectories without revisiting (clamp or a
+  momentum-theory windmill model).
+- **interceptor_quad constant kf/km at dash** (`params/interceptor_quad.yaml`):
+  the committed KV/R_w/12S imply a full-throttle ceiling of ~1400 rad/s
+  (13.4 krpm) on the 0.178 m prop — tip Mach ~0.73 on a stiff 44.4 V bus
+  (~M 0.59-0.69 with pack sag), ~1.7x class-typical 14" prop rpm ratings;
+  at the 80 m/s dash the helical advancing-tip Mach reaches ~0.8, where
+  compressibility invalidates the constant-kf/km quadratic model. Hover
+  (738 rad/s, tip M ~0.38) is fine. No pin is affected (the RotorPy oracle
+  shares the constant-coefficient model class); revisit (kf(Mach) rolloff
+  or larger/slower props) if dash-regime fidelity becomes load-bearing.
+
+## P2 hardware device models - equation sources (added 2026-06-11)
+
+Per-equation traceability for `src/coopuavs/hw/` (same rule as P1: one
+citation per implemented equation, module docstrings carry the same
+references; every equation is additionally pinned by an analytic unit
+test, so no citation below is load-bearing for correctness).
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| IMU error budget: white noise density N, bias-instability proxy (first-order Gauss-Markov), bias random walk K, turn-on bias | `hw/imu.py` | El-Sheimy, Hou & Niu, *Analysis and modeling of inertial sensors using Allan variance*, IEEE Trans. Instrumentation & Measurement 57(1), 2008; IEEE Std 952-1997 Annex B/C; parameter convention per the Kalibr IMU noise model (noise density / random walk per sqrt(Hz)/sqrt(s)). [standard references] |
+| Discrete white noise sigma_d = N/sqrt(dt); exact-ZOH GM `x[k] = phi x[k-1] + sigma sqrt(1-phi^2) eps` with stationary cold start; RW `b[k] = b[k-1] + K sqrt(dt) eps` | `hw/stoch.py` | Brown & Hwang, *Introduction to Random Signals and Applied Kalman Filtering*, 4th ed., ch. 3 (Gauss-Markov ZOH discretization). [standard reference] |
+| Analytic Allan variances: `AVAR_N = N^2/tau`, `AVAR_K = K^2 tau/3`, `AVAR_GM = sigma^2 (T/tau)[2 - (T/tau)(3 - 4e^(-tau/T) + e^(-2tau/T))]` | `hw/stoch.py avar_*`; estimator `tests/allan_util.py` (fully-overlapping ADEV) | IEEE Std 952-1997 Annex C. NOTE: the GM curve here is re-derived from the autocorrelation `R(u) = sigma^2 e^(-|u|/T)`; IEEE writes the same curve parameterized by the driving noise q with `sigma^2 = q^2 T / 2` (a factor-2 trap when transcribing; the Monte-Carlo Allan suite pins ours). |
+| Specific force `f_b = q^-1 (a_world - g_world)` (accelerometer reads +g up at rest, 0 in free fall) | `hw/imu.py sample` | Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. (2013), ch. 2 strapdown conventions. [standard reference] |
+| GNSS error decomposition: white tracking noise over slowly correlated (GM) iono/tropo/multipath residual, h/v split; Doppler-white velocity | `hw/gps.py` | Groves 2013, ch. 9. [standard reference] |
+| Baro chain: `p = p_ISA(alt) + GM drift + white`, exact inverse `h = (T0/L)(1 - (p/p0)^(R L/g0))` | `hw/baro.py` | U.S. Standard Atmosphere 1976 (same source as `physics/atmosphere.py`); slowly-varying baro bias convention per PX4 EKF2 (which estimates exactly such an offset). [standard reference] |
+| Theater geomagnetic field from magnitude/declination/inclination: `B_ENU = |B| [cos I sin D, cos I cos D, -sin I]` | `hw/mag.py theater_field_enu` | Standard geomagnetic element definitions (e.g. NOAA NCEI / WMM documentation: D east of true north, I dip below horizontal). [standard reference] |
+| Mag error budget: per-power-up hard iron + GM bias + white | `hw/mag.py` | PX4 EKF2 magnetometer bias convention; hard/soft iron taxonomy standard (soft iron neglected - documented deviation). |
+| Rate-limited first-order gimbal servo `delta = clip(err min(dt/tau, 1), +-slew dt)` | `hw/seeker_gimbal.py` | Standard rate-limited actuator form, cf. Beard & McLain 2012 ch. 6 actuator models; `min(dt/tau, 1)` deadbeat discretization is ours (pinned: never overshoots). [standard reference] |
+| ESC telemetry frames: per-rotor rpm + pack bus V/A, protocol quantization | `hw/esc_telem.py` | BLHeli32/KISS ESC telemetry convention (rpm via erpm/pole-pairs, 0.01 V / 0.1 A granularity class). [project knowledge, representative] |
+
+Device parameter file (`hw/params/interceptor_devices.yaml`) is
+invented-but-representative: magnitudes sized to the named device classes
+(tactical MEMS IMU, multi-band GNSS, MS5611/IST8310-class baro/mag,
+BLHeli32-class telemetry), NOT copied from any datasheet, and pinned by
+the hw tests.
+
+Known model-validity limitations (P2, kept as-is by design):
+
+- **Mag soft iron neglected** (`hw/mag.py`): only a hard-iron offset is
+  modelled; attitude-dependent soft-iron distortion is absent. The P3 EKF
+  mag-fusion gates must not be tuned to exploit that absence.
+- **ESC telemetry has no temperature channel and pack-level V/I only**
+  (`hw/esc_telem.py`): no thermal model exists, and `BatteryEcm` carries
+  no per-cell states - per-cell imbalance telemetry arrives with the P5
+  CELL_IMBALANCE fault work.
+- **Gimbal stabilization assumed ideal** (`hw/seeker_gimbal.py`): no
+  coupling of airframe angular rate into the boresight inside the slew
+  budget.
+- **Baro reads the ISA column, not weather** (`hw/baro.py`): the legacy
+  weather model carries no pressure field; if a synoptic pressure offset
+  is added later it must enter the baro truth path explicitly.
+
+## P3 CoopFC flight stack - estimation sources and consistency rationale (added 2026-06-12)
+
+Per-equation traceability for `src/coopuavs/coopfc/estimation/` (same
+rule as P1/P2: one citation per implemented equation, module docstrings
+carry the same references; every equation is additionally pinned by a
+unit test, plus the NEES/NIS Monte-Carlo consistency suite
+`tests/test_coopfc_ekf_mc.py` (@slow) against the real P2 device
+models).
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| Error-state 15-state EKF: nominal kinematics, error-state transition F, error injection + reset | `estimation/ekf.py` (`_integrate_nominal`, `_predict_cov`, `_inject`) | J. Sola, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508 (2017), eq. 255-259 (nominal), eq. 270 (transition), eq. 282 (injection). |
+| Delayed fusion horizon + IMU ring buffer + output predictor (mainline runs `lag_s` behind now; every sensor, incl. 120 ms-late GNSS, fuses at exactly its stamp; control output = horizon state replayed through buffered IMU) | `ekf.py` (`update`, `_mainline`, `_output`) | PX4-EKF2 / ECL EKF architecture (delayed-time horizon with output complementary predictor), PX4 dev documentation. [standard reference, design pattern] |
+| Chi-square innovation gate: reject if NIS > gate^2 * dof; accepted/rejected tallies as CBIT spoof seam | `ekf.py _fuse_block` | Bar-Shalom, Li & Kirubarajan, *Estimation with Applications to Tracking and Navigation* (Wiley 2001), sec. 5.4 innovation tests; gate-in-sigmas convention per PX4 EKF2. [standard reference] |
+| Joseph-form covariance update (symmetric PSD under roundoff, exact for ANY gain) | `ekf.py _fuse_block` | Bucy & Joseph (1968), as presented in Brown & Hwang, *Introduction to Random Signals and Applied Kalman Filtering*, 4th ed., ch. 5. [standard reference] |
+| Partial (masked-gain) measurement update: baro confined to the vertical channel {dp_z, dv_z, db_a_z} | `ekf.py _fuse_baro` -> `_fuse_block(gain_rows=...)` | Brink, *Partial-Update Schmidt-Kalman Filter*, J. Guidance, Control & Dynamics 40(9), 2017 (zero-gain rows = beta=0 states); consider-state framework per Schmidt 1966. Joseph form keeps P consistent for the deliberately suboptimal gain. |
+| Heading-only magnetometer fusion: tilt-leveled field, yaw innovation, H = yaw axis only | `ekf.py _fuse_mag` | PX4 EKF2 mag heading fusion (the default mag mode); leveled-field yaw per Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. (2013), ch. 6. [standard reference] |
+| Static coarse alignment: leveling from mean specific force, gyro bias from mean rate, yaw from leveled mag + declination, motion variance gate | `estimation/alignment.py` | Groves 2013, ch. 5 (coarse alignment / leveling). [standard reference] |
+| NEES/NIS Monte-Carlo filter consistency methodology | `tests/test_coopfc_ekf_mc.py` | Bar-Shalom, Li & Kirubarajan 2001, ch. 5 (consistency of state estimators; NEES/NIS bounds). [standard reference] |
+| Yaw information floor; unmodeled-error budget added to every reported sigma | `ekf.py` (`_fuse_mag` floor, `budget9`) | No external source: ours (static consider-covariance in spirit, Schmidt 1966); rationale below, calibrated against the MC suite. |
+| Quaternion attitude P law `rate_sp = 2 kp vec(q^-1 q_sp)`, shortest path, yaw weight | `control/attitude.py` | Brescianini, Hehn & D'Andrea, *Nonlinear quadrocopter attitude control* (ETH Zurich tech report, 2013); PX4 attitude controller convention. [standard reference] |
+| Body-rate PID, derivative-on-measurement + LPF; conditional-integration anti-windup | `control/rate.py` | Astrom & Hagglund, *Advanced PID Control* (ISA 2006), ch. 3 (integrator windup; conditional integration). [standard reference] |
+| Velocity PI -> specific force -> attitude (thrust-direction flatness map, yaw-frame euler solve) | `control/velocity.py` | Mellinger & Kumar, *Minimum snap trajectory generation and control for quadrotors*, ICRA 2011 (thrust direction = desired body z); PX4 PositionControl structure. [standard reference] |
+| Quadratic thrust-curve command linearization `u = u_hover sqrt(\|f\|/g)` | `control/velocity.py` | T ~ omega^2 with omega ~ linear in command (quasi-static armature, P1 motor model); PX4 THR_MDL_FAC convention. [project knowledge] |
+| Quad-X mixer + sequential desaturation, priority roll/pitch > collective > yaw; per-axis directional saturation flags for rate-loop anti-windup | `control/mixer.py` | PX4 ControlAllocationSequentialDesaturation order [project knowledge, standard convention]; sign table derived from the `physics/multirotor.py` wrench equations (documented in the module docstring). |
+| Position P -> velocity setpoint cascade | `control/position.py` | PX4 PositionControl outer-loop structure. [standard reference] |
+| FCU failsafe conventions: battery LOW->RTL / CRITICAL->LAND upward-latching with debounce, link-loss->RTL, offboard setpoint-timeout->POS_HOLD, priority order | `fcu.py`, `battery_monitor.py` | PX4 commander/battery failsafe conventions [project knowledge]; priority order and timelines pinned by `tests/test_coopfc_fcu.py`. |
+| Whole-stack flight envelope cross-check (waypoint square) | `tests/test_oracle_ardupilot.py` + `scripts/oracle/export_ardupilot_square.py` | ArduPilot ArduCopter stable SITL (official prebuilt, EKF3) as an independent complete autopilot; offline-oracle policy and envelope-band scoping per tests/fixtures/oracle/README.md. |
+
+### Colored measurement errors and covariance honesty (the P3 EKF contract)
+
+The P2 device suite is deliberately *colored*: GNSS carries GM wander
+(sigma 1.2/2.4 m, tau 60 s), the baro a GM drift (~1.25 m, tau 600 s -
+effectively one offset per flight), the mag a per-power-up hard iron
+(~2 uT = ~5 deg of yaw at 63 deg dip), the IMU GM bias instability
+(gyro 4e-5 rad/s = ~8 deg/h class, tau 100 s). A 15-state filter models
+white noise + bias random walks only; it provably cannot estimate these
+processes. Three mechanisms keep the filter *honest* about that, all
+validated by the MC suite:
+
+1. **R inflation** (variance of the colored process added to the
+   measurement noise) keeps single-fusion weights right - but N
+   repeated fusions of one frozen error still average it down sqrt(N)
+   as if white. Hence:
+2. **Structural fusion limits** where repetition is the hazard: the mag
+   *yaw information floor* (stop fusing once P_yaw reaches the
+   hard-iron variance - re-measuring one fixed draw at 50 Hz buys
+   nothing) and the baro *partial update* (gain masked to the vertical
+   channel; through maneuver-built cross-covariances 15000 baro
+   fusions per flight otherwise quietly condition tilt and yaw:
+   measured 20x claimed-sigma_vel suppression on the GNSS-denied
+   suite, caught by the 4-sigma honesty gate).
+3. **The unmodeled-error budget** `budget9` (9-dof variances): the
+   residual floors the filter still cannot represent - GNSS GM wander
+   on position, baro drift on height, hard-iron on yaw, and the
+   hard-iron leak chain into tilt/velocity (coupling factors 0.15x,
+   0.25 s, 0.3x calibrated ONCE against the MC suite). Every
+   *reported* sigma is sqrt(diag P + budget9); the NEES suite scores
+   against P + diag(budget9); on the GNSS-denial transition the
+   attitude/velocity floors are injected into P once (they become real
+   initial errors that the dynamics double-integrate).
+
+### GNSS-denied 5-minute drift envelope (PHY-UAV-011, partial)
+
+SRS PHY-UAV-011 makes 5-minute GNSS-denied navigation *engagement-grade*
+only via a VIO/datalink fallback that is real-system scope (out of this
+simulation; docs/TRACEABILITY.md marks the requirement partial). What
+the sim therefore validates is (a) the honest free-inertial drift of
+the modeled suite — baro holds height, mag holds yaw, nothing holds
+horizontal — and (b) *covariance honesty over the whole denial*: the
+filter's own 4-sigma claim must contain the true drift at every scored
+seed, because that claim is what the P5 CBIT dead-reckoning budget (and
+the real system's fallback trigger) acts on.
+
+First-principles horizontal scale over t = 300 s of denial, for the P2
+IMU (gyro RW K = 1e-5 rad/s/sqrt(s), GM bias instability
+sigma = 4e-5 rad/s ~ 8 deg/h, tau 100 s): the gravity leak of the
+random-walking tilt-rate bias integrates to
+`sigma_pos = g K sqrt(t^7/252) ~ 2.9 km`, and the GM bias treated as a
+coherent ramp adds `g sigma_gm t^3/6 ~ 1.8 km` — ~3.4 km RSS scale.
+Measured (MC suite, seeds 0-4, 2026-06-12): worst 5472 m, spread
+1.3-5.5 km, all inside the filter's 4-sigma claim; regression gate
+7000 m (+28% over worst). The filter over-claims late-denial sigma by
+2-8x because it models the bounded GM bias instability as an unbounded
+random walk — the conservative side of honesty, accepted.
+
+The baro partial update above is what makes this honest: before it,
+15000 full-gain baro fusions during denial suppressed the claimed
+sigma_vel 20x below the no-baro covariance (3.1 vs 67.5 m/s at +270 s)
+while true drift stayed km-class — the 4-sigma gate failed at 4.2 sigma
+and the A/B diagnostic (baro on/off during denial) isolated the
+channel. The masked gain trades the small *real* tilt information in
+baro z-residuals (order f_horizontal/g) for killing the large fake
+component; true drift rises (pure DR), the claim becomes truthful.
+
+### P3-8 hover-accuracy gate semantics (user decision 2026-06-12)
+
+The plan's "hover RMS < 0.15 m calm" is physically unreachable against
+TRUTH with this device suite: the GNSS GM wander (sigma_h 1.2 m,
+tau 60 s) drags the EKF estimate, and a position-hold loop follows its
+estimate — published GNSS (non-RTK) position-hold accuracy is the
+1-1.5 m class, and centimeter-level hover requires RTK corrections
+(see e.g. RTK-vs-GPS hold comparisons:
+https://www.d1store.com.au/lounge/content/rtk-vs-gps-position-hold,
+https://thinkrobotics.com/blogs/tutorials/rtk-gps-setup-for-drones-complete-guide-to-centimeter-level-accuracy
+[vendor documentation, magnitudes only]). The gate therefore splits:
+
+- **control error** |estimate - hold setpoint|: plan numbers apply
+  (< 0.15 m calm, < 1.0 m at 8 m/s + Dryden w20 = 8). Measured
+  0.07-0.08 m both — the cascade rejects light-class turbulence to
+  the navigation floor.
+- **truth error** |truth - truth at capture|: gated at the device
+  budget, 2.0 m RMS (measured 0.5-0.9 m; GM wander over a 30 s window
+  wanders ~sqrt(2 sigma^2 (1-e^(-t/tau))) ~ 0.9 m at 1 sigma).
+
+The 200 m waypoint-square cross-track gate (< 2 m) stays TRUTH-based:
+the GM error is common-mode along a straight segment leg (measured
+~1 m class worst).
+
+### P3-8 perf gate re-scope (user decision 2026-06-12)
+
+"1-vehicle RTF >= 20x" predated P1: the batched plant RK4 costs
+~0.2 s CPU/sim-s INDEPENDENT of N (numpy small-batch overhead — the
+P1/P2 same-bound-for-N=20-and-30 measurements), capping any 1-vehicle
+bench near 5x regardless of flight-software cost. Re-scoped to
+**>= 3x measured** (3.6-3.7x) plus the requirement that actually
+matters for the design envelope, **20-instance projection >= 1x**
+per the P4 fleet architecture (one batched plant + device suite, N
+python FCUs): C20 = C_phys+dev(N=20) + 20 C_fcu. Passing this needed
+the EKF fusion path rewritten in selection-indexed form (every
+measurement model's H rows are unit vectors; the dense matmuls only
+accumulated exact +0.0 terms) — verified VALUE-IDENTICAL by sha256
+over the full state + covariance of a 20 s device-suite run before and
+after. Measured: C_fcu 0.023-0.027 s/sim-s direct, projection
+0.73-0.81 s/sim-s -> RTF 1.24-1.38x.
+
+P3-R2 follow-ups (2026-06-12 gate review, cut-findings pass): the
+one-time sha256 equivalence check is now a COMMITTED default-suite pin
+(`test_fuse_sel_matches_dense_joseph_reference` re-derives every sensor
+block, incl. the masked baro partial update, against a test-side dense
+Joseph reference), and the Joseph update itself is expanded to rank-m
+form for selection H ((I-KH)P = P - K P[idx,:]; X(I-KH)^T =
+X - X[:,idx] K^T) — an algebraic identity (exact for any gain), ~5x
+fewer multiplies than the two dense 15x15 matmuls it replaces. The
+output predictor stays a FULL replay (exact prediction) rather than a
+PX4-style incremental delta (approximate): fidelity-first, cost bounded
+by the lag_s window and covered by the @perf gates.
+
+### P3-5 yaw rate gate (user decision 2026-06-12, gate review)
+
+The plan's "rate rise < 60 ms" is a roll/pitch spec: quad-X yaw is
+actuated by rotor drag torque, ~30x weaker authority, and physically
+cannot meet it. The interim 0.40 s settle gate carried 2.9x headroom
+over the measured 0.138 s (deterministic truth-fed bench) — loose
+enough to pass a tripled settle time. Re-stamped per the
+fidelity/determinism goal as a REGRESSION gate: **settle < 0.20 s**
+(+45% headroom, same style as the GNSS-denied drift gate), overshoot
+gate < 20% unchanged.
+
+## P4 fleet integration - engine wiring decisions (added 2026-06-12)
+
+### P4-1 SITL wind coupling (user decision 2026-06-12)
+
+Legacy weather applies an Ornstein-Uhlenbeck gust on the mean wind as a
+truth-side *displacement*. A SITL vehicle must feel wind as a *force*
+through the plant wrench, so the engine feeds per-vehicle
+`WeatherState.mean_wind_at(z)` (the same power-law shear as `wind_at`,
+gust-free) plus a MIL-F-8785C Dryden bank (the validated P1 machinery,
+per-vehicle child streams) whenever scenario wind is nonzero. The OU
+gust term is deliberately excluded for SITL vehicles — Dryden replaces
+it; applying both would double-count turbulence. Mapping note: the
+Dryden severity knob w20 is the mean wind at 20 ft (6.1 m); the
+scenario `wind_speed` is referenced at 10 m. The 10 m figure is used
+as w20 directly (≤6% shear-law difference, well inside the turbulence
+model's class accuracy). Turbulence sigma/length scales are frozen at
+each vehicle's spawn altitude (the bench convention).
+
+### P4-1 IMU acceleration = exact wrench (user decision 2026-06-12)
+
+The P3 bench fed the IMU a dv/dt finite difference (documented
+placeholder). The fleet engine threads the exact truth CoM acceleration
+`force_world / m` — the plant wrench at the latched rotor speeds and
+ZOH wind, gravity included, matching the `hw.Imu.sample` contract —
+evaluated at the pre-step state the devices sample. Stand rows read
+zero (the unmodeled ground reaction balances them). Real ground
+contact stays deferred (same decision): non-ARMED rows are frozen with
+zeroed velocity/rates, motors pre-spin to hover at arming.
+
+### P4-4 energy telemetry: voltage-proxy fraction (user decision 2026-06-12)
+
+`UavState.battery` in sitl mode is the FCU's voltage-proxy fraction
+(`BatteryMonitor.fraction()`): loaded per-cell voltage mapped linearly
+`crit_v_cell (3.30) → 0 .. full_v_cell (4.20) → 1`, shipped in STATUS as
+`batt_frac` f32. Deliberately conservative — sag under load reads as less
+remaining energy exactly when the MC should break off earlier. The proxy
+is noisy under transient load (arming spool-up reads ~0.1 for one
+sample), so the MC floor carries a 2 s debounce mirroring the FCU
+monitor's. Real SOC estimation (coulomb counting, per-cell) is P5
+CELL_IMBALANCE scope. The rearm cycle is physical (land-dock decision):
+the pad charger drives ECM SOC directly (boundary condition; the charger
+circuit is out of scope) and BATT_RESET carries pack-swap semantics —
+ground-only, clears the upward-latched monitor.
+
+### P4-4 touchdown ground recalibration
+
+The stand convention stops the airframe in one micro-tick at touchdown —
+a velocity step the IMU stream never expresses (contact dynamics are not
+modeled). The EKF's chi-square gates then *defend* the stale velocity
+belief against every GPS/baro correction (gate lockout: an 8 m/s
+free-running pad drift was measured, `div=False`, `late_meas=0`). The
+realistic remedy at our fidelity is the recalibrate-before-flight
+doctrine: touchdown drops the EKF and re-runs the static ground
+alignment from scratch (the existing BOOT machinery, ~2 s, GPS-seeded);
+PBIT holds re-arming until it is green. PX4's equivalent is its
+on-ground EKF handling (zero-velocity updates / state resets on land).
+
+### P4-4 OFFBOARD setpoint clamp (PX4 convention)
+
+`cmd_velocity` setpoints are now clamped in the FCU to the same
+`fcu.vel_max_h/up/down` envelope params the internal modes obey — an MC
+cannot command the airframe past its declared envelope. Scenario
+overlays size the envelope per airframe (the racer flies
+h=80/up=20/down=20).
+
+### P4 gate-review: vertical-brake loss — root cause + fix (user
+### decision 2026-06-12, fidelity-first)
+
+Symptom: braking a fast climb held near-hover average thrust for
+seconds (~90 m overshoot). Root cause (instrumented in the fleet
+engine): the brake demand is healthy (az clamps to −a_max_down, thrust
+≈ 0.2), but the LOW specific force (fz = g − a_down ≈ 1.8 m/s²)
+shrinks the tilt cone's lever — any cone-saturating horizontal error
+then commands ±tilt_max, and a sign-flipping error steps the attitude
+setpoint ±45° at the 50 Hz loop rate. The rate loop slams torque
+chasing steps no airframe can follow, and the mixer's rp-priority
+desaturation drags average collective back to ~hover: vertical
+priority, honored in the demand chain, was lost in the actuator chain.
+EKF estimates and gyro-bias were verified healthy throughout.
+
+Fix, two layers, both physical:
+1. `VelParams.tilt_slew` (6 rad/s ≈ 344°/s) — the attitude setpoint is
+   slew-limited to what the airframe can follow (standard autopilot
+   practice; PX4 rate-limits via its attitude-loop time constants). It
+   only engages on pathological steps: every P3 maneuver spec passes
+   unchanged (30° step in ~90 ms needs ~5.8 rad/s peak).
+2. `mc/guidance.approach_velocity` — braking-aware waypoint capture
+   (v ≤ √(2·a_brake·d), a_brake 5 m/s² vs the 8 demanded) for posts,
+   pads and loiter points in the MC apps. `goto_velocity`'s linear
+   taper assumed point-mass 20 m/s² braking; legacy agents keep it.
+
+Verified: deterministic reproducer pinned in `test_coopfc_control.py`
+(climbing +15 m/s, −20 commanded, cone-saturating ±3 m/s horizontal
+chatter → must reach vz < −5 in 3 s; pre-fix it stays +3.4), fleet
+climb-out bounded <30 m in the energy cycle (pre-fix >90), all P3
+control/bench acceptance and @slow flights green. The e2e suite was
+RE-BASELINED (engagement timing shifted → different adjudicator draw
+realizations): 9/10 seed kills (was 10/10; the lost seed is a 5-shot
+pk≈0.5 miss streak with healthy vehicles), CI pins killing seeds 1-3,
+@slow floor 8/10. Residual honest behavior: sustained full-power
+climbs sag the 12S pack toward the (voltage-only, P5 CELL_IMBALANCE
+scope) monitor's LOW/CRIT band — the FCU protects, lands, tops up and
+retries; the rearm cycle test tolerates one such retry.
+
+### P4-1 fleet-size invariance is a draw-history contract
+
+ORDERING §4 promises that adding a vehicle leaves existing vehicles'
+*draw histories* identical — pinned bit-exact at bank level
+(test_hw_determinism) and through the engine's Dryden wiring
+(test_sil_fleet). Full-trajectory bitwise invariance across batch
+sizes does NOT hold: numpy einsum/matmul kernels differ at the last
+ULP between n=1 and n=2 shapes (measured 1.6e-14 relative over a
+1.5 s hover). The trajectory pin is therefore 1e-9 — any
+stream-wiring fault diverges at device-noise scale, five-plus orders
+louder. Run-twice determinism at fixed fleet size remains bitwise.
+
+### P5-1d mag-fault yaw fallback: exclusion, not course-as-yaw
+
+The plan sketched "mag fault -> yaw-from-GPS-course". Implemented as
+mag EXCLUSION instead (user decision 2026-06-12), because course over
+ground is not heading for this fleet: the MC apps command velocity
+setpoints with yaw_sp = 0, so vehicles strafe — fusing course as yaw
+would inject an error equal to the (arbitrary) angle between velocity
+and body-x. PX4 solves the same problem with an EKF-GSF bank of yaw
+hypotheses scored by velocity likelihood, not raw course (PX4-EKF2
+yaw_estimator; [standard reference]) — adopting that machinery was
+judged out of scope against its tuning risk (P3-10 stop rule).
+
+What a latched MAG_FAULT does: `Ekf.mag_trusted` clears and mag frames
+are dropped at intake (`mag_excluded` tally; the reject tallies stop
+moving — a known-bad sensor must not spam the innovation CBIT seams).
+Yaw then rides the gyro, and the existing yaw-information-floor design
+already routes GPS-velocity evidence into yaw during maneuvers (see
+"mag information floor" above): exclusion costs nothing that fusion of
+a corrupted field would have provided. P_yaw grows honestly between
+maneuvers — pinned in test_coopfc_cbit_actions.py.
+
+Detection residual (documented gap): the consistency monitor compares
+mag-derived yaw to EKF yaw (0.5 rad), which catches step faults
+(swapped/rotated field, hard-iron jumps) but NOT a slow in-gate drift
+that walks the EKF yaw with it — distinguishing that needs an
+independent yaw reference (the GSF machinery above). Accepted for P5.
+
+### P5-1f SOC estimation + voltage/SOC failsafe arbitration
+
+Full scope per the 2026-06-12 user decision. The estimator
+(coopfc/soc.py) is OCV-seeded coulomb counting [Plett, *Battery
+Management Systems* vol. 1, ch. 3 — OCV-SOC inversion + coulomb
+counting are the standard BMS pairing; standard reference]: it seeds
+only from a RESTING pack (terminal ~= OCV), never guesses from sagged
+volts, and continuously re-blends toward the rest reading whenever the
+pack rests again — which is how it learns about pad charging, whose
+current never crosses the bus sense (the sil/fleet.py pad charger is a
+boundary-condition model).
+
+Arbitration (battery_monitor.py): the P4 voltage debounce machinery is
+kept verbatim; its crossings are vetoed only while THREE things hold —
+coulomb SOC above ``soc_guard`` (0.5), pack under load (>10 A: at rest
+terminal volts ARE charge state), and no BATT_SAG_ANOM raised. The
+third leg matters: a sag the calibration (OCV(soc) − I·(R0+R1)) cannot
+explain impeaches the coulomb estimate itself, so the veto lifts and
+voltage evidence rules again — without it, a dying pack with a stale
+coulomb count would be flown into the ground on the strength of that
+count (measured: the truth-SOC-collapse harnesses in test_sitl_energy/
+test_sitl_sentinel produce exactly that stale-count geometry). SOC
+drives its own LOW/CRIT thresholds (0.25/0.10) through the same upward
+latch. No seeded SOC = bitwise the P4 voltage-only path.
+
+Rearm gate (mc apps): the turnaround timer alone no longer declares the
+pack swapped — BATT_RESET waits for telemetry to show charge >= 0.5
+aboard (REARM_MIN_BATT, the P4 partial-top-up operating point), or the
+post-swap re-seed reads a half-filled pack and latches BATT_LOW on a
+vehicle that is still on the charger.
+
+Outcome on the P4-R residual: full-power-climb sag no longer trips
+BATT_LOW/CRIT while the pack is demonstrably charged and the sag is
+calibration-consistent (pinned in test_coopfc_soc.py). The e2e kill
+floors and the energy-cycle pins passed UNCHANGED after the rework —
+no tactical re-baseline was needed; the only re-pinned surfaces are
+harness-level (synthetic hosts now carry a 5 A avionics load so the
+P3 voltage-path timing pins stay exact, and rest-window tests rest
+explicitly — armed flight at zero bus current was a harness fiction).
