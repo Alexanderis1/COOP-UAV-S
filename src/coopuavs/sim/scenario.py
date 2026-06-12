@@ -31,7 +31,7 @@ from ..c2.roe import RoeConfig
 from ..core.comms import CommsModel
 from ..core.messages import ThreatClass
 from ..interceptors.effectors import EFFECTOR_FACTORIES
-from ..interceptors.sentinel import SentinelUav
+from ..interceptors.sentinel import SentinelUav, SitlShellSentinel
 from ..interceptors.uav import InterceptorUav, SitlShellUav
 from ..mc.fcu_client import FcuClient
 from ..perception.fusion import FusionNode
@@ -154,6 +154,11 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         u = dict(u)
         icfgs.append((u.pop("id"), _resolve_home(u, env),
                       u.pop("effector"), u))
+    scfgs = []
+    for s in cfg.get("sentinels", []):
+        s = dict(s)
+        scfgs.append((s.pop("id"), _resolve_home(s, env),
+                      s.pop("orbit"), s))
 
     # Fleet fidelity (PLAN_PROBLEM1 P4-3 stage 2): in sitl mode the
     # tactical stack runs as mc/interceptor_app.py on a VirtualMCU inside
@@ -161,33 +166,35 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
     # coop-link on EKF estimates; the world-side SitlShellUav node only
     # ferries bus traffic across the mailbox boundary, and every sim-side
     # consumer (adjudicator, comms radio, seekers, evasion, recorder)
-    # sees the FriendlyVehicle TRUTH adapter. Sentinels stay legacy
-    # point-mass until P4-5.
+    # sees the FriendlyVehicle TRUTH adapter. P4-5: sentinels ride the
+    # same engine (shared fleet airframe, documented approximation) with
+    # mc/sentinel_app.py on their own VirtualMCU; the mounted sensor
+    # payload mounts on the truth adapter.
     uavs: dict[str, InterceptorUav] = {}
+    sentinels: dict[str, SentinelUav] = {}
     platforms: dict[str, object] = uavs
-    if fidelity["fleet"] == "sitl" and icfgs:
+    sent_platforms: dict[str, object] = sentinels
+    if fidelity["fleet"] == "sitl" and (icfgs or scfgs):
         from ..mc.interceptor_app import InterceptorApp
+        from ..mc.sentinel_app import SentinelApp
         from ..sil.host import VirtualMCU
 
         sitl_cfg = _parse_sitl(cfg.get("sitl"))
         engine = SitlEngine(
-            [(uid, tuple(home)) for uid, home, _, _ in icfgs],
+            [(uid, tuple(home)) for uid, home, _, _ in icfgs]
+            + [(uid, tuple(home)) for uid, home, _, _ in scfgs],
             world.rng_registry, weather=world.weather, world_dt=world.dt,
             base_hz=sitl_cfg["base_hz"], fcu_overlay=sitl_cfg["fcu"],
             heartbeat_hz=0.0)
         world.micro = engine
-        platforms = {}
-        for uid, home, eff_name, extra in icfgs:
-            effector = EFFECTOR_FACTORIES[eff_name]()
+
+        def _host(uid, home, extra, make_app):
             up, down = engine.attach_link(uid, **sitl_cfg["link"])
             client = FcuClient(up, down)
             app_kw = {k: v for k, v in extra.items() if k != "rate_hz"}
 
-            def factory(clock, rng, ports, *, _uid=uid, _home=home,
-                        _eff=effector, _client=client, _kw=app_kw):
-                return InterceptorApp(clock, rng, ports, uav_id=_uid,
-                                      home=_home, effector=_eff,
-                                      fcu_client=_client, **_kw)
+            def factory(clock, rng, ports):
+                return make_app(clock, rng, ports, client, app_kw)
 
             mcu = VirtualMCU(f"mc/{uid}", tick_hz=sitl_cfg["mc_hz"],
                              base_hz=sitl_cfg["base_hz"], app_factory=factory,
@@ -196,11 +203,31 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
             # Pad charger (P4-4): the recharge matches the MC turnaround.
             engine.set_pad(uid, home,
                            recharge_s=extra.get("turnaround_s", 90.0))
+            return mcu
+
+        platforms = {}
+        sent_platforms = {}
+        for uid, home, eff_name, extra in icfgs:
+            effector = EFFECTOR_FACTORIES[eff_name]()
+            mcu = _host(uid, home, extra,
+                        lambda c, r, p, cl, kw, _u=uid, _h=home, _e=effector:
+                        InterceptorApp(c, r, p, uav_id=_u, home=_h,
+                                       effector=_e, fcu_client=cl, **kw))
             shell = SitlShellUav(uid, world.bus, home, effector, mcu=mcu,
                                  **extra)
             uavs[uid] = shell
             platforms[uid] = FriendlyVehicle(engine, uid, home,
                                              tactical=shell)
+        for uid, home, orbit, extra in scfgs:
+            mcu = _host(uid, home, extra,
+                        lambda c, r, p, cl, kw, _u=uid, _h=home, _o=orbit:
+                        SentinelApp(c, r, p, uav_id=_u, home=_h, orbit=_o,
+                                    fcu_client=cl, **kw))
+            shell = SitlShellSentinel(uid, world.bus, home, orbit, mcu=mcu,
+                                      **extra)
+            sentinels[uid] = shell
+            sent_platforms[uid] = FriendlyVehicle(engine, uid, home,
+                                                  tactical=shell)
     else:
         if cfg.get("sitl"):
             raise ValueError("a `sitl:` block requires fidelity.fleet=sitl")
@@ -208,23 +235,13 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
             uavs[uid] = InterceptorUav(
                 uav_id=uid, bus=world.bus, home=home,
                 effector=EFFECTOR_FACTORIES[eff_name](), **extra)
+        for uid, home, orbit, extra in scfgs:
+            sentinels[uid] = SentinelUav(
+                uav_id=uid, bus=world.bus, home=home, orbit=orbit, **extra)
     for uid, platform in platforms.items():
         world.friendlies[uid] = platform
-
-    # Unarmed sentinel patrol UAVs (PHY-SNT-*): airframes plus their
-    # mounted EO/IR + RF payloads feeding the common detections stream.
-    sentinels: dict[str, SentinelUav] = {}
-    for s in cfg.get("sentinels", []):
-        s = dict(s)
-        sent = SentinelUav(
-            uav_id=s.pop("id"),
-            bus=world.bus,
-            home=_resolve_home(s, env),
-            orbit=s.pop("orbit"),
-            **s,
-        )
-        sentinels[sent.uav_id] = sent
-        world.friendlies[sent.uav_id] = sent
+    for uid, platform in sent_platforms.items():
+        world.friendlies[uid] = platform
 
     # Simulated network layer (SIM-COM-001/002): every C2<->UAV and UAV<->UAV
     # topic rides it. The default config is a near-perfect link, preserving
@@ -234,14 +251,17 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         # The radio rides the airframe: truth adapter in sitl mode (it
         # forwards link_quality to the tactical node's telemetry).
         comms.register_endpoint(uid, platform)
-    for sent in sentinels.values():
-        comms.register_endpoint(sent.uav_id, sent)
+    for uid, platform in sent_platforms.items():
+        comms.register_endpoint(uid, platform)
 
-    for sent in sentinels.values():
+    # Mounted sentinel payloads (PHY-SNT-*) ride the airframe truth —
+    # the adapter in sitl mode, the legacy body otherwise.
+    for uid, platform in sent_platforms.items():
         world.add_node(mounted(EoIrSensor)(
-            f"eo-{sent.uav_id}", world, sent, max_range=3000.0, full_id_range=1000.0))
+            f"eo-{uid}", world, platform, max_range=3000.0,
+            full_id_range=1000.0))
         world.add_node(mounted(RfSensor)(
-            f"rf-{sent.uav_id}", world, sent, max_range=8000.0))
+            f"rf-{uid}", world, platform, max_range=8000.0))
 
     for s in cfg.get("sensors", []):
         s = dict(s)

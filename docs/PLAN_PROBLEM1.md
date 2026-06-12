@@ -483,7 +483,15 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       seconds (~90 m overshoot at 20 m/s climb authority) — P3 velocity-controller envelope,
       flagged for review. 6+2 tests test_sitl_energy.py + fence; 598 fast + @slow/@perf
       coopfc flights re-run green, ruff clean (2026-06-12)
-- [ ] P4-5 sentinels as MC app + sitl twin of test_sentinel
+- [x] P4-5 sentinels as MC app: `mc/sentinel_app.py` (verbatim orbit guidance on NAV estimates;
+      shared P4-4 land-dock/batt-telemetry machinery) + `SitlShellSentinel` ferry shell;
+      sentinels join the SAME SitlEngine (shared fleet airframe — documented approximation;
+      ops envelope = MC max_speed/orbit speed, which is what PHY-SNT pins); mounted EO/RF
+      payloads ride the FriendlyVehicle TRUTH adapter in sitl mode (scenario passes platforms,
+      not shells). Twins: orbit annulus on TRUTH + PATROL + sentinel telemetry (estimate,
+      0.001<|est−truth|<15 m) + airborne-only track formation; drained pack breaks the orbit
+      off home through the FCU failsafe. 2 tests test_sitl_sentinel.py; legacy test_sentinel
+      untouched green; suite 600 fast, ruff clean (2026-06-12)
 - [ ] P4-6 `tests/test_sitl_end_to_end.py`: ≥1 kill, 0 CRITICAL wrecks, determinism pin; sitl gets
       OWN re-baselined floors (3-seed CI + 10-seed `@slow`), never reuses pointmass pins
 - [ ] P4-7 recorder/ICD additive fields + ICD_RUNTIME v0.4 same commit + legacy-recording parse test
