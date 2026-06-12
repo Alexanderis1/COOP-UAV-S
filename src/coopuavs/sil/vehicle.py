@@ -65,8 +65,21 @@ class FriendlyVehicle:
         self.home = np.asarray(home, dtype=float)
         self.tactical = tactical
         self.comms_endpoint = uav_id
-        self.link_quality = 1.0
+        self._link_quality = 1.0
         self.body = _TruthBody(engine, self.i)
+
+    @property
+    def link_quality(self) -> float:
+        return self._link_quality
+
+    @link_quality.setter
+    def link_quality(self, q: float) -> None:
+        # The comms model writes the radio's telemetry onto the platform
+        # it registered (this adapter — the radio rides the truth
+        # airframe); the tactical node reads its own copy for UavState.
+        self._link_quality = q
+        if self.tactical is not None:
+            self.tactical.link_quality = q
 
     # -- truth (sim-side consumers) -----------------------------------------
 

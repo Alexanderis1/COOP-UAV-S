@@ -437,9 +437,19 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       (bitwise gust draws + 1e-9 trajectory — ULP kernel finding, RESEARCH.md), exact-wrench
       IMU, stand freeze w/ live devices, ekf.late_meas==0 through fleet timing, world-clock
       lockstep + wind-skip seam. 20 tests test_sil_{vehicle,fleet}.py (2026-06-12)
-- [ ] P4-2 Stage 1 velocity passthrough: InterceptorUav keeps FSM, `command_velocity` routes over
-      link to FCU OFFBOARD; sitl twin of guidance intercept test; 1-interceptor kill in
-      SITL_SMALL_SCENARIO
+- [x] P4-2 Stage 1 velocity passthrough: `mc/fcu_client.py` FcuClient (HEARTBEAT/VEL_SP/
+      autonomous ARM→OFFBOARD flow off STATUS; wire enum tables, never literals) + SitlBody
+      (PointMass duck: command_velocity→VEL_SP, position/velocity = NAV ESTIMATE — agent never
+      reads truth); engine hosts FCU side in the §6 pipeline tail (drain 50 Hz, NAV 25 / STATUS
+      10 down; bench heartbeat placeholder now unlinked-only); scenario sitl build path live
+      (`sitl: {base_hz, link, fcu}` validated; SitlBody swap + FriendlyVehicle into friendlies/
+      adjudicator/seekers/comms, link_quality forwarded to tactical telemetry; sentinels legacy
+      until P4-5). Pins: arm→OFFBOARD over the wire, velocity passthrough closes <1 m/s, link
+      silence → OFFBOARD_TIMEOUT latched first + RTL escalation (P3 priority contract), pursuit
+      twin of test_guidance closest TRUTH approach <10 m through the full stack, build wiring,
+      2-interceptor FPV kill in SITL_SMALL_SCENARIO (kill t≈49 s, SAFE-zone debris, truth
+      quarantine visibly held: est≠truth bounded <10 m). 8 tests test_sitl_stage1.py +
+      fidelity-flag flip (2026-06-12)
 - [ ] P4-3 Stage 2 MC split: tactical logic → `mc/` apps on own VirtualMCU (PHY-UAV-010/011);
       `interceptors/uav.py` thin shell in sitl mode; clearance-interlock sitl twins byte-equivalent
 - [ ] P4-4 energy/telemetry rewire: ECM battery via FCU telemetry; UavState from MC estimates only

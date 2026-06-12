@@ -49,6 +49,18 @@ import numpy as np
 
 from coopuavs.coopfc.fcu import ARMED, TICK_HZ, Fcu
 from coopuavs.coopfc.hal import HalIO
+from coopuavs.coopfc.link.coop_link import (
+    BATT_CODES,
+    FAILSAFE_CODES,
+    MODE_CODES,
+    MODE_NAMES,
+    MSG,
+    STATE_CODES,
+    Channel,
+    FrameDecoder,
+    decode_msg,
+    encode_msg,
+)
 from coopuavs.hw import params as hw_params
 from coopuavs.hw.baro import Baro, BaroParams
 from coopuavs.hw.esc_telem import EscTelem, EscTelemParams
@@ -71,6 +83,24 @@ G = 9.81
 # the host writes raw frames at the matching device rates, bench-style.
 BARO_MAG_HZ = 50
 ESC_HZ = 10
+# FCU-side coop-link rates (P4-2): drain + dispatch sits in the §6
+# per-vehicle pipeline slot at the plan's 50 Hz link rate group;
+# telemetry down the wire at NAV 25 Hz / STATUS 10 Hz (the MC node runs
+# at 10 Hz — fresher STATUS buys nothing, NAV headroom feeds guidance).
+LINK_HZ = 50
+NAV_HZ = 25
+STATUS_HZ = 10
+
+
+class _FcuLink:
+    """FCU-side wire state for one linked vehicle."""
+
+    __slots__ = ("up", "down", "dec")
+
+    def __init__(self, up: Channel, down: Channel):
+        self.up = up          # MC -> FCU (engine drains)
+        self.down = down      # FCU -> MC (engine sends)
+        self.dec = FrameDecoder()
 
 
 class SitlEngine:
@@ -128,8 +158,12 @@ class SitlEngine:
         self._imu_every = self._divisor(base_hz, self.imu.params.rate_hz, "imu")
         self._baro_mag_every = self._divisor(base_hz, BARO_MAG_HZ, "baro/mag")
         self._esc_every = self._divisor(base_hz, ESC_HZ, "esc")
+        self._link_every = self._divisor(base_hz, LINK_HZ, "link")
+        self._nav_every = self._divisor(base_hz, NAV_HZ, "nav telemetry")
+        self._status_every = self._divisor(base_hz, STATUS_HZ, "status telemetry")
         self.heartbeat_every = (round(base_hz / heartbeat_hz)
                                 if heartbeat_hz else 0)
+        self.links: list[_FcuLink | None] = [None] * n
 
         starts = np.asarray([s for _, s in vehicles], dtype=float)
         self.state = np.zeros((n, 13))
@@ -170,6 +204,21 @@ class SitlEngine:
     @property
     def clock(self):
         return self._micro.clock
+
+    def attach_link(self, uav_id: str, *, latency_s: float = 0.02,
+                    bandwidth_bps: float = 57600.0,
+                    queue_max_bytes: int = 4096):
+        """Wire one vehicle's FCU<->MC coop-link (P4-2). Returns the MC
+        side ``(up, down)`` channel pair (up = MC->FCU). A linked vehicle
+        gets heartbeats only over the wire — the engine's bench-style
+        heartbeat placeholder applies to unlinked vehicles alone."""
+        i = self.index[uav_id]
+        if self.links[i] is not None:
+            raise ValueError(f"vehicle {uav_id!r} already linked")
+        link = _FcuLink(Channel(latency_s, bandwidth_bps, queue_max_bytes),
+                        Channel(latency_s, bandwidth_bps, queue_max_bytes))
+        self.links[i] = link
+        return link.up, link.down
 
     # ------------------------------------------------------------- world seam
 
@@ -223,17 +272,59 @@ class SitlEngine:
                 hal.port("esc").write((tuple(f.rpm[i]), float(f.voltage[i]),
                                        float(f.current[i])))
 
+    def _link_task(self, fcu: Fcu, link: _FcuLink, now: float, k: int) -> None:
+        """FCU side of the wire: dispatch arrived commands (P3-R F10 wire
+        enum tables, never literals), stream NAV/STATUS telemetry."""
+        for frame in link.up.recv(now):
+            for mid, payload in link.dec.feed(frame):
+                if mid not in MSG:
+                    continue
+                name, v = decode_msg(mid, payload)
+                if name == "HEARTBEAT":
+                    fcu.on_heartbeat()
+                elif name == "ARM":
+                    fcu.cmd_arm()
+                elif name == "DISARM":
+                    fcu.cmd_disarm()
+                elif name == "SET_MODE":
+                    mode = MODE_NAMES.get(v["mode"])
+                    if mode:
+                        fcu.cmd_set_mode(mode)
+                elif name == "VEL_SP":
+                    fcu.cmd_velocity((v["vx"], v["vy"], v["vz"]), v["yaw"])
+                elif name == "SET_HOME":
+                    fcu.cmd_set_home((v["x"], v["y"], v["z"]))
+        nav = fcu.nav
+        if nav is None:
+            return    # nothing worth telemetering until alignment
+        if k % self._nav_every == 0:
+            q, p, vel = nav.q, nav.pos, nav.vel
+            link.down.send(encode_msg(
+                "NAV", now, q[0], q[1], q[2], q[3],
+                p[0], p[1], p[2], vel[0], vel[1], vel[2]), now)
+        if k % self._status_every == 0:
+            link.down.send(encode_msg(
+                "STATUS", now, STATE_CODES[fcu.state], MODE_CODES[fcu.mode],
+                FAILSAFE_CODES[fcu.failsafe], BATT_CODES[fcu.batt.state],
+                nav.sigma_pos_h), now)
+
     def _tick(self, now: float) -> None:
         # 1. devices sample truth (pre-step state, ZOH inputs)
         self._devices()
 
-        # 2. per-vehicle flight software, vehicle order = pipeline order
-        heartbeat = (self.heartbeat_every
-                     and self.clock.tick % self.heartbeat_every == 0)
-        for fcu in self.fcus:
-            if heartbeat:
-                fcu.on_heartbeat()
+        # 2. per-vehicle flight software, vehicle order = pipeline order;
+        # the coop-link drain/telemetry is the pipeline's last stage (§6
+        # "drivers→estimator→controllers→mixer→PWM→CBIT→link").
+        k = self.clock.tick
+        heartbeat = (self.heartbeat_every and k % self.heartbeat_every == 0)
+        link_due = k % self._link_every == 0
+        for i, fcu in enumerate(self.fcus):
+            link = self.links[i]
+            if heartbeat and link is None:
+                fcu.on_heartbeat()    # bench placeholder, unlinked only
             fcu.run_tick()
+            if link is not None and link_due:
+                self._link_task(fcu, link, now, k)
 
         # 3. MC tick if due — P4-3 seam.
 

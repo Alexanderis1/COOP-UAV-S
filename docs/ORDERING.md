@@ -155,7 +155,12 @@ their unit/determinism pins; P4-1 lands the fleet micro-loop
 (`sil/fleet.py SitlEngine`) — the tick order is pinned structurally by
 `tests/test_sil_fleet.py` (first-tick call-sequence pin plus run-twice
 determinism), step 3 (MC tick) is a seam until P4-3, step 8 (threat
-batch) until P6. Two P4-1 wiring notes, both user decisions 2026-06-12:
+batch) until P6. P4-2 wires the coop-link into the step-2 pipeline tail
+(50 Hz drain/dispatch using the wire enum tables, NAV 25 Hz / STATUS
+10 Hz down); in stage 1 the MC side is the legacy tactical NODE (§1
+item 7, 10 Hz) driving `mc/fcu_client.py SitlBody` — frames it sends at
+node time t enter the FCU inside the NEXT macro step's micro window, so
+command transport is honestly one macro step + serialization + latency. Two P4-1 wiring notes, both user decisions 2026-06-12:
 the IMU samples the exact wrench `force_world / m` at the latched inputs
 (the P3 dv/dt bench placeholder is closed in the engine; the
 single-vehicle bench keeps its pinned form), and ground contact stays
