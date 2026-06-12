@@ -545,15 +545,52 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       (2026-06-12).
 
 ### P5 — CBIT + fault injection (M)
-- [ ] P5-1 `cbit/` dictionary+engine+monitors: table-driven test per fault (detection latency,
-      latch, degraded mode); `inhibit_fire` end-to-end suppression of staged fire request
-- [ ] P5-2 scenario `faults:` block (sensor dropout, GPS denial, motor-out, link jam) injected at
-      hw/link level on dedicated streams (SIM-SIL-003); no-fault scenarios bit-identical
-- [ ] P5-3 degraded-mode scenarios: motor-out→controlled descent no-CRITICAL-wreck; GPS-denied
-      5 min→DR bound+RTB; interlock holds under every injected fault
+User decisions 2026-06-12 (kickoff): (1) CELL_IMBALANCE/SOC = FULL scope — per-cell voltages in
+battery ECM + esc_telem wire, FCU coulomb-count SOC estimator, battery failsafe arbitrates
+voltage AND SOC (owns the P4 full-power-climb sag-trip); affected P4 energy/e2e pins
+re-baselined with before/after report. (2) Motor-out = PARTIAL degradation (~40% rotor thrust
+loss, flyable) → MOTOR_RESPONSE → LAND; full-out injectable but documented unrecoverable (quad
+physics, PX4 parity), excluded from the no-wreck gate. (3) P5-5 = RELEASE VIA FCU: MC stages
+FireRequest on bus + sends WEAPON_RELEASE(token) over coop_link; FCU validates token + CBIT
+inhibit_fire, emits release pulse via HAL effector port; world pairs pulse with staged request;
+fire-timing/clearance-twin pins re-baselined (honest transport).
+CBIT command authority: the legacy `_failsafes` chain KEEPS BATT/LINK/OFFBOARD authority
+(no-fault runs bit-identical); CBIT adds actions only for faults nothing else handles. Priority
+pinned: FAILSAFE_ATT (nav-loss class) > BATT_CRIT > CBIT LAND class > LINK_LOSS > BATT_LOW >
+CBIT RTL class > OFFBOARD_TIMEOUT.
+- [x] P5-1a `coopfc/cbit/` dictionary + engine core: FaultSpec table (23 codes, severity/
+      latching/debounce/inhibit_arming/inhibit_fire/degraded_mode, stable wire bit each —
+      bit map pinned literally); CbitEngine raise/clear/debounce/latch/aggregate (inhibit
+      flags, fault word u32, snapshot with onset-time `since`). Source-latching faults
+      (BatteryMonitor, ekf.diverged, sched) are NON-latching mirrors of that latch (double
+      latch would deadlock recoveries the source machinery owns, e.g. touchdown realignment).
+      Invariants tested: CRIT ⇒ inhibits arm+fire; mirror rows never command. 39 table-driven
+      tests test_coopfc_cbit.py; 648 fast green, fence green, ruff clean (2026-06-12)
+- [ ] P5-1b FCU monitors at 50 Hz + 1 Hz (sched tasks after rate_mix, ORDERING "PWM→CBIT→link"):
+      IMU_STALE/RANGE/NOISE, GYRO_STUCK, GPS_LOSS/DEGRADED, BARO/MAG faults, EKF_INNOV/DIVERGED,
+      DR_BUDGET_LOW, MOTOR_RESPONSE(i) (cmd-vs-rpm), SAT_PERSIST, BATT mirrors, LINK_MC_LOSS,
+      SCHED_OVERRUN, PARAM_CRC, ALIGN_FAIL, WDOG_MISS — detection-latency test per monitor
+- [ ] P5-1c degraded-mode actions + wire export: FAILSAFE_ATT mode (level attitude + descent,
+      EKF_DIVERGED response); CBIT entries in the failsafe priority chain (pinned order above);
+      inhibit_arming joins cmd_arm; HEALTH wire msg (fault word + inhibit flags + degraded mode,
+      1 Hz) + FAILSAFE_CODES additive; FcuClient decode + properties
+- [ ] P5-1e `inhibit_fire` end-to-end: app gates engagement on FCU fire-ok; staged fire request
+      suppressed under latched fault even with AUTHORIZED token (test)
+- [ ] P5-1d mag fault → yaw-from-GPS-course EKF fallback (P3-10 stop rule applies)
+- [ ] P5-1f SOC + per-cell (decision 1): per-cell voltages in BatteryEcm, esc_telem per-cell
+      channels, FCU coulomb-count SOC estimator, voltage+SOC failsafe arbitration,
+      BATT_SAG_ANOM + CELL_IMBALANCE monitors; re-baseline w/ before/after report
+- [ ] P5-2a sil injection seams: GPS denial/degraded + sensor dropout masks (hw devices),
+      motor fault mask (rotor thrust scale on u), coop_link jam (channel block), C2 link jam;
+      dedicated `faults/*` registry streams; no-fault scenarios bit-identical (pin)
+- [ ] P5-2b scenario `faults:` block parsing/validation → engine schedule; loud ValueError on
+      unknown keys (SIM-SIL-003)
+- [ ] P5-3 degraded-mode scenarios: motor-degraded→LAND no-CRITICAL-wreck; GPS-denied 5 min→
+      DR bound+RTB; interlock holds under every injected fault (matrix test)
 - [ ] P5-4 `UavHealth` ≥1 Hz to C2 + recorder + TRACEABILITY rows (PHY-UAV-013/033 → high)
-- [ ] P5-5 FCU-side hard fire interlock: clearance token mirrored over coop_link; FCU refuses
-      WEAPON_RELEASE without valid token (additive; MC-side interlock already live since P4)
+- [ ] P5-5 FCU-side hard fire interlock (decision 3): clearance token mirrored over coop_link;
+      FCU refuses WEAPON_RELEASE without valid token + clean CBIT inhibit_fire; release pulse
+      via HAL effector port; twins re-baselined
 - GATE: fault matrix 100% test-covered
 
 ### P6 — 6DOF threats + saturation (L; parallel after P1)
