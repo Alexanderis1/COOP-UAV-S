@@ -4,8 +4,13 @@ The base law is lead pursuit against the predicted intercept point (PIP):
 solve the constant-velocity intercept triangle for time-to-go, aim at where
 the target will be. Equivalent to proportional navigation in the
 small-manoeuvre limit but maps directly onto a velocity-command point-mass
-airframe. True PN with lateral-acceleration commands arrives with the
-higher-fidelity dynamics (see ROADMAP).
+airframe.
+
+:func:`pro_nav_accel` is true PN — a lateral-acceleration command
+``a = N * Vc * lambda_dot`` perpendicular to the line of sight — for
+airframes flown through ``command_acceleration`` (the load-factor body).
+Against a manoeuvring target it corrects continuously from the LOS rate
+where PIP lead pursuit re-aims through the velocity-command lag.
 """
 
 from __future__ import annotations
@@ -55,6 +60,33 @@ def pursuit_velocity(
     if n < 1e-6:
         return np.zeros(3)
     return direction / n * own_speed
+
+
+def pro_nav_accel(
+    own_pos: np.ndarray,
+    own_vel: np.ndarray,
+    target_pos: np.ndarray,
+    target_vel: np.ndarray,
+    nav_gain: float = 4.0,
+) -> np.ndarray:
+    """True proportional navigation: ``a = N * Vc * lambda_dot``, applied
+    perpendicular to the line of sight (3D vector form).
+
+    Returns the zero vector when the geometry is degenerate (zero range)
+    or opening — PN only steers a closing engagement; re-acquisition is
+    pursuit's job.
+    """
+    r = target_pos - own_pos
+    rr = float(r @ r)
+    if rr < 1e-9:
+        return np.zeros(3)
+    r_hat = r / np.sqrt(rr)
+    v_rel = target_vel - own_vel
+    closing = -float(v_rel @ r_hat)
+    if closing <= 0.0:
+        return np.zeros(3)
+    omega = np.cross(r, v_rel) / rr        # LOS rotation-rate vector
+    return nav_gain * closing * np.cross(omega, r_hat)
 
 
 def goto_velocity(own_pos: np.ndarray, waypoint: np.ndarray, speed: float, arrive_radius: float = 20.0) -> np.ndarray:
