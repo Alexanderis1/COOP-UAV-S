@@ -58,6 +58,7 @@ class CbitHost:
         self.baro_nan = False
         self.mag_swapped = False
         self.esc_rpm = (6000.0,) * 4
+        self.esc_cells = None         # None -> balanced v_cell taps
         self._fix_i = 0
 
     @property
@@ -96,8 +97,10 @@ class CbitHost:
                 self.hal.port("mag").write(
                     B_SWAPPED if self.mag_swapped else B_ENU)
             if k % 80 == 0:
+                cells = (self.esc_cells if self.esc_cells is not None
+                         else (self.v_cell,) * 12)
                 self.hal.port("esc").write(
-                    (self.esc_rpm, self.v_cell * 12, 0.0))
+                    (self.esc_rpm, self.v_cell * 12, 0.0, cells))
             if self.heartbeats and k % 80 == 0:
                 self.fcu.on_heartbeat()
             if offboard_v is not None and k % 160 == 0:   # keep sp fresh

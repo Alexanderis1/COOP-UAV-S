@@ -60,9 +60,11 @@ seeker_gimbal:                  # 2-axis EO/IR terminal-seeker gimbal
 esc_telem:                      # BLHeli32-class per-ESC telemetry frames
   rate_hz: 10.0                 # Hz (PHY-UAV-013 needs >= 1 Hz northbound)
   sigma_rpm: 5.0                # rpm white (mechanical shaft rpm)
-  sigma_v: 0.02                 # V white (pack bus; per-cell arrives P5)
+  sigma_v: 0.02                 # V white (pack bus)
   sigma_i: 0.1                  # A white
   rpm_lsb: 10.0                 # rpm; protocol eRPM granularity after the
                                 # driver's pole-pair division
   v_lsb: 0.01                   # V
   i_lsb: 0.1                    # A
+  sigma_v_cell: 0.005           # V white per BMS cell tap (P5-1f)
+  v_cell_lsb: 0.01              # V cell-tap conversion resolution

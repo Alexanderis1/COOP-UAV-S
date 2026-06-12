@@ -89,7 +89,8 @@ class SynthHost:
                     self.hal.port("mag").write(B_ENU)
             if k % 80 == 0:
                 self.hal.port("esc").write(
-                    ((0.0,) * 4, self.v_cell * 12, 0.0))
+                    ((0.0,) * 4, self.v_cell * 12, 0.0,
+                     (self.v_cell,) * 12))
             if hb_every is not None and k % round(hb_every * TICK_HZ) == 0:
                 self.fcu.on_heartbeat()
             self.fcu.run_tick()
@@ -327,7 +328,7 @@ class FlightHost:
         self.state[0, 0:3] = start
         self.state[0, 6] = 1.0
         self._v_prev = np.zeros(3)
-        self._esc = ((0.0,) * 4, 50.0, 0.0)
+        self._esc = ((0.0,) * 4, 50.0, 0.0, (50.0 / 12,) * 12)
         self.k = 0
 
     @property
@@ -373,7 +374,8 @@ class FlightHost:
                 omega_r, v_bus, i_bus = self.pt.step(
                     DT, np.array([u], dtype=float))
                 self._esc = (tuple(o * 60.0 / math.tau for o in omega_r[0]),
-                             float(v_bus[0]), float(i_bus[0]))
+                             float(v_bus[0]), float(i_bus[0]),
+                             (float(v_bus[0]) / 12,) * 12)
                 self.state = self.plant.step(self.state, DT, omega_r,
                                              wind_w, 1.225)
             self.k += 1

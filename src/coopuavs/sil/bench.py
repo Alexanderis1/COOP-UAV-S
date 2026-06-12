@@ -68,7 +68,8 @@ class Bench:
         cfg = MultirotorParams.from_dict(load_airframe("interceptor_quad"))
         self.cfg = cfg
         self.esc = EscTelem(EscTelemParams.from_dict(dev["esc_telem"]), 1,
-                            cfg.n_rotors, rng.spawn(1)[0])
+                            cfg.n_rotors, rng.spawn(1)[0],
+                            cells=int(cfg.battery["n_series"]))
         self.plant = MultirotorPlant(cfg, 1)
         self.motor = MotorEsc(1, cfg.n_rotors, **cfg.motor)
         battery = BatteryEcm(1, **cfg.battery)
@@ -134,9 +135,11 @@ class Bench:
             self.hal.port("mag").write(tuple(self.mag.sample(quat)[0]))
         if k % 80 == 0:
             omega_r, v_bus, i_bus = self._esc_out
-            f = self.esc.sample(omega_r, v_bus, i_bus)
+            f = self.esc.sample(omega_r, v_bus, i_bus,
+                                self.pt.battery.cell_voltages(v_bus))
             self.hal.port("esc").write((tuple(f.rpm[0]), float(f.voltage[0]),
-                                        float(f.current[0])))
+                                        float(f.current[0]),
+                                        tuple(f.cells[0])))
 
     def tick(self) -> None:
         self._write_frames()

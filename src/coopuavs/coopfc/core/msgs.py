@@ -43,3 +43,4 @@ class EscMsg(NamedTuple):
     omega: tuple        # rad/s per rotor (driver-converted)
     v_bus: float        # V
     i_bus: float        # A
+    cells: tuple        # V per series cell (BMS cell taps, P5-1f)

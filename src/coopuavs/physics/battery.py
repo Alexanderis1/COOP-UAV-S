@@ -58,10 +58,63 @@ class BatteryEcm:
             else (_OCV_SOC, _OCV_V)
         self.soc = np.full(self.n, float(soc0))
         self.v1 = np.zeros(self.n)
+        # P5 fault seams (SIM-SIL-003). Both default to the exact
+        # pre-P5 arithmetic path — un-faulted packs are bitwise
+        # identical to the P4 model (pinned).
+        # cell_delta_soc: (n, n_series) per-cell SOC offsets (a weak
+        # cell sits at lower SOC than the pack mean — CELL_IMBALANCE).
+        # r0_scale: (n,) series-resistance multiplier (aged/cold pack —
+        # BATT_SAG_ANOM).
+        self.cell_delta_soc: np.ndarray | None = None
+        self.r0_scale: np.ndarray | None = None
+
+    def inject_cell_imbalance(self, i: int, deltas) -> None:
+        """Offset vehicle ``i``'s per-cell SOCs (length n_series; should
+        be ~zero-mean: a spread, not a disguised capacity edit)."""
+        deltas = np.asarray(deltas, dtype=float)
+        if deltas.shape != (self.n_series,):
+            raise ValueError(
+                f"deltas must have shape ({self.n_series},), got {deltas.shape}")
+        if self.cell_delta_soc is None:
+            self.cell_delta_soc = np.zeros((self.n, self.n_series))
+        self.cell_delta_soc[i] = deltas
+
+    def inject_r0_scale(self, i: int, scale: float) -> None:
+        """Scale vehicle ``i``'s series resistance (aged-pack fault)."""
+        if scale <= 0.0:
+            raise ValueError(f"r0 scale must be > 0, got {scale!r}")
+        if self.r0_scale is None:
+            self.r0_scale = np.ones(self.n)
+        self.r0_scale[i] = float(scale)
+
+    def _r0(self):
+        return self.r0 if self.r0_scale is None else self.r0 * self.r0_scale
 
     def ocv(self, soc: np.ndarray) -> np.ndarray:
-        """Pack open-circuit voltage (V) at the given SOC."""
-        return self.n_series * np.interp(soc, self._ocv_soc, self._ocv_v)
+        """Pack open-circuit voltage (V) at the given SOC. With injected
+        cell imbalance the pack OCV is the SUM of the per-cell curves
+        (cells in series); the un-faulted path keeps the original
+        scaled-interp arithmetic bitwise."""
+        if self.cell_delta_soc is None:
+            return self.n_series * np.interp(soc, self._ocv_soc, self._ocv_v)
+        soc = np.asarray(soc)
+        per_cell = np.interp(
+            np.clip(soc[..., None] + self.cell_delta_soc, 0.0, 1.0),
+            self._ocv_soc, self._ocv_v)
+        return per_cell.sum(axis=-1)
+
+    def cell_voltages(self, v_bus: np.ndarray) -> np.ndarray:
+        """(n, n_series) terminal voltage per cell consistent with the
+        pack terminal voltage: equal split plus the per-cell OCV
+        deviation (uniform per-cell R/RC split — the load terms divide
+        evenly; cell-to-cell resistance variation is out of scope)."""
+        base = np.asarray(v_bus, dtype=float)[:, None] / self.n_series
+        if self.cell_delta_soc is None:
+            return np.repeat(base, self.n_series, axis=1)
+        per_cell = np.interp(
+            np.clip(self.soc[:, None] + self.cell_delta_soc, 0.0, 1.0),
+            self._ocv_soc, self._ocv_v)
+        return base + per_cell - per_cell.mean(axis=1, keepdims=True)
 
     def step(self, dt: float, current_a: np.ndarray) -> np.ndarray:
         """Advance one step under (n,) pack current (A, >0 discharge).
@@ -72,4 +125,4 @@ class BatteryEcm:
         self.v1 = self.v1 * decay + current_a * self.r1 * (1.0 - decay)
         self.soc = np.clip(
             self.soc - current_a * dt / (3600.0 * self.capacity_ah), 0.0, 1.0)
-        return self.ocv(self.soc) - current_a * self.r0 - self.v1
+        return self.ocv(self.soc) - current_a * self._r0() - self.v1

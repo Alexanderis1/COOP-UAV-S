@@ -190,8 +190,14 @@ class SitlEngine:
                 f"airframe classes disagree on rotor count {rotor_counts}: "
                 "the fleet shares one ESC telemetry bank")
         n_rotors = rotor_counts.pop()
+        cell_counts = {g.pt.battery.n_series for g in self.groups}
+        if len(cell_counts) != 1:
+            raise ValueError(
+                f"airframe classes disagree on series cells {cell_counts}: "
+                "the fleet shares one ESC telemetry bank")
         self.esc = EscTelem(EscTelemParams.from_dict(dev["esc_telem"]), n,
-                            n_rotors, stream("sensor/esc_telem"))
+                            n_rotors, stream("sensor/esc_telem"),
+                            cells=cell_counts.pop())
 
         self._imu_every = self._divisor(base_hz, self.imu.params.rate_hz, "imu")
         self._baro_mag_every = self._divisor(base_hz, BARO_MAG_HZ, "baro/mag")
@@ -233,6 +239,7 @@ class SitlEngine:
         self._esc_out = (np.zeros((n, n_rotors)), esc_v, np.zeros(n))
         self._u_buf = np.zeros((n, n_rotors))
         self._z_buf = np.empty(n)
+        self._cells_buf = np.empty((n, self.esc.cells))
 
     @staticmethod
     def _divisor(base_hz: int, rate_hz: float, name: str) -> int:
@@ -352,10 +359,15 @@ class SitlEngine:
                 hal.port("baro").write(float(p[i]))
                 hal.port("mag").write(tuple(field[i]))
         if k % self._esc_every == 0:
-            f = self.esc.sample(*self._esc_out)
+            omega_r, v_bus, i_bus = self._esc_out
+            v_cells = self._cells_buf
+            for g in self.groups:
+                v_cells[g.rows] = g.pt.battery.cell_voltages(v_bus[g.rows])
+            f = self.esc.sample(omega_r, v_bus, i_bus, v_cells)
             for i, hal in enumerate(self.hals):
                 hal.port("esc").write((tuple(f.rpm[i]), float(f.voltage[i]),
-                                       float(f.current[i])))
+                                       float(f.current[i]),
+                                       tuple(f.cells[i])))
 
     def _link_task(self, fcu: Fcu, link: _FcuLink, now: float, k: int) -> None:
         """FCU side of the wire: dispatch arrived commands (P3-R F10 wire
