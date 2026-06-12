@@ -420,7 +420,7 @@ class SitlEngine:
             link.down.send(encode_msg(
                 "STATUS", now, STATE_CODES[fcu.state], MODE_CODES[fcu.mode],
                 FAILSAFE_CODES[fcu.failsafe], BATT_CODES[fcu.batt.state],
-                nav.sigma_pos_h, fcu.batt.fraction()), now)
+                nav.sigma_pos_h, fcu.battery_fraction()), now)
         if k % self._health_every == 0:
             cbit = fcu.cbit
             flags = (int(cbit.inhibit_arming)

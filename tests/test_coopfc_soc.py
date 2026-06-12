@@ -71,6 +71,15 @@ def test_no_seed_under_load_and_reset():
 
 # ------------------------------------------------------------- monitors
 
+def rested_armed_host() -> CbitHost:
+    """Boot at true rest (esc_i 0): the SOC estimator seeds from OCV."""
+    h = CbitHost()
+    h.esc_i = 0.0
+    h.boot_and_arm()
+    assert h.fcu.soc_est.soc is not None
+    return h
+
+
 def test_cell_imbalance_raises_on_tap_spread():
     h = armed_host()
     cells = [4.0] * 12
@@ -83,10 +92,10 @@ def test_cell_imbalance_raises_on_tap_spread():
 
 
 def test_batt_sag_anomaly_against_soc_expectation():
-    h = armed_host()                            # seeds SOC ~0.92 at rest 4.0 V
+    h = rested_armed_host()                     # SOC seeded ~0.92
+    h.esc_i = 5.0                               # off the rest window
     h.run(1.0)
-    assert h.fcu.soc_est.soc is not None
-    h.v_cell = 3.60                             # sagged at zero current
+    h.v_cell = 3.60                             # sag 5 A cannot explain
     h.run(3.0)
     assert h.fcu.cbit.raised("BATT_SAG_ANOM")
     assert not h.fcu.cbit.raised("BATT_LOW")    # 3.6 > 3.5: voltage monitor quiet
@@ -94,6 +103,7 @@ def test_batt_sag_anomaly_against_soc_expectation():
 
 def test_batt_reset_reseeds_soc_and_clears_pack_latches():
     h = CbitHost()
+    h.esc_i = 0.0                               # resting on the stand
     h.run(2.6)
     cells = [4.0] * 12
     cells[2] = 3.80
@@ -107,6 +117,67 @@ def test_batt_reset_reseeds_soc_and_clears_pack_latches():
     assert not h.fcu.cbit.raised("CELL_IMBALANCE")
     h.run(1.0)
     assert h.fcu.soc_est.soc is not None        # new pack seeded
+
+
+# ----------------------------------------------- arbitration (P5-1f iii)
+
+def test_arbitration_vetoes_loaded_sag_on_a_charged_pack():
+    from coopuavs.coopfc.battery_monitor import LOW, NORMAL, BatteryMonitor
+    sagged = 3.45 * 12
+    m = BatteryMonitor()
+    for k in range(30):                         # 3 s, way past debounce
+        m.update(k * 0.1, sagged, soc=0.9, i_bus=150.0)
+    assert m.state == NORMAL                    # I*R sag, not charge state
+
+    m = BatteryMonitor()                        # same volts AT REST: real
+    for k in range(30):
+        m.update(k * 0.1, sagged, soc=0.9, i_bus=0.0)
+    assert m.state == LOW
+
+    m = BatteryMonitor()                        # loaded but discharged: real
+    for k in range(30):
+        m.update(k * 0.1, sagged, soc=0.4, i_bus=150.0)
+    assert m.state == LOW
+
+
+def test_soc_thresholds_latch_upward():
+    from coopuavs.coopfc.battery_monitor import (
+        CRITICAL, LOW, BatteryMonitor,
+    )
+    m = BatteryMonitor()
+    good = 3.80 * 12                            # sag-free volts throughout
+    assert m.update(0.0, good, soc=0.20, i_bus=50.0) == LOW
+    assert m.update(0.1, good, soc=0.05, i_bus=50.0) == CRITICAL
+    assert m.update(0.2, good, soc=0.95, i_bus=50.0) == CRITICAL  # latched
+
+
+def test_no_soc_is_exactly_voltage_only():
+    from coopuavs.coopfc.battery_monitor import LOW, BatteryMonitor
+    m = BatteryMonitor()
+    for k in range(30):
+        m.update(k * 0.1, 3.45 * 12, soc=None, i_bus=400.0)
+    assert m.state == LOW                       # the P4 behavior, untouched
+
+
+def test_climb_sag_scenario_flies_through():
+    # The P4-R residual this decision owns: a charged pack sagging under
+    # full power must NOT trip the failsafe; the calibration explains
+    # the sag (no SAG_ANOM either), and telemetry reports real SOC.
+    h = rested_armed_host()                     # SOC seeded ~0.92
+    h.run(1.0)
+    h.v_cell = 3.45                             # deep sag...
+    h.esc_i = 150.0                             # ...under load
+    h.run(3.0)
+    assert h.fcu.failsafe == ""                 # no BATT_LOW
+    assert h.fcu.batt.state == "NORMAL"
+    assert not h.fcu.cbit.raised("BATT_SAG_ANOM")   # I*(r0+r1) explains it
+    assert h.fcu.battery_fraction() > 0.8       # telemetry = real SOC
+    h.esc_i = 0.0                               # load gone, volts STILL low:
+    h.run(2.0)                                  # that is a real dying pack
+    # rest recal walks SOC down to the ~0.04 the rest volts imply, so
+    # the latch escalates LOW -> CRITICAL; the first reason sticks.
+    assert h.fcu.batt.state in ("LOW", "CRITICAL")
+    assert h.fcu.failsafe in ("BATT_LOW", "BATT_CRIT")
 
 
 # ------------------------------------------------------------ integration

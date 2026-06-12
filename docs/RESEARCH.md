@@ -1313,3 +1313,43 @@ mag-derived yaw to EKF yaw (0.5 rad), which catches step faults
 (swapped/rotated field, hard-iron jumps) but NOT a slow in-gate drift
 that walks the EKF yaw with it — distinguishing that needs an
 independent yaw reference (the GSF machinery above). Accepted for P5.
+
+### P5-1f SOC estimation + voltage/SOC failsafe arbitration
+
+Full scope per the 2026-06-12 user decision. The estimator
+(coopfc/soc.py) is OCV-seeded coulomb counting [Plett, *Battery
+Management Systems* vol. 1, ch. 3 — OCV-SOC inversion + coulomb
+counting are the standard BMS pairing; standard reference]: it seeds
+only from a RESTING pack (terminal ~= OCV), never guesses from sagged
+volts, and continuously re-blends toward the rest reading whenever the
+pack rests again — which is how it learns about pad charging, whose
+current never crosses the bus sense (the sil/fleet.py pad charger is a
+boundary-condition model).
+
+Arbitration (battery_monitor.py): the P4 voltage debounce machinery is
+kept verbatim; its crossings are vetoed only while THREE things hold —
+coulomb SOC above ``soc_guard`` (0.5), pack under load (>10 A: at rest
+terminal volts ARE charge state), and no BATT_SAG_ANOM raised. The
+third leg matters: a sag the calibration (OCV(soc) − I·(R0+R1)) cannot
+explain impeaches the coulomb estimate itself, so the veto lifts and
+voltage evidence rules again — without it, a dying pack with a stale
+coulomb count would be flown into the ground on the strength of that
+count (measured: the truth-SOC-collapse harnesses in test_sitl_energy/
+test_sitl_sentinel produce exactly that stale-count geometry). SOC
+drives its own LOW/CRIT thresholds (0.25/0.10) through the same upward
+latch. No seeded SOC = bitwise the P4 voltage-only path.
+
+Rearm gate (mc apps): the turnaround timer alone no longer declares the
+pack swapped — BATT_RESET waits for telemetry to show charge >= 0.5
+aboard (REARM_MIN_BATT, the P4 partial-top-up operating point), or the
+post-swap re-seed reads a half-filled pack and latches BATT_LOW on a
+vehicle that is still on the charger.
+
+Outcome on the P4-R residual: full-power-climb sag no longer trips
+BATT_LOW/CRIT while the pack is demonstrably charged and the sag is
+calibration-consistent (pinned in test_coopfc_soc.py). The e2e kill
+floors and the energy-cycle pins passed UNCHANGED after the rework —
+no tactical re-baseline was needed; the only re-pinned surfaces are
+harness-level (synthetic hosts now carry a 5 A avionics load so the
+P3 voltage-path timing pins stay exact, and rest-window tests rest
+explicitly — armed flight at zero bus current was a harness fiction).

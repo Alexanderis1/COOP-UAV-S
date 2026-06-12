@@ -59,6 +59,10 @@ class CbitHost:
         self.mag_swapped = False
         self.esc_rpm = (6000.0,) * 4
         self.esc_cells = None         # None -> balanced v_cell taps
+        # 5 A default: above the SOC rest window, below the arbitration
+        # load threshold — SOC machinery dormant unless a test asks for
+        # it (rest seeding needs esc_i = 0.0 BEFORE boot).
+        self.esc_i = 5.0              # bus current (A)
         self._fix_i = 0
 
     @property
@@ -100,7 +104,7 @@ class CbitHost:
                 cells = (self.esc_cells if self.esc_cells is not None
                          else (self.v_cell,) * 12)
                 self.hal.port("esc").write(
-                    (self.esc_rpm, self.v_cell * 12, 0.0, cells))
+                    (self.esc_rpm, self.v_cell * 12, self.esc_i, cells))
             if self.heartbeats and k % 80 == 0:
                 self.fcu.on_heartbeat()
             if offboard_v is not None and k % 160 == 0:   # keep sp fresh

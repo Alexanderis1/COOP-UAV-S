@@ -61,6 +61,14 @@ class SocParams(NamedTuple):
     cells: int = 12
     rest_current_a: float = 2.0
     rest_samples: int = 5
+    # Continuous rest recalibration: while resting, blend toward the
+    # rest-OCV reading at this rate per frame (~2 s convergence at
+    # 10 Hz). A resting terminal voltage IS the charge state — this is
+    # how the counter learns about pad charging, whose current never
+    # crosses the bus sense (sil/fleet.py pad note). Flight is never
+    # resting (hover current >> rest_current_a), so this cannot move
+    # the estimate mid-air.
+    rest_blend: float = 0.2
 
 
 class SocEstimator:
@@ -101,4 +109,7 @@ class SocEstimator:
                 self.soc = min(max(
                     self.soc - i_bus * dt / (3600.0 * p.capacity_ah),
                     0.0), 1.0)
+        if abs(i_bus) < p.rest_current_a:
+            rest = soc_from_rest_v_cell(v_bus / p.cells)
+            self.soc += p.rest_blend * (rest - self.soc)
         self._last_stamp = stamp

@@ -29,7 +29,9 @@ import numpy as np
 from ..core.messages import Header, UavMode, UavState
 from . import guidance
 from .fcu_client import SitlBody
-from .interceptor_app import BATT_LOW_DEBOUNCE_S, LOITER_ALT, LOW_BATTERY_RTB
+from .interceptor_app import (
+    BATT_LOW_DEBOUNCE_S, LOITER_ALT, LOW_BATTERY_RTB, REARM_MIN_BATT,
+)
 
 
 class SentinelApp:
@@ -85,7 +87,9 @@ class SentinelApp:
         period = 1.0 / self.clock.tick_hz
 
         if self.mode == UavMode.REARM:
-            if t >= (self._rearm_until or 0.0):
+            if t >= (self._rearm_until or 0.0) and self.battery >= REARM_MIN_BATT:
+                # Same pack-swap declaration gate as the interceptor
+                # (interceptor_app.REARM_MIN_BATT rationale).
                 self._rearm_until = None
                 self._client.request_batt_reset()
                 self._client.hold_arm = False

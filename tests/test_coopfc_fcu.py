@@ -88,8 +88,12 @@ class SynthHost:
                 if self.mag_on:
                     self.hal.port("mag").write(B_ENU)
             if k % 80 == 0:
+                # 5 A avionics load: above the SOC estimator's rest
+                # window, below the arbitration's load threshold — the
+                # P5 SOC machinery stays fully dormant and these tests
+                # keep pinning the pure voltage-path timelines.
                 self.hal.port("esc").write(
-                    ((0.0,) * 4, self.v_cell * 12, 0.0,
+                    ((0.0,) * 4, self.v_cell * 12, 5.0,
                      (self.v_cell,) * 12))
             if hb_every is not None and k % round(hb_every * TICK_HZ) == 0:
                 self.fcu.on_heartbeat()

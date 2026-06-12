@@ -612,9 +612,25 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       stops, P_yaw grows honestly, latch survives field recovery + EKF rebuild. Documented
       residual: slow in-gate field drift is undetectable without an independent yaw reference
       (2026-06-12)
-- [ ] P5-1f SOC + per-cell (decision 1): per-cell voltages in BatteryEcm, esc_telem per-cell
-      channels, FCU coulomb-count SOC estimator, voltage+SOC failsafe arbitration,
-      BATT_SAG_ANOM + CELL_IMBALANCE monitors; re-baseline w/ before/after report
+- [x] P5-1f SOC + per-cell (decision 1), three commits:
+      (i) per-cell telemetry: BatteryEcm cell_delta_soc/r0_scale fault seams (un-faulted =
+      bitwise pre-P5, pinned) + cell_voltages(); esc_telem `cells` channel (draw layout
+      [rpm,v,i,cells] — documented change, pin updated); HAL esc frame 4-tuple through
+      driver/EscMsg/bench/fleet; sitl floors green unchanged.
+      (ii) coopfc/soc.py OCV-seeded coulomb counting (rest-window seed, never seeds from sag;
+      reset rides BATT_RESET; table = pinned copy of physics curve); fleet engine configures
+      each FCU from ITS airframe pack (16 vs 24 Ah); CELL_IMBALANCE (tap spread >80 mV) +
+      BATT_SAG_ANOM (sag beyond OCV(soc)−I(R0+R1) by 0.1 V/cell) monitors; bench pin: SOC
+      tracks truth ±0.02 over 20 s.
+      (iii) arbitration: voltage crossings vetoed only while charged (soc>0.5) AND loaded
+      (>10 A) AND sag-consistent — a raised BATT_SAG_ANOM impeaches the coulomb estimate and
+      lifts the veto (the truth-collapse harnesses caught the stale-count hole); SOC drives own
+      LOW/CRIT 0.25/0.10 via the same upward latch; rest-blend recal learns pad charging;
+      REARM_MIN_BATT 0.5 gate before BATT_RESET (half-filled pack must not be declared
+      swapped); STATUS batt_frac = real SOC once seeded. RESEARCH.md "P5-1f SOC estimation".
+      BEFORE/AFTER: e2e kill floors + energy-cycle pins passed UNCHANGED (no tactical
+      re-baseline); re-pinned surfaces are harness-level only (synthetic hosts carry 5 A
+      avionics load — armed flight at zero bus current was a harness fiction) (2026-06-12)
 - [ ] P5-2a sil injection seams: GPS denial/degraded + sensor dropout masks (hw devices),
       motor fault mask (rotor thrust scale on u), coop_link jam (channel block), C2 link jam;
       dedicated `faults/*` registry streams; no-fault scenarios bit-identical (pin)

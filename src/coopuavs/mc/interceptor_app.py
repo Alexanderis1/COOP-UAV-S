@@ -36,6 +36,13 @@ LOW_BATTERY_RTB = 0.15
 # spool-up reads ~0.1 for one sample): like the FCU monitor, the MC
 # floor must hold continuously before it triggers.
 BATT_LOW_DEBOUNCE_S = 2.0
+# Pack-swap declaration gate (P5-1f): the turnaround timer alone is not
+# "pack ready" — the pad charger's current never crosses the bus sense,
+# so BATT_RESET must wait until telemetry shows the charge actually
+# aboard, or the post-swap SOC re-seed reads a half-charged pack and
+# latches BATT_LOW on a vehicle that is still filling. 0.5 = the P4
+# partial-top-up operating point (deadline launches stay possible).
+REARM_MIN_BATT = 0.5
 # Idle/RTB hold point sits this far above the pad: the SITL plant has
 # no ground contact (deferred, user decision 2026-06-12), so only the
 # FCU's LAND mode — controlled descent + touchdown latch at the home
@@ -146,10 +153,10 @@ class InterceptorApp:
         period = 1.0 / self.clock.tick_hz
 
         if self.mode == UavMode.REARM:
-            if t >= (self._rearm_until or 0.0):
-                # Turnaround complete: pack swapped/recharged (the FCU
-                # clears its latched monitor), magazine restored, back
-                # to the fight. Battery itself reads from telemetry.
+            if t >= (self._rearm_until or 0.0) and self.battery >= REARM_MIN_BATT:
+                # Turnaround complete AND the charge is aboard: pack
+                # swapped/recharged (the FCU clears its latched
+                # monitor), magazine restored, back to the fight.
                 self._rearm_until = None
                 self.effector.ammo = self._ammo_capacity
                 self._client.request_batt_reset()

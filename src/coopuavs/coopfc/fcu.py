@@ -399,8 +399,16 @@ class Fcu:
     def _batt_task(self, now: float) -> None:
         if self._sub_esc.updated:
             msg = self._sub_esc.read()
-            self.batt.update(now, msg.v_bus)
             self.soc_est.update(msg.stamp, msg.v_bus, msg.i_bus)
+            self.batt.update(now, msg.v_bus, soc=self.soc_est.soc,
+                             i_bus=msg.i_bus,
+                             sag_anom=self.cbit.raised("BATT_SAG_ANOM"))
+
+    def battery_fraction(self) -> float:
+        """Telemetry fraction (STATUS batt_frac): the real coulomb SOC
+        once seeded, the conservative voltage proxy until then."""
+        soc = self.soc_est.soc
+        return soc if soc is not None else self.batt.fraction()
 
     def _pbit_task(self, now: float) -> None:
         if self.state == BOOT:
