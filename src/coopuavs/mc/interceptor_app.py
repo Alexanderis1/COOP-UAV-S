@@ -231,6 +231,14 @@ class InterceptorApp:
             )
         self.body.command_velocity(v_cmd)
 
+        if self._client.cbit_inhibit_fire:
+            # CBIT veto (P5-1e): the FCU's health word says weapon
+            # release is unsafe — keep pursuing, but the release chain
+            # is frozen: no new requests, no token consumption, no
+            # release. Tokens already in hand age out on their own
+            # freshness window (CLEARANCE_VALID_S); the FCU-side hard
+            # interlock arrives with P5-5.
+            return
         action = self._fc.engage(
             t, self._task, track, tgt_pos,
             self.body.position, self.body.velocity,

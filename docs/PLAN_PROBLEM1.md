@@ -582,13 +582,36 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       baseline; perfectly-constant synthetic gyro frames correctly read as GYRO_STUCK (harness
       dithers — live MEMS never repeats a sample). 669 fast + @slow bench/fcu/e2e/ekf-mc green,
       ruff clean (2026-06-12)
-- [ ] P5-1c degraded-mode actions + wire export: FAILSAFE_ATT mode (level attitude + descent,
-      EKF_DIVERGED response); CBIT entries in the failsafe priority chain (pinned order above);
-      inhibit_arming joins cmd_arm; HEALTH wire msg (fault word + inhibit flags + degraded mode,
-      1 Hz) + FAILSAFE_CODES additive; FcuClient decode + properties
-- [ ] P5-1e `inhibit_fire` end-to-end: app gates engagement on FCU fire-ok; staged fire request
-      suppressed under latched fault even with AUTHORIZED token (test)
-- [ ] P5-1d mag fault → yaw-from-GPS-course EKF fallback (P3-10 stop rule applies)
+- [x] P5-1c degraded-mode actions + wire export: FAILSAFE_ATT = RATE-ONLY flight (gyro rate
+      damping + fixed sub-hover collective `fcu.fs_att_thrust` 0.45 — on a diverged estimator
+      the position/velocity loops fly a fiction; bench-verified controlled descent, rates <1
+      rad/s); CBIT slots in `_failsafes` per the pinned order, first-reason latch preserved
+      (escalation switches MODE, never the latched reason — tested); cmd_arm refuses on
+      latched CBIT inhibitors ("CBIT: <codes>"); cmd_set_mode hard-refuses leaving FAILSAFE_ATT
+      while the nav-loss fault is raised; HEALTH msg id 9 "<dIBB" (fault word u32 + inhibit
+      flags + degraded code) at 1 Hz engine-side + DEGRADED_CODES table; FcuClient
+      health/fault_word/cbit_* props; FAILSAFE_CODES += 6 CBIT reasons, MODE_CODES +=
+      FAILSAFE_ATT (additive, vocab pins updated same commit); SynthHost/FlightHost gyro gets
+      1e-6 sin dither (constant synthetic frames correctly read as GYRO_STUCK). MOTOR_RESPONSE
+      discriminator rewritten on the real-flight evidence: unexplained spread (rpm spread w/o
+      u spread = pre-trim deficit; u spread w/o rpm spread = post-trim overcommand) — share
+      ratios false-fire on healthy banked orbits (affine motor droop, elasticity ≤2) and pack
+      brownout (which must stay BATT_LOW's reason) (2026-06-12)
+- [x] P5-1e `inhibit_fire` end-to-end: app vetoes the release chain while
+      `client.cbit_inhibit_fire` (no requests, no token consumption, no release; tokens age out
+      on CLEARANCE_VALID_S); staged-request suppression + post-clear resume tested scripted, and
+      the full wire chain (param bit-rot → PARAM_CRC → HEALTH → client → app holds fire with an
+      AUTHORIZED token in hand) tested on the hosted engine; stage-2 twins untouched green;
+      _StubClient += cbit_inhibit_fire (2026-06-12)
+- [x] P5-1d mag fault → disable-mag + GPS-maneuver yaw (user decision 2026-06-12: plan's
+      yaw-from-GPS-course invalid — fleet strafes with yaw_sp=0, course ≠ heading; PX4 parity
+      would need GSF, declined per P3-10 stop rule; RESEARCH.md "P5-1d mag-fault yaw
+      fallback"). `Ekf.mag_trusted` + `mag_excluded` tally: latched MAG_FAULT drops mag at
+      intake (reject tallies stop moving — known-bad sensors must not spam the innovation
+      seams); exclusion re-applied to post-touchdown rebuilt EKFs while latched. Pins: spam
+      stops, P_yaw grows honestly, latch survives field recovery + EKF rebuild. Documented
+      residual: slow in-gate field drift is undetectable without an independent yaw reference
+      (2026-06-12)
 - [ ] P5-1f SOC + per-cell (decision 1): per-cell voltages in BatteryEcm, esc_telem per-cell
       channels, FCU coulomb-count SOC estimator, voltage+SOC failsafe arbitration,
       BATT_SAG_ANOM + CELL_IMBALANCE monitors; re-baseline w/ before/after report

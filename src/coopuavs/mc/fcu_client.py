@@ -33,6 +33,7 @@ from __future__ import annotations
 import numpy as np
 
 from coopuavs.coopfc.link.coop_link import (
+    DEGRADED_NAMES,
     FAILSAFE_NAMES,
     MODE_CODES,
     MODE_NAMES,
@@ -63,6 +64,7 @@ class FcuClient:
         self._dec = FrameDecoder()
         self.nav: dict | None = None        # latest NAV fields
         self.status: dict | None = None     # latest STATUS fields
+        self.health: dict | None = None     # latest HEALTH fields (1 Hz)
         self.desired_mode = "OFFBOARD"
         self.hold_arm = False
         self._batt_reset_pending = False
@@ -93,6 +95,25 @@ class FcuClient:
         first STATUS arrives."""
         return self.status["batt_frac"] if self.status else 1.0
 
+    # -- CBIT health (P5-1c; healthy defaults until the first HEALTH) ------
+
+    @property
+    def fault_word(self) -> int:
+        """u32 CBIT fault bitmask (cbit/dictionary.py bit positions)."""
+        return self.health["faults"] if self.health else 0
+
+    @property
+    def cbit_inhibit_arming(self) -> bool:
+        return bool(self.health) and bool(self.health["flags"] & 0b01)
+
+    @property
+    def cbit_inhibit_fire(self) -> bool:
+        return bool(self.health) and bool(self.health["flags"] & 0b10)
+
+    @property
+    def cbit_degraded(self) -> str:
+        return DEGRADED_NAMES[self.health["degraded"]] if self.health else ""
+
     def request_batt_reset(self) -> None:
         """Pack swapped/recharged on the pad: sent on the next tick."""
         self._batt_reset_pending = True
@@ -110,6 +131,8 @@ class FcuClient:
                     self.nav = vals
                 elif name == "STATUS":
                     self.status = vals
+                elif name == "HEALTH":
+                    self.health = vals
 
     def tick(self, now: float, v_cmd, yaw_sp: float = 0.0) -> None:
         """One MC cycle: telemetry in, heartbeat + setpoint + arming out."""

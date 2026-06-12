@@ -73,12 +73,32 @@ GPS_REJ_MIN = 3            # of 20 (pos+vel at 10 Hz) / s
 # direct comparison sees it immediately. Same tilt guard as the fusion.
 MAG_YAW_ERR_MAX = 0.5      # rad (~29 deg; hard-iron residual is ~2.3 deg)
 MAG_TILT_GUARD = 0.3       # |cos(pitch)| below this: leveling degenerate
-# Motor response: rotor rpm share vs commanded share mismatch (relative
-# check — needs no motor constants; a 40% thrust-loss injection reads as
-# ~17% share deficit at hover trim). Gated on credible telemetry.
-MOTOR_SHARE_DEFICIT = 0.12
+# Motor response: a fault is a command/rpm SPREAD the other side cannot
+# explain. Naive per-rotor share ratios false-fire on healthy trimmed
+# flight: the motor curve is affine (omega ~ a*u - droop), so a banked
+# orbit's honest u asymmetry yields a LARGER relative rpm asymmetry
+# (elasticity (omega+droop)/omega in [1, ~2]) — measured on the sentinel
+# orbit suite. The two real fault signatures:
+#   (1) rpm spread with no commanding u spread (pre-trim omega deficit,
+#       stuck/stopped rotor) -> flag the slowest rotor;
+#   (2) u spread with no responding rpm spread (post-trim ESC-gain/prop
+#       fault: the controller equalizes omega by over-commanding the
+#       weak rotor; healthy physics NEVER yields equal rpm at unequal u)
+#       -> flag the most-commanded rotor.
+# EXPLAIN_RATIO 0.4: rule (1) false-fires only at elasticity > 2.5
+# (beyond the deepest healthy droop), rule (2) only below 0.4 (healthy
+# is always >= 1). Pack brownout scales every rotor together — spreads
+# preserved, no fault: the battery monitor owns that reason.
+# Judged ONLY at quasi-steady points: u moves at 400 Hz while the ESC
+# frame reports omega ~100 ms behind (frame period + motor lag), so
+# honest aggressive maneuvering disagrees wildly (measured: u_0 = 0.0
+# with rotor 0 still spinning down at 8000 rpm). Unsteady windows
+# report healthy — faults are judged at the next steady stretch.
+MOTOR_SPREAD_MIN = 0.20    # relative (max-min)/mean spread to accuse
+MOTOR_EXPLAIN_RATIO = 0.4  # other side's spread below this fraction = fault
 MOTOR_U_MIN = 0.15         # mean commanded u below this = idle, skip
 MOTOR_RPM_MIN = 500.0      # mean rpm below this = no credible telemetry
+MOTOR_U_STEADY = 0.08      # max per-rotor |u - u at previous frame|
 # Mixer saturation: axis blocked for at least this many 400 Hz rate
 # ticks before the 50 Hz observer calls the instant "saturated" (the
 # 1 s dictionary debounce sits on top).
@@ -100,6 +120,7 @@ class FcuMonitors:
         self._sub_esc = fcu.topics.subscribe("esc_status")
         self._sub_mag = fcu.topics.subscribe("mag_body")
         self._esc_msg = None
+        self._u_at_frame = None
         self._mag_err = False
         self._prev_gyro = None
         self._vibe = 0.0
@@ -217,23 +238,34 @@ class FcuMonitors:
         msg = self._esc_msg
         fcu = self.fcu
         if msg is None or fcu.state != _ARMED:
+            self._u_at_frame = None
             return
         u = fcu._u_last
-        n = len(msg.rpm)
+        prev, self._u_at_frame = self._u_at_frame, u
+        if prev is None:
+            return
+        if max(abs(ui - pi) for ui, pi in zip(u, prev)) > MOTOR_U_STEADY:
+            # Transient: shares carry no information (docstring above);
+            # explicit healthy report so a maneuvering blip never parks
+            # a half-finished debounce for a later spurious completion.
+            self.eng.report("MOTOR_RESPONSE", False, now)
+            return
+        rpm = msg.rpm
         mean_u = sum(u) / len(u)
-        mean_rpm = sum(msg.rpm) / n
+        mean_rpm = sum(rpm) / len(rpm)
         if mean_u < MOTOR_U_MIN or mean_rpm < MOTOR_RPM_MIN:
             return
-        worst, worst_i = 0.0, -1
-        for i in range(min(n, len(u))):
-            expected = u[i] / mean_u
-            if expected <= 0.0:
-                continue
-            deficit = 1.0 - (msg.rpm[i] / mean_rpm) / expected
-            if deficit > worst:
-                worst, worst_i = deficit, i
-        self.eng.report("MOTOR_RESPONSE", worst > MOTOR_SHARE_DEFICIT, now,
-                        detail=f"rotor {worst_i}" if worst_i >= 0 else "")
+        spread_u = (max(u) - min(u)) / mean_u
+        spread_rpm = (max(rpm) - min(rpm)) / mean_rpm
+        bad, rotor = False, -1
+        if (spread_rpm > MOTOR_SPREAD_MIN
+                and spread_u < MOTOR_EXPLAIN_RATIO * spread_rpm):
+            bad, rotor = True, rpm.index(min(rpm))
+        elif (spread_u > MOTOR_SPREAD_MIN
+                and spread_rpm < MOTOR_EXPLAIN_RATIO * spread_u):
+            bad, rotor = True, u.index(max(u))
+        self.eng.report("MOTOR_RESPONSE", bad, now,
+                        detail=f"rotor {rotor}" if bad else "")
 
     # ------------------------------------------------------------- 1 Hz
 

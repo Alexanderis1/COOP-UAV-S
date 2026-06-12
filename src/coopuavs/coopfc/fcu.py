@@ -84,6 +84,9 @@ FCU_DEFAULTS = {
     "fcu.gyro_range_rad_s": 34.9,
     "fcu.accel_range_m_s2": 157.0,
     "fcu.dr_sigma_budget_m": 8.0,
+    # FAILSAFE_ATT collective: just under the ~0.55 hover point so the
+    # rate-damped descent is gentle, not ballistic.
+    "fcu.fs_att_thrust": 0.45,
 }
 
 BOOT = "BOOT"
@@ -94,6 +97,11 @@ OFFBOARD = "OFFBOARD"
 POS_HOLD = "POS_HOLD"
 RTL = "RTL"
 LAND = "LAND"
+# Rate-only flight (P5-1c, the nav-loss degraded mode): on a diverged
+# estimator the position/velocity loops fly a fiction — gyro rate
+# damping at a fixed sub-hover thrust is what an attitude failsafe can
+# honestly promise (level-ish controlled descent, no nav required).
+FAILSAFE_ATT = "FAILSAFE_ATT"
 
 
 class FcuStatus(NamedTuple):
@@ -189,6 +197,7 @@ class Fcu:
         self._align_retries = 0
         self.cbit = CbitEngine()
         self._cbit_mon = FcuMonitors(self, self.cbit)
+        self._fs_att_thrust = p("fcu.fs_att_thrust")
 
         s = self.sched
         s.add("imu_drv", 400, self.imu_drv.tick)
@@ -220,6 +229,12 @@ class Fcu:
             return False, f"not in STANDBY (state={self.state})"
         if not self.pbit_ok:
             return False, "PBIT: " + ",".join(self.pbit_reasons)
+        inhibitors = self.cbit.arming_inhibitors()
+        if inhibitors:
+            # Latched CBIT faults survive their condition clearing (a
+            # repaired-looking sensor is not a repaired sensor); PBIT
+            # alone would re-arm through them.
+            return False, "CBIT: " + ",".join(inhibitors)
         nav = self.nav
         if nav is None:
             return False, "no nav solution yet"
@@ -249,6 +264,11 @@ class Fcu:
     def cmd_set_mode(self, mode: str) -> tuple[bool, str]:
         if self.state != ARMED:
             return False, "not armed"
+        if (self.mode == FAILSAFE_ATT
+                and self.cbit.degraded()[0] == FAILSAFE_ATT):
+            # The nav-loss fault is still raised: every other mode would
+            # fly the diverged estimate. Hard refusal, not etiquette.
+            return False, "FAILSAFE_ATT: nav-loss fault active"
         if mode == OFFBOARD:
             now = self.sched.now
             if self._sp_stamp is None or (
@@ -352,6 +372,11 @@ class Fcu:
     def _est_update(self, now: float) -> None:
         if self.ekf is None:
             return
+        if self.ekf.mag_trusted and self.cbit.raised("MAG_FAULT"):
+            # P5-1d: exclude the corrupted yaw source, latched per
+            # flight (re-applied here to any rebuilt post-touchdown
+            # EKF while the fault stays latched).
+            self.ekf.mag_trusted = False
         self.nav = self.ekf.update(now)
         self._pub_nav.publish(self.nav)
 
@@ -399,11 +424,34 @@ class Fcu:
         self._land_datum = self.home[2]
 
     def _failsafes(self, now: float) -> None:
+        """Priority chain, pinned (PLAN_PROBLEM1 P5): FAILSAFE_ATT
+        (nav-loss) > BATT_CRIT > CBIT LAND > LINK_LOSS > BATT_LOW >
+        CBIT RTL > OFFBOARD_TIMEOUT. The CBIT slots command only for
+        faults the legacy chain does not own (mirror rows excluded by
+        the engine), so no-fault flights are bit-identical to P4. The
+        failsafe REASON latches first-come (P3 contract) even when a
+        later fault escalates the mode."""
         p = self.params.get
+        act, cause = self.cbit.degraded()
+        if act == FAILSAFE_ATT:
+            # Position/velocity control is meaningless on a diverged
+            # estimator — outranks every position-tracking response.
+            if self.mode != FAILSAFE_ATT:
+                self.mode = FAILSAFE_ATT
+                self.failsafe = self.failsafe or cause
+            return
+        if self.mode == FAILSAFE_ATT:
+            return    # fault cleared in flight: hold until a command
         if self.batt.state == CRITICAL and self.mode != LAND:
             self._enter_land()
             self.mode = LAND
             self.failsafe = self.failsafe or "BATT_CRIT"
+            return
+        if act == LAND and self.mode != LAND:
+            # Get-down-now class (motor/IMU damage): preempts RTL.
+            self._enter_land()
+            self.mode = LAND
+            self.failsafe = self.failsafe or cause
             return
         if self.mode in (RTL, LAND):
             return
@@ -417,6 +465,11 @@ class Fcu:
             self._enter_rtl()
             self.mode = RTL
             self.failsafe = self.failsafe or "BATT_LOW"
+            return
+        if act == RTL:
+            self._enter_rtl()
+            self.mode = RTL
+            self.failsafe = self.failsafe or cause
             return
         if (self.mode == OFFBOARD
                 and now - self._sp_stamp > p("fcu.offboard_timeout_s")):
@@ -435,6 +488,8 @@ class Fcu:
         if self.state != ARMED or nav is None:
             return
         self._failsafes(now)
+        if self.mode == FAILSAFE_ATT:
+            return    # rate-only: the 400 Hz task flies, no setpoints
         p = self.params.get
         yaw_sp = self._sp_yaw if self.mode == OFFBOARD else 0.0
         if self.mode == OFFBOARD:
@@ -491,9 +546,16 @@ class Fcu:
         b_g = self.ekf.b_g
         omega = (imu.gyro[0] - b_g[0], imu.gyro[1] - b_g[1],
                  imu.gyro[2] - b_g[2])
-        rate_sp = self.att_ctl.update(self._q_sp, self.nav.q)
+        if self.mode == FAILSAFE_ATT:
+            # Nav-loss flight: damp all rotation, fixed sub-hover
+            # collective — no attitude estimate consulted.
+            rate_sp = (0.0, 0.0, 0.0)
+            thrust = self._fs_att_thrust
+        else:
+            rate_sp = self.att_ctl.update(self._q_sp, self.nav.q)
+            thrust = self._thrust
         torque = self.rate_ctl.update(rate_sp, omega, 1.0 / 400.0, self._sat)
-        u, flags = self.mixer.mix(self._thrust, torque)
+        u, flags = self.mixer.mix(thrust, torque)
         self._sat = flags.axis_sat
         # Persistent-saturation observable (CBIT): motors pinned at the
         # rails. The per-axis flags oscillate with the anti-windup

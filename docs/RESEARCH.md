@@ -1286,3 +1286,30 @@ ULP between n=1 and n=2 shapes (measured 1.6e-14 relative over a
 1.5 s hover). The trajectory pin is therefore 1e-9 — any
 stream-wiring fault diverges at device-noise scale, five-plus orders
 louder. Run-twice determinism at fixed fleet size remains bitwise.
+
+### P5-1d mag-fault yaw fallback: exclusion, not course-as-yaw
+
+The plan sketched "mag fault -> yaw-from-GPS-course". Implemented as
+mag EXCLUSION instead (user decision 2026-06-12), because course over
+ground is not heading for this fleet: the MC apps command velocity
+setpoints with yaw_sp = 0, so vehicles strafe — fusing course as yaw
+would inject an error equal to the (arbitrary) angle between velocity
+and body-x. PX4 solves the same problem with an EKF-GSF bank of yaw
+hypotheses scored by velocity likelihood, not raw course (PX4-EKF2
+yaw_estimator; [standard reference]) — adopting that machinery was
+judged out of scope against its tuning risk (P3-10 stop rule).
+
+What a latched MAG_FAULT does: `Ekf.mag_trusted` clears and mag frames
+are dropped at intake (`mag_excluded` tally; the reject tallies stop
+moving — a known-bad sensor must not spam the innovation CBIT seams).
+Yaw then rides the gyro, and the existing yaw-information-floor design
+already routes GPS-velocity evidence into yaw during maneuvers (see
+"mag information floor" above): exclusion costs nothing that fusion of
+a corrupted field would have provided. P_yaw grows honestly between
+maneuvers — pinned in test_coopfc_cbit_actions.py.
+
+Detection residual (documented gap): the consistency monitor compares
+mag-derived yaw to EKF yaw (0.5 rad), which catches step faults
+(swapped/rotated field, hard-iron jumps) but NOT a slow in-gate drift
+that walks the EKF yaw with it — distinguishing that needs an
+independent yaw reference (the GSF machinery above). Accepted for P5.

@@ -51,6 +51,7 @@ from coopuavs.coopfc.fcu import ARMED, TICK_HZ, Fcu
 from coopuavs.coopfc.hal import HalIO
 from coopuavs.coopfc.link.coop_link import (
     BATT_CODES,
+    DEGRADED_CODES,
     FAILSAFE_CODES,
     MODE_CODES,
     MODE_NAMES,
@@ -90,6 +91,7 @@ ESC_HZ = 10
 LINK_HZ = 50
 NAV_HZ = 25
 STATUS_HZ = 10
+HEALTH_HZ = 1     # CBIT northbound (P5-1c; PHY-UAV-013 needs >= 1 Hz)
 
 
 class _FcuLink:
@@ -197,6 +199,7 @@ class SitlEngine:
         self._link_every = self._divisor(base_hz, LINK_HZ, "link")
         self._nav_every = self._divisor(base_hz, NAV_HZ, "nav telemetry")
         self._status_every = self._divisor(base_hz, STATUS_HZ, "status telemetry")
+        self._health_every = self._divisor(base_hz, HEALTH_HZ, "health telemetry")
         self.heartbeat_every = (round(base_hz / heartbeat_hz)
                                 if heartbeat_hz else 0)
         self.links: list[_FcuLink | None] = [None] * n
@@ -391,6 +394,13 @@ class SitlEngine:
                 "STATUS", now, STATE_CODES[fcu.state], MODE_CODES[fcu.mode],
                 FAILSAFE_CODES[fcu.failsafe], BATT_CODES[fcu.batt.state],
                 nav.sigma_pos_h, fcu.batt.fraction()), now)
+        if k % self._health_every == 0:
+            cbit = fcu.cbit
+            flags = (int(cbit.inhibit_arming)
+                     | (int(cbit.inhibit_fire) << 1))
+            link.down.send(encode_msg(
+                "HEALTH", now, cbit.word(), flags,
+                DEGRADED_CODES[cbit.degraded_mode()]), now)
 
     def _tick(self, now: float) -> None:
         # 1. devices sample truth (pre-step state, ZOH inputs)

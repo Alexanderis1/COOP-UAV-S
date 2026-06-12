@@ -72,7 +72,13 @@ class SynthHost:
         for _ in range(round(t_span * TICK_HZ)):
             k, now = self.k, self.now
             if k % 2 == 0:
-                g = vibrate if (k // 2) % 2 == 0 else -vibrate
+                # 1e-6 rad/s non-repeating dither: live MEMS noise never
+                # repeats a sample exactly, and the P5 GYRO_STUCK monitor
+                # (correctly) reads a perfectly-constant stream as a
+                # stuck sensor and inhibits arming. Far below every
+                # alignment/EKF tolerance in this suite.
+                g = (vibrate if (k // 2) % 2 == 0 else -vibrate) \
+                    + 1e-6 * math.sin(0.7 * k)
                 self.hal.port("imu").write(((g, -g, g), (0.0, 0.0, G)))
             if k % 80 == 0:
                 self.hal.port("gps").write(
@@ -339,7 +345,9 @@ class FlightHost:
                 accel = vec.quat_rotate_inv(q, f_w)
                 gyro = (s[10], s[11], s[12])
             else:
-                accel, gyro = (0.0, 0.0, G), (0.0, 0.0, 0.0)
+                # Same GYRO_STUCK honesty dither as SynthHost.
+                d = 1e-6 * math.sin(0.7 * k)
+                accel, gyro = (0.0, 0.0, G), (d, -d, d)
             self.hal.port("imu").write((gyro, accel))
         if k % 80 == 0:
             pos = (s[0], s[1], s[2])

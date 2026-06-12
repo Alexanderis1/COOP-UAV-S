@@ -182,6 +182,15 @@ class Ekf:
         # scheduling must keep these at zero; still buffered, since a
         # slightly-stale fusion beats dropping the information).
         self.late_meas = {"gps": 0, "baro": 0, "mag": 0}
+        # CBIT mag exclusion (P5-1d, user decision 2026-06-12): a
+        # latched MAG_FAULT clears this and mag frames are dropped at
+        # intake — a known-corrupted yaw source must not be fused OR
+        # spam the reject tallies. Yaw then rides the gyro plus the
+        # GPS-maneuver observability pathway (see the yaw-floor note in
+        # _fuse_mag); naive course-as-yaw would be wrong for this fleet
+        # (velocity-commanded strafing: course != heading).
+        self.mag_trusted = True
+        self.mag_excluded = 0
         # Accepted-fusion NIS tallies (per sensor: [sum, count]) — the
         # NIS half of the MC consistency suite reads these.
         self.nis = {"gps_pos": [0.0, 0], "gps_vel": [0.0, 0],
@@ -278,6 +287,9 @@ class Ekf:
         self._baro.append((stamp, alt_m))
 
     def on_mag(self, stamp: float, field_ut: vec.Vec3) -> None:
+        if not self.mag_trusted:
+            self.mag_excluded += 1
+            return
         if self.diverged:
             return
         if stamp < self.horizon - _STAMP_EPS:

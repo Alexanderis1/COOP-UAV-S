@@ -49,7 +49,7 @@ VEL = np.array([50.0, 0.0, 0.0])
 class _StubClient:
     """No wire: the twin pins tactical logic, not transport. Telemetry
     reads as a healthy pack so the energy branch matches the legacy
-    host's full battery."""
+    host's full battery (and a clean CBIT word, P5-1e)."""
     nav = None
     status = None
     state = "ARMED"
@@ -57,6 +57,7 @@ class _StubClient:
     failsafe = ""
     desired_mode = "OFFBOARD"
     hold_arm = False
+    cbit_inhibit_fire = False
 
     def tick(self, now, v_cmd, yaw_sp=0.0):
         pass

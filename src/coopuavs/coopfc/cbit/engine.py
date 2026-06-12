@@ -113,18 +113,28 @@ class CbitEngine:
         return any(self._faults[c].inhibit_fire for c in self._codes
                    if self.raised(c))
 
-    def degraded_mode(self) -> str:
-        """Highest-priority CBIT response among raised faults. Mirror
-        rows are excluded — the legacy failsafe chain owns their
-        response (dictionary docstring; bit-identity contract)."""
-        best = ACT_NONE
+    def degraded(self) -> tuple[str, str]:
+        """Highest-priority CBIT response among raised faults, with the
+        fault code that commands it (the failsafe reason the FCU
+        latches). Mirror rows are excluded — the legacy failsafe chain
+        owns their response (dictionary docstring; bit-identity
+        contract). Ties go to the lowest bit (stable)."""
+        best, cause = ACT_NONE, ""
         for code in self._codes:
             spec = self._faults[code]
             if spec.mirror or not self.raised(code):
                 continue
             if act_rank(spec.degraded_mode) > act_rank(best):
-                best = spec.degraded_mode
-        return best
+                best, cause = spec.degraded_mode, code
+        return best, cause
+
+    def degraded_mode(self) -> str:
+        return self.degraded()[0]
+
+    def arming_inhibitors(self) -> list[str]:
+        """Raised inhibit_arming faults, bit order (cmd_arm refusal text)."""
+        return [c for c in self._codes
+                if self.raised(c) and self._faults[c].inhibit_arming]
 
     # ------------------------------------------------------------- snapshot
 
