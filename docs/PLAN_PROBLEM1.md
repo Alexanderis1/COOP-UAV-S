@@ -507,9 +507,16 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       pointmass recording keeps the EXACT v0.3 uav key set; sitl recording carries unit-quat
       att + nav_q in (0,10) m, no health yet, json round-trips. 2 tests test_sitl_recorder.py
       (2026-06-12)
-- [ ] P4-8 perf gate `@perf`: residential_raid sitl RTF ≥0.5× headless + committed profile; miss →
-      pull fallback levers before proceeding
-- GATE: all sitl twins + e2e + determinism + perf; legacy suite untouched and green
+- [x] P4-8 perf gate `@perf` test_sitl_perf.py: residential_raid sitl (8 FCU+MC pairs, full
+      pipeline) **RTF 0.80-0.81× headless** (1.24 s CPU/sim-s, gate ≥0.5×, 60% headroom) over a
+      20 sim-s boot+raid slice; committed profile docs/PERF_P4_SITL.md (FCUs 46% — EKF dominant;
+      batched plant 29%; macro pipeline ~0.4 s/sim-s; consistent with the P3-8 C20 projection).
+      Fallback levers untouched (2026-06-12)
+- GATE: sitl twins ✓ (guidance pursuit, clearance×4 byte-equivalent, sentinel, energy cycle) +
+  e2e ✓ (3-seed CI + 10-seed @slow, own floors, 0-CRITICAL invariant) + determinism ✓ (engine
+  run-twice bitwise; e2e events+summary) + perf ✓ (RTF 0.80× vs 0.5 gate) + legacy suite
+  untouched and green (601 fast incl. all 31 legacy files) + mc/ import fence. STOPPED for
+  user gate review per cadence (2026-06-12).
 
 ### P5 — CBIT + fault injection (M)
 - [ ] P5-1 `cbit/` dictionary+engine+monitors: table-driven test per fault (detection latency,
