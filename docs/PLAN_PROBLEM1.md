@@ -517,6 +517,20 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
   run-twice bitwise; e2e events+summary) + perf ✓ (RTF 0.80× vs 0.5 gate) + legacy suite
   untouched and green (601 fast incl. all 31 legacy files) + mc/ import fence. STOPPED for
   user gate review per cadence (2026-06-12).
+- [x] P4-R gate-review resolutions (user delegated to fidelity/determinism-optimal, 2026-06-12):
+      **(1) vertical-brake loss FIXED** — root cause: low-fz tilt cone + 50 Hz sign-flipping
+      saturated horizontal demand → ±45° attitude-setpoint steps → rate-loop torque slam →
+      mixer rp-priority desat pins average collective at hover (vertical priority lost in the
+      actuator chain; EKF verified healthy). Fix: `VelParams.tilt_slew` 6 rad/s followable-
+      setpoint limit (engages only on pathological steps; all P3 maneuver specs unchanged) +
+      `mc/guidance.approach_velocity` braking-aware waypoint capture (MC apps only; legacy
+      keeps goto_velocity). Deterministic reproducer pinned (pre-fix vz +3.4, post-fix < −5);
+      fleet climb-out <30 m (pre-fix >90). E2e RE-BASELINED post-fix: 9/10 seed kills (seed-0
+      5-shot pk≈0.5 miss streak, vehicles healthy), CI seeds 1-3, @slow floor 8/10 — documented
+      in test docstring + RESEARCH.md. Residual honest behavior: sustained full-power climbs
+      sag the 12S pack into the voltage-only monitor's band → FCU protects/lands/retries (P5
+      CELL_IMBALANCE owns SOC estimation). 604 fast + @slow bench/fcu/e2e + @perf (re-read
+      1.59×, machine-state sensitive per the documented caveat) green, ruff clean.
 
 ### P5 — CBIT + fault injection (M)
 - [ ] P5-1 `cbit/` dictionary+engine+monitors: table-driven test per fault (detection latency,

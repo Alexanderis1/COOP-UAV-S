@@ -296,8 +296,11 @@ class InterceptorApp:
         return self.max_speed
 
     def _fly_to(self, waypoint: np.ndarray) -> None:
+        # Braking-aware capture (mc/guidance, P4): a real airframe must
+        # arrive at posts/pads, not bang through them at max_speed.
         self.body.command_velocity(
-            guidance.goto_velocity(self.body.position, waypoint, self.max_speed)
+            guidance.approach_velocity(self.body.position, waypoint,
+                                       self.max_speed)
         )
 
     def _at(self, point: np.ndarray, radius: float = 25.0) -> bool:

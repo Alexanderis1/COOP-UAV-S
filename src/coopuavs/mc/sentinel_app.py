@@ -151,7 +151,8 @@ class SentinelApp:
 
     def _fly_to(self, waypoint: np.ndarray) -> None:
         self.body.command_velocity(
-            guidance.goto_velocity(self.body.position, waypoint, self.max_speed)
+            guidance.approach_velocity(self.body.position, waypoint,
+                                       self.max_speed)
         )
 
     def _at(self, point: np.ndarray, radius: float = 25.0) -> bool:

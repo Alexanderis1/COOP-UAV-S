@@ -1234,10 +1234,46 @@ on-ground EKF handling (zero-velocity updates / state resets on land).
 `fcu.vel_max_h/up/down` envelope params the internal modes obey — an MC
 cannot command the airframe past its declared envelope. Scenario
 overlays size the envelope per airframe (the racer flies
-h=80/up=20/down=20). Known finding (flagged, not P4 scope): braking
-from a fast commanded climb holds near-hover thrust for several
-seconds (~90 m overshoot from a 20 m/s climb before converging) — P3
-velocity-controller envelope behavior worth a scoped review.
+h=80/up=20/down=20).
+
+### P4 gate-review: vertical-brake loss — root cause + fix (user
+### decision 2026-06-12, fidelity-first)
+
+Symptom: braking a fast climb held near-hover average thrust for
+seconds (~90 m overshoot). Root cause (instrumented in the fleet
+engine): the brake demand is healthy (az clamps to −a_max_down, thrust
+≈ 0.2), but the LOW specific force (fz = g − a_down ≈ 1.8 m/s²)
+shrinks the tilt cone's lever — any cone-saturating horizontal error
+then commands ±tilt_max, and a sign-flipping error steps the attitude
+setpoint ±45° at the 50 Hz loop rate. The rate loop slams torque
+chasing steps no airframe can follow, and the mixer's rp-priority
+desaturation drags average collective back to ~hover: vertical
+priority, honored in the demand chain, was lost in the actuator chain.
+EKF estimates and gyro-bias were verified healthy throughout.
+
+Fix, two layers, both physical:
+1. `VelParams.tilt_slew` (6 rad/s ≈ 344°/s) — the attitude setpoint is
+   slew-limited to what the airframe can follow (standard autopilot
+   practice; PX4 rate-limits via its attitude-loop time constants). It
+   only engages on pathological steps: every P3 maneuver spec passes
+   unchanged (30° step in ~90 ms needs ~5.8 rad/s peak).
+2. `mc/guidance.approach_velocity` — braking-aware waypoint capture
+   (v ≤ √(2·a_brake·d), a_brake 5 m/s² vs the 8 demanded) for posts,
+   pads and loiter points in the MC apps. `goto_velocity`'s linear
+   taper assumed point-mass 20 m/s² braking; legacy agents keep it.
+
+Verified: deterministic reproducer pinned in `test_coopfc_control.py`
+(climbing +15 m/s, −20 commanded, cone-saturating ±3 m/s horizontal
+chatter → must reach vz < −5 in 3 s; pre-fix it stays +3.4), fleet
+climb-out bounded <30 m in the energy cycle (pre-fix >90), all P3
+control/bench acceptance and @slow flights green. The e2e suite was
+RE-BASELINED (engagement timing shifted → different adjudicator draw
+realizations): 9/10 seed kills (was 10/10; the lost seed is a 5-shot
+pk≈0.5 miss streak with healthy vehicles), CI pins killing seeds 1-3,
+@slow floor 8/10. Residual honest behavior: sustained full-power
+climbs sag the 12S pack toward the (voltage-only, P5 CELL_IMBALANCE
+scope) monitor's LOW/CRIT band — the FCU protects, lands, tops up and
+retries; the rearm cycle test tolerates one such retry.
 
 ### P4-1 fleet-size invariance is a draw-history contract
 

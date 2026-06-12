@@ -88,3 +88,22 @@ def goto_velocity(own_pos: np.ndarray, waypoint: np.ndarray, speed: float, arriv
         return np.zeros(3)
     v = speed if dist > arrive_radius else speed * dist / arrive_radius
     return direction / dist * v
+
+
+def approach_velocity(own_pos: np.ndarray, waypoint: np.ndarray,
+                      speed: float, a_brake: float = 5.0) -> np.ndarray:
+    """Braking-aware goto for waypoint capture on a real airframe (P4
+    gate-review resolution): the commanded speed never exceeds what
+    ``a_brake`` can shed in the remaining distance (v = sqrt(2 a d)), so
+    the vehicle arrives instead of overshooting and hunting.
+    ``goto_velocity``'s linear arrive-radius taper assumed point-mass
+    deceleration; a quad braking a fast vertical approach has ~8 m/s^2
+    of demand authority — 5 keeps margin for the attitude transient.
+    Pursuit laws are untouched: this is for posts, pads and loiter
+    points. Legacy point-mass agents keep ``goto_velocity``."""
+    direction = waypoint - own_pos
+    dist = float(np.linalg.norm(direction))
+    if dist < 1e-6:
+        return np.zeros(3)
+    v = min(float(speed), float(np.sqrt(2.0 * a_brake * dist)))
+    return direction / dist * v

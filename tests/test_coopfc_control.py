@@ -210,6 +210,30 @@ def test_hover_hold_stays_level():
     assert abs(s[2] - 50.0) < 0.5
 
 
+def test_vertical_brake_survives_horizontal_chatter():
+    """P4 gate-review finding (user decision 2026-06-12, fidelity-first):
+    braking a fast climb means low specific force (fz = g - a_down), so
+    the tilt cone lets ANY cone-saturating horizontal demand command
+    ±45° — and a sign-flipping horizontal error then flips the attitude
+    setpoint at 50 Hz. The rate loop slams torque chasing steps no
+    airframe can follow, the mixer's rp-priority desat drags average
+    collective back to hover, and the vertical brake is LOST (~90 m
+    overshoot measured in the fleet engine). The attitude-setpoint slew
+    limit makes the setpoint followable; vertical priority then holds
+    end-to-end."""
+    b = Bench()
+    b.state[0, 5] = 15.0                  # climbing hard
+    sign = 1.0
+    for k in range(round(3.0 * PHYS_HZ)):
+        if k % VEL_EVERY == 0:
+            sign = -sign                  # worst case: cone-saturating
+        b.step(v_sp=(3.0 * sign, 0.0, -20.0))
+    vz = b.state[0, 5]
+    assert vz < -5.0, f"vz {vz:+.1f} m/s after 3 s — brake lost to flailing"
+    roll, pitch, _ = euler(b.state)
+    assert max(abs(roll), abs(pitch)) < math.radians(50.0)
+
+
 # ------------------------------------------------------------ anti-windup
 
 
