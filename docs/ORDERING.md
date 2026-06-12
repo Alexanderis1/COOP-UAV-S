@@ -125,7 +125,12 @@ the K micro-ticks (BASE_HZ, plan: 800 Hz) runs, in this frozen order:
    (`hw/gps.py` validates both at construction; 120 ms = 96 ticks at
    800 Hz) — a rate pairing that doesn't divide is a scenario error.
 2. **Per-vehicle software scheduler** runs due tasks: drivers → estimator →
-   controllers → mixer → PWM → CBIT → link.
+   controllers → mixer → PWM → CBIT → link. After the whole FCU loop the
+   engine collects release pulses (P5-5): a new write on a linked
+   vehicle's `effector` HAL port — the FCU hard interlock's authorized
+   release — is posted as a `release_ack` into that vehicle's MC mailbox
+   before step 3, so the ack an MC/shell sees is never older than the
+   FCU state that produced it.
 3. **MC tick** if due.
 4. **Latch actuators** — throttle/surface commands frozen for the rest of
    the micro-tick.

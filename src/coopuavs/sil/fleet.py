@@ -242,6 +242,11 @@ class SitlEngine:
                 overlay.update(fcu_overlay)
             self.fcus.append(Fcu(hal, overlay=overlay))
         self._act_ports = [hal.port("actuators") for hal in self.hals]
+        # Release-pulse collection (P5-5): last seen effector-port seq
+        # per vehicle — a new write becomes a release ack in the MC
+        # mailbox (ORDERING §6, after the FCU loop).
+        self._eff_ports = [hal.port("effector") for hal in self.hals]
+        self._eff_seq = [0] * n
 
         self._flying = np.zeros(n, dtype=bool)
         self._omega_r = np.zeros((n, n_rotors))
@@ -560,6 +565,10 @@ class SitlEngine:
                     fcu.cmd_set_home((v["x"], v["y"], v["z"]))
                 elif name == "BATT_RESET":
                     fcu.cmd_batt_reset()
+                elif name == "CLEARANCE_TOKEN":
+                    fcu.cmd_clearance_token(v["track_id"], v["issued"])
+                elif name == "WEAPON_RELEASE":
+                    fcu.cmd_weapon_release(v["stamp"], v["track_id"])
         nav = fcu.nav
         if nav is None:
             return    # nothing worth telemetering until alignment
@@ -598,6 +607,20 @@ class SitlEngine:
             fcu.run_tick()
             if link is not None and link_due:
                 self._link_task(fcu, link, now, k)
+
+        # 2b. release-pulse collection (P5-5, linked vehicles only): a
+        # new effector-port write since the last tick is the hard
+        # interlock's authorized pulse — posted as a release ack into
+        # the MC mailbox; the world-side shell pairs it with its staged
+        # FireRequest.
+        for i, port in enumerate(self._eff_ports):
+            if self.links[i] is None:
+                continue
+            seq, frame = port.read()
+            if seq != self._eff_seq[i]:
+                self._eff_seq[i] = seq
+                if self.mcs[i] is not None:
+                    self.mcs[i].ports.box("release_ack").post(frame)
 
         # 3. MC tick if due (P4-3): hosted mission computers on the micro
         # clock, behind their crash fences (a dead MC is silent, the

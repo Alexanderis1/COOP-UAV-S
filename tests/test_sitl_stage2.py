@@ -68,6 +68,12 @@ class _StubClient:
     def request_batt_reset(self):
         pass
 
+    def send_clearance_token(self, track_id, issued):
+        pass
+
+    def send_weapon_release(self, track_id):
+        pass
+
 
 def _task(track_id, task_id):
     return EngagementTask(header=Header(stamp=0.0), task_id=task_id,

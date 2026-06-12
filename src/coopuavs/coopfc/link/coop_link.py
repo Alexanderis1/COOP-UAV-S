@@ -59,6 +59,15 @@ MSG = {
     # positions = cbit/dictionary.py, pinned), inhibit flags (bit 0 =
     # arming, bit 1 = fire), and the active degraded-mode action.
     9: ("HEALTH", "<dIBB", ("stamp", "faults", "flags", "degraded")),
+    # FCU-side hard fire interlock (P5-5, decision 3 release-via-FCU):
+    # the MC mirrors an accepted clearance token down the wire, then
+    # commands release; the FCU validates token correlation + freshness
+    # + CBIT inhibit_fire and emits the pulse on its effector HAL port.
+    # ``stamp``/``issued`` live in the MC clock domain — freshness is
+    # release.stamp - token.issued ONLY (the FCU clock is boot-relative,
+    # never comparable across domains).
+    10: ("CLEARANCE_TOKEN", "<dId", ("stamp", "track_id", "issued")),
+    11: ("WEAPON_RELEASE", "<dI", ("stamp", "track_id")),
 }
 _BY_NAME = {name: (mid, fmt) for mid, (name, fmt, _) in MSG.items()}
 

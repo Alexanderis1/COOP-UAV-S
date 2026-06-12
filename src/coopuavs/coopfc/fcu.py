@@ -94,6 +94,10 @@ FCU_DEFAULTS = {
     "fcu.batt_capacity_ah": 16.0,
     "fcu.batt_r0": 0.036,
     "fcu.batt_r1": 0.018,
+    # Hard interlock token freshness (P5-5): must equal the MC-side
+    # mc/fire_control.CLEARANCE_VALID_S — the two ends of one window
+    # (cross-checked by test_sitl_release.py).
+    "fcu.release_token_valid_s": 3.0,
 }
 
 BOOT = "BOOT"
@@ -151,6 +155,10 @@ class Fcu:
         self.mag_drv = MagDriver(hal.port("mag"), self.topics)
         self.esc_drv = EscDriver(hal.port("esc"), self.topics)
         self.actuators = hal.port("actuators")
+        # Release pulse output (P5-5): one write per authorized release,
+        # frame (track_id, stamp) — the host pairs it with the staged
+        # FireRequest (fleet engine -> world-side shell).
+        self.effector_port = hal.port("effector")
 
         self._sub_imu = self.topics.subscribe("imu_raw")
         self._sub_gps = self.topics.subscribe("gps_fix")
@@ -208,6 +216,11 @@ class Fcu:
         self.cbit = CbitEngine()
         self._cbit_mon = FcuMonitors(self, self.cbit)
         self._fs_att_thrust = p("fcu.fs_att_thrust")
+        # Hard interlock state (P5-5): the latest mirrored clearance
+        # token (track_id, issued — MC clock domain) and the tallies.
+        self._release_token: tuple[int, float] | None = None
+        self.releases = 0
+        self.release_refusals: dict[str, int] = {}
 
         s = self.sched
         s.add("imu_drv", 400, self.imu_drv.tick)
@@ -329,6 +342,40 @@ class Fcu:
         # Battery-family CBIT latches belong to the swapped-out pack.
         self.cbit.clear("BATT_SAG_ANOM")
         self.cbit.clear("CELL_IMBALANCE")
+        return True, ""
+
+    def cmd_clearance_token(self, track_id: int, issued: float) -> None:
+        """MC-side clearance token mirrored over the wire (P5-5):
+        latest wins. ``issued`` is the clearance stamp in the MC clock
+        domain — cmd_weapon_release compares the release stamp against
+        it ONLY (never sched.now: the FCU clock is boot-relative)."""
+        self._release_token = (int(track_id), float(issued))
+
+    def cmd_weapon_release(self, stamp: float, track_id: int) -> tuple[bool, str]:
+        """The FCU-side hard fire interlock (P5-5, PHY-UAV-021/033):
+        release only ARMED, CBIT-clean, against the mirrored token for
+        THIS track inside its freshness window. Success consumes the
+        token (one token = one release) and pulses the effector port;
+        refusals are tallied by reason."""
+        if self.state != ARMED:
+            ok, why = False, "NOT_ARMED"
+        elif self.cbit.inhibit_fire:
+            ok, why = False, "CBIT_INHIBIT"
+        elif self._release_token is None:
+            ok, why = False, "NO_TOKEN"
+        elif self._release_token[0] != int(track_id):
+            ok, why = False, "TOKEN_MISMATCH"
+        elif (stamp - self._release_token[1]
+                > self.params.get("fcu.release_token_valid_s")):
+            ok, why = False, "TOKEN_STALE"
+        else:
+            ok, why = True, ""
+        if not ok:
+            self.release_refusals[why] = self.release_refusals.get(why, 0) + 1
+            return False, why
+        self._release_token = None
+        self.effector_port.write((int(track_id), float(stamp)))
+        self.releases += 1
         return True, ""
 
     # ------------------------------------------------------------ alignment

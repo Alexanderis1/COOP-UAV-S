@@ -68,6 +68,8 @@ class FcuClient:
         self.desired_mode = "OFFBOARD"
         self.hold_arm = False
         self._batt_reset_pending = False
+        self._tokens_pending: list[tuple[int, float]] = []
+        self._releases_pending: list[int] = []
         self._last_hb: float | None = None
         self._last_arm: float | None = None
 
@@ -118,6 +120,18 @@ class FcuClient:
         """Pack swapped/recharged on the pad: sent on the next tick."""
         self._batt_reset_pending = True
 
+    # -- hard interlock southbound (P5-5) ----------------------------------
+
+    def send_clearance_token(self, track_id: int, issued: float) -> None:
+        """Mirror an accepted clearance token to the FCU; queued, flushed
+        in tick(). ``issued`` = the clearance stamp (MC clock domain)."""
+        self._tokens_pending.append((int(track_id), float(issued)))
+
+    def send_weapon_release(self, track_id: int) -> None:
+        """Command release through the FCU hard interlock; queued after
+        any token from the same tick (the FIFO wire keeps the order)."""
+        self._releases_pending.append(int(track_id))
+
     # -- wire ----------------------------------------------------------------------
 
     def poll(self, now: float) -> None:
@@ -148,6 +162,16 @@ class FcuClient:
         if self._batt_reset_pending:
             self._up.send(encode_msg("BATT_RESET", now), now)
             self._batt_reset_pending = False
+        # Tokens strictly before releases (P5-5): a release commanded the
+        # same tick its token was accepted must find the token already
+        # stored when the FCU drains the batch in wire order.
+        for track_id, issued in self._tokens_pending:
+            self._up.send(encode_msg("CLEARANCE_TOKEN", now, track_id,
+                                     issued), now)
+        self._tokens_pending.clear()
+        for track_id in self._releases_pending:
+            self._up.send(encode_msg("WEAPON_RELEASE", now, track_id), now)
+        self._releases_pending.clear()
         if self.state == "STANDBY":
             if not self.hold_arm and (self._last_arm is None
                                       or now - self._last_arm >= ARM_RETRY_S):

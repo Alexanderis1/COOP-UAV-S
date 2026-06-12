@@ -669,9 +669,18 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       Recorder passes the digest through (P4-7 seam); ICD_RUNTIME v0.5 additive (digest
       schema); pointmass keeps the EXACT v0.3 key set (pin kept); TRACEABILITY
       PHY-UAV-013/033 → high. 5 tests test_sitl_health.py + recorder pin updated (2026-06-12)
-- [ ] P5-5 FCU-side hard fire interlock (decision 3): clearance token mirrored over coop_link;
-      FCU refuses WEAPON_RELEASE without valid token + clean CBIT inhibit_fire; release pulse
-      via HAL effector port; twins re-baselined
+- [x] P5-5 FCU-side hard fire interlock (decision 3): CLEARANCE_TOKEN (msg 10) mirrored on
+      accept + WEAPON_RELEASE (msg 11) over coop_link; FCU refuses release unless ARMED +
+      CBIT-clean + token matches the track inside `fcu.release_token_valid_s` (3.0 ==
+      CLEARANCE_VALID_S, cross-checked; freshness compared MC clock domain ONLY — the FCU
+      clock is boot-relative), success consumes the token (one token = one release) and
+      pulses the `effector` HAL port; refusals tallied by reason. Engine collects pulses
+      after the FCU loop (ORDERING §6 note) → `release_ack` MC mailbox; the shell STAGES
+      the app's FireRequest and publishes to the bus only on the matching ack, restoring
+      ammo + tallying `release_refused` on the 1.0 s NACK-by-timeout. Fire payload byte-
+      unchanged (twins hold as-is); e2e CI kill seeds and @slow floor survived the honest
+      transport (~2x link latency + 1 MC tick) UNCHANGED — no re-baseline needed. 8 tests
+      test_sitl_release.py (2026-06-12)
 - GATE: fault matrix 100% test-covered
 
 ### P6 — 6DOF threats + saturation (L; parallel after P1)

@@ -125,6 +125,12 @@ class InterceptorApp:
         for msg in self._in_clearance.drain():
             if msg.uav_id == self.uav_id:
                 self._fc.accept_clearance(msg, self._task)
+                if self._fc.clearance is msg:
+                    # Accepted: mirror the token down the wire so the
+                    # FCU hard interlock can correlate the release
+                    # (P5-5). Stamps stay in the MC clock domain.
+                    self._client.send_clearance_token(
+                        msg.track_id, msg.header.stamp)
         for msg in self._in_command.drain():
             if msg.uav_id == self.uav_id and msg.command == "rtb":
                 self._rtb_ordered = True
@@ -258,17 +264,27 @@ class InterceptorApp:
             # Keep pursuing, but the release chain is frozen: no new
             # requests, no token consumption, no release. Tokens age
             # out on their own freshness window (CLEARANCE_VALID_S);
-            # the FCU-side hard interlock arrives with P5-5.
+            # the FCU-side hard interlock (P5-5) backs this veto with
+            # its own token + CBIT validation on the other end.
             return
         action = self._fc.engage(
             t, self._task, track, tgt_pos,
             self.body.position, self.body.velocity,
-            self._out_request.post, self._out_fire.post)
+            self._out_request.post, self._fire_pub)
         if action == PURSUING:
             return
         self.mode = UavMode.ENGAGE
         if action == ABORT_TASK:
             self._task = None
+
+    def _fire_pub(self, msg) -> None:
+        """Release chain (P5-5, decision 3): the FireRequest is staged
+        with its EXACT legacy payload (the sitl twins pin
+        byte-equality) while the actual release is commanded through
+        the FCU hard interlock — the world-side shell publishes the
+        staged request only on the FCU's pulse ack."""
+        self._out_fire.post(msg)
+        self._client.send_weapon_release(msg.track_id)
 
     def _support_behaviour(self, track: Track) -> None:
         support_ids = [
