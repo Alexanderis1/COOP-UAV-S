@@ -122,3 +122,11 @@ if len(FAULTS) != len(_ROWS):                          # pragma: no cover
 def act_rank(action: str) -> int:
     """Priority rank of a degraded-mode action (higher wins)."""
     return _ACT_RANK[action]
+
+
+_BY_BIT = {row.bit: row.code for row in _ROWS}
+
+
+def word_names(word: int) -> list[str]:
+    """Decode a fault word to code names, bit order (UavHealth, P5-4)."""
+    return [_BY_BIT[b] for b in range(32) if word & (1 << b) and b in _BY_BIT]

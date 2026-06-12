@@ -659,7 +659,16 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       drifting estimate; @slow literal 5-minute PHY-UAV-011 window sustained; (3) interlock
       matrix: a shooter mid-engagement under EVERY fault kind with no token delivered → zero
       releases (never-self-authorize; token-in-hand veto = P5-1e tests) (2026-06-12)
-- [ ] P5-4 `UavHealth` ≥1 Hz to C2 + recorder + TRACEABILITY rows (PHY-UAV-013/033 → high)
+- [x] P5-4 `UavHealth` ≥1 Hz to C2 + recorder: digest dict {faults u32, codes, inhibit_fire,
+      inhibit_arming, degraded} on UavState.health at the app rate (10 Hz ≥ 1 Hz, same comms
+      layer as everything — no new topic needed, the P4-7 field carries it); merges the FCU
+      HEALTH word with an MC-side CbitEngine (LINK_C2_LOSS: quality <0.2 — the C2 radio is the
+      MC's, invisible to the FCU; inhibits release even with a token in hand — a clearance
+      nobody can re-confirm authorizes a stale geometry; veto resumes on link recovery, fresh
+      tokens release). mc/ fence allowlist += coopfc.cbit (flight-stack vocabulary, documented).
+      Recorder passes the digest through (P4-7 seam); ICD_RUNTIME v0.5 additive (digest
+      schema); pointmass keeps the EXACT v0.3 key set (pin kept); TRACEABILITY
+      PHY-UAV-013/033 → high. 5 tests test_sitl_health.py + recorder pin updated (2026-06-12)
 - [ ] P5-5 FCU-side hard fire interlock (decision 3): clearance token mirrored over coop_link;
       FCU refuses WEAPON_RELEASE without valid token + clean CBIT inhibit_fire; release pulse
       via HAL effector port; twins re-baselined
