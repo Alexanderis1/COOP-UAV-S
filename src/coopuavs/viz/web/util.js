@@ -60,6 +60,7 @@ export function esc(s) {
 // never call it over shared module-level geometries.
 export function disposeGroup(root) {
   root.traverse((o) => {
+    if (o.isInstancedMesh) o.dispose();      // instance attribute GPU buffers
     o.geometry?.dispose();
     if (!o.material) return;
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {

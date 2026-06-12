@@ -12,6 +12,8 @@ export const setW = (v, p) => v.set(p?.[0] || 0, p?.[2] || 0, -(p?.[1] || 0));
 
 const NIGHT_BG = new THREE.Color(0x05070c);
 const DAY_BG = new THREE.Color(0x1a2533);
+const SUN_LOW = new THREE.Color(0xffc78f);   // warm low sun
+const SUN_HIGH = new THREE.Color(0xfff4e2);  // near-white noon sun
 
 const TURRET_STATE_COLOR = {
   idle: 0x6b7a8f, slewing: 0xffd166, tracking: 0xff9a3d,
@@ -139,7 +141,7 @@ export class SceneView {
       this.zoneRaster = new THREE.Mesh(
         new THREE.PlaneGeometry(x1 - x0, y1 - y0),
         new THREE.MeshBasicMaterial({
-          map: tex, transparent: true, opacity: 0.34, depthWrite: false,
+          map: tex, transparent: true, opacity: 0.42, depthWrite: false,
         }));
       this.zoneRaster.rotation.x = -Math.PI / 2;
       this.zoneRaster.position.set((x0 + x1) / 2, -0.85, -(y0 + y1) / 2);
@@ -279,7 +281,7 @@ export class SceneView {
     this.amb.intensity = 0.16 + 0.5 * d * (1 - 0.3 * p);
     this.hemi.intensity = 0.22 + 0.55 * d * (1 - 0.35 * p);
     this.sun.intensity = 0.12 + 1.15 * d * (1 - 0.45 * p);
-    this.sun.color.setHex(0xffc78f).lerp(new THREE.Color(0xfff4e2), d);
+    this.sun.color.copy(SUN_LOW).lerp(SUN_HIGH, d);
     this._drawSky(d, p);
     const bg = NIGHT_BG.clone().lerp(DAY_BG, d);
     this.scene.background.copy(bg);

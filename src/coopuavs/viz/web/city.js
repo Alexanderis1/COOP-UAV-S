@@ -449,10 +449,13 @@ export class City {
   }
 
   // Rooftop HVAC boxes + water tanks on larger buildings (two draw calls).
+  // Buildings with a roof mark (hospital cross, school disc) are skipped so
+  // the HMI-MAP-007 semantics stay unobstructed.
   _roofClutter(buildings) {
     const units = [], tanks = [];
     buildings.forEach((b, bi) => {
       if (!(b.height >= 14)) return;
+      if (KIND_STYLE[b.kind]?.roofMark) return;
       const [x0, y0, x1, y1] = b.rect;
       const w = x1 - x0, d = y1 - y0;
       if (w < 24 || d < 24) return;
