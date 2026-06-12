@@ -171,9 +171,17 @@ class Channel:
         self._in_flight = 0
         self.sent = 0
         self.dropped = 0
+        # P5-2a jam seam (SIM-SIL-003 link fault): while jammed, sends
+        # are refused AND anything arriving is lost on the air — both
+        # tallied in ``dropped``. Default off: no behavior change.
+        self.jammed = False
 
     def send(self, frame: bytes, now: float) -> bool:
-        """Queue a frame; False = refused (in-flight budget exceeded)."""
+        """Queue a frame; False = refused (in-flight budget exceeded
+        or the link is jammed)."""
+        if self.jammed:
+            self.dropped += 1
+            return False
         n = len(frame)
         if self._in_flight + n > self.queue_max_bytes:
             self.dropped += 1
@@ -192,4 +200,7 @@ class Channel:
             _, frame = self._wire.popleft()
             self._in_flight -= len(frame)
             out.append(frame)
+        if self.jammed and out:
+            self.dropped += len(out)
+            return []
         return out

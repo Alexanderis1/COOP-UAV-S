@@ -631,11 +631,25 @@ CBIT RTL class > OFFBOARD_TIMEOUT.
       BEFORE/AFTER: e2e kill floors + energy-cycle pins passed UNCHANGED (no tactical
       re-baseline); re-pinned surfaces are harness-level only (synthetic hosts carry 5 A
       avionics load — armed flight at zero bus current was a harness fiction) (2026-06-12)
-- [ ] P5-2a sil injection seams: GPS denial/degraded + sensor dropout masks (hw devices),
-      motor fault mask (rotor thrust scale on u), coop_link jam (channel block), C2 link jam;
-      dedicated `faults/*` registry streams; no-fault scenarios bit-identical (pin)
-- [ ] P5-2b scenario `faults:` block parsing/validation → engine schedule; loud ValueError on
-      unknown keys (SIM-SIL-003)
+- [x] P5-2a sil injection seams (SIM-SIL-003): gps.set_denied (frames flow w/ FIX_NONE —
+      denial ≠ dead wire) + set_degraded (white-error scale on the SAME draws); imu
+      set_noise_scale; engine fault_sensor_dropout (dead wire: bank still draws, driver goes
+      stale), fault_gyro_stuck (fresh frames, frozen values), fault_motor (ESC-gain u-scale;
+      0.775 = flyable 40% class), fault_mc_link_jam (Channel.jammed: sends refused, arrivals
+      lost, tallied). NO fault consumes RNG (masks/transforms of existing streams — the
+      `faults/*` stream reservation stays for future stochastic faults); explicit-noop faults
+      bitwise-invisible + faulted run-twice bitwise (pins). Each kind detected end-to-end by
+      its CBIT code on a hovering engine; ESC_STALE (bit 23) ADDED to the dictionary — the
+      dropout matrix exposed that a dead telemetry bus blinds the battery monitor + SOC
+      counter with no code to say so. Jam pin honors the P3 first-reason contract
+      (OFFBOARD_TIMEOUT before LINK_LOSS escalation). C2-side jam deferred to the comms work
+      (P7-1) — the MC link is the P5 "link jam". 14 tests test_sitl_faults.py (2026-06-12)
+- [x] P5-2b scenario `faults:` block: list of timed windows {t, uav, kind, until?, params...}
+      → SitlEngine.schedule_fault (macro-boundary application, deterministic, no RNG);
+      structure validated loud in scenario._parse_faults (unknown kind/key/uav/missing
+      params), semantics in the engine (rotor range, sensor names, until>t); faults without
+      fidelity.fleet=sitl = build error; scenario-level e2e: SITL_SMALL + gps_denial on u1 →
+      GPS_LOSS raised on u1 only (2026-06-12)
 - [ ] P5-3 degraded-mode scenarios: motor-degraded→LAND no-CRITICAL-wreck; GPS-denied 5 min→
       DR bound+RTB; interlock holds under every injected fault (matrix test)
 - [ ] P5-4 `UavHealth` ≥1 Hz to C2 + recorder + TRACEABILITY rows (PHY-UAV-013/033 → high)

@@ -327,6 +327,7 @@ class FcuMonitors:
         eng.report("BARO_FAULT",
                    (fcu.baro_drv.stale or baro_bad > 0
                     or baro_rej >= BARO_REJ_MIN), now)
+        eng.report("ESC_STALE", fcu.esc_drv.stale, now)
         # MAG_FAULT itself is reported by the fast task (the direct
         # yaw-consistency check lives there); this window just feeds it.
 

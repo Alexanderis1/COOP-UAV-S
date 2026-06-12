@@ -107,6 +107,10 @@ _ROWS = (
     FaultSpec("PARAM_CRC",     20, CRIT, True,  0.00, True,  True,  ACT_NONE),
     FaultSpec("ALIGN_FAIL",    21, WARN, False, 0.00, True,  False, ACT_NONE),
     FaultSpec("WDOG_MISS",     22, WARN, True,  0.00, True,  False, ACT_NONE),
+    # Added during P5-2a: a dead ESC-telemetry bus blinds the battery
+    # monitor AND the SOC counter mid-flight (the plan's ~22-code list
+    # had no row for it; the dropout injection matrix exposed the gap).
+    FaultSpec("ESC_STALE",     23, WARN, False, 0.50, True,  False, ACT_NONE),
 )
 
 FAULTS: dict[str, FaultSpec] = {row.code: row for row in _ROWS}

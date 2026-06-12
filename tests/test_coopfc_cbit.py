@@ -58,6 +58,8 @@ EXPECTED_BITS = {
     "PARAM_CRC": 20,
     "ALIGN_FAIL": 21,
     "WDOG_MISS": 22,
+    "ESC_STALE": 23,     # added P5-2a: dead telemetry bus blinds the
+                         # battery monitor + SOC counter
 }
 
 
