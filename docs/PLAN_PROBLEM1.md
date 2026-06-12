@@ -338,8 +338,19 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       vel zero SS error calm + 5 m/s wind; integrator frozen-while-saturated white-box pin +
       2.5 s saturated-dash recovery; mixer analytic desat pins; run-twice bit-identical.
       14 tests `test_coopfc_control.py` (2026-06-12)
-- [ ] P3-6 `fcu.py` boot/PBIT/arming/modes + `battery_monitor`/failsafes: PBIT-blocks-arming,
-      setpoint-timeout→POS_HOLD, link-loss→RTL timeline, RTL home from 2 km under wind
+- [x] P3-6 `fcu.py` (sched-wired pipeline drivers→est_intake 400→est_update 50→batt→pbit→
+      nav 50→rate_mix 400; FCU-owned ParamTable; rate feedback = latest gyro − EKF bias) +
+      `control/position.py` P→vel_sp + `battery_monitor.py` (upward-latching NORMAL→LOW→CRIT,
+      1 s debounce). FSM BOOT(align, auto-retry on variance gate)→STANDBY(PBIT: align/stale/
+      EKF/no-GPS-fusion/battery/PARAM_CRC/sched-faults)→ARMED modes OFFBOARD/POS_HOLD/RTL/LAND;
+      failsafe priority BATT_CRIT→LAND > LINK_LOSS→RTL > BATT_LOW→RTL > OFFBOARD_TIMEOUT→
+      POS_HOLD, first reason latched; touchdown = altitude-floor of home datum (documented
+      bench placeholder until P4 ground). Pins: PBIT-blocks-arming + recovery; vibration
+      align retry; setpoint-timeout→POS_HOLD; link-loss→RTL tick-exact timeline; battery
+      debounce + LOW→RTL→CRIT→LAND + CRIT-beats-link-loss; disarmed actuators zero; RTL
+      integration flights through HAL+EKF+cascade vs real plant (perfect frames): 120 m fast,
+      2 km under 6 m/s crosswind `@slow` (41.9 s wall, lands <190 s, disarms). 10 tests
+      `test_coopfc_fcu.py` (2026-06-12)
 - [ ] P3-7 `link/coop_link.py`: framing/heartbeat/latency/bandwidth-queue determinism
 - [ ] P3-8 bench acceptance flights: hover RMS <0.15 m calm / <1.0 m in 8 m/s+Dryden; 200 m
       waypoint square cross-track <2 m; run-twice pins

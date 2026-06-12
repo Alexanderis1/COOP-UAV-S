@@ -1037,6 +1037,8 @@ models).
 | Velocity PI -> specific force -> attitude (thrust-direction flatness map, yaw-frame euler solve) | `control/velocity.py` | Mellinger & Kumar, *Minimum snap trajectory generation and control for quadrotors*, ICRA 2011 (thrust direction = desired body z); PX4 PositionControl structure. [standard reference] |
 | Quadratic thrust-curve command linearization `u = u_hover sqrt(\|f\|/g)` | `control/velocity.py` | T ~ omega^2 with omega ~ linear in command (quasi-static armature, P1 motor model); PX4 THR_MDL_FAC convention. [project knowledge] |
 | Quad-X mixer + sequential desaturation, priority roll/pitch > collective > yaw; per-axis directional saturation flags for rate-loop anti-windup | `control/mixer.py` | PX4 ControlAllocationSequentialDesaturation order [project knowledge, standard convention]; sign table derived from the `physics/multirotor.py` wrench equations (documented in the module docstring). |
+| Position P -> velocity setpoint cascade | `control/position.py` | PX4 PositionControl outer-loop structure. [standard reference] |
+| FCU failsafe conventions: battery LOW->RTL / CRITICAL->LAND upward-latching with debounce, link-loss->RTL, offboard setpoint-timeout->POS_HOLD, priority order | `fcu.py`, `battery_monitor.py` | PX4 commander/battery failsafe conventions [project knowledge]; priority order and timelines pinned by `tests/test_coopfc_fcu.py`. |
 
 ### Colored measurement errors and covariance honesty (the P3 EKF contract)
 

@@ -16,10 +16,11 @@ in docs/RESEARCH.md "P3 CoopFC flight stack".
 
 from coopuavs.coopfc.control.attitude import AttCtl, AttParams
 from coopuavs.coopfc.control.mixer import MixFlags, QuadXMixer
+from coopuavs.coopfc.control.position import PosCtl, PosParams
 from coopuavs.coopfc.control.rate import RateCtl, RateParams
 from coopuavs.coopfc.control.velocity import VelCtl, VelParams
 
 __all__ = [
-    "AttCtl", "AttParams", "MixFlags", "QuadXMixer",
+    "AttCtl", "AttParams", "MixFlags", "PosCtl", "PosParams", "QuadXMixer",
     "RateCtl", "RateParams", "VelCtl", "VelParams",
 ]
