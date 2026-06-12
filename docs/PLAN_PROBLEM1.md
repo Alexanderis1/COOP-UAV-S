@@ -351,7 +351,15 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       integration flights through HAL+EKF+cascade vs real plant (perfect frames): 120 m fast,
       2 km under 6 m/s crosswind `@slow` (41.9 s wall, lands <190 s, disarms). 10 tests
       `test_coopfc_fcu.py` (2026-06-12)
-- [ ] P3-7 `link/coop_link.py`: framing/heartbeat/latency/bandwidth-queue determinism
+- [x] P3-7 `link/coop_link.py`: MAVLink-shaped framing (sync|len u16|id u8|payload|crc32,
+      streaming decoder, corrupt frame costs exactly one frame + resync, bad_frames CBIT
+      tally); struct-packed msg registry (HEARTBEAT/ARM/DISARM/SET_MODE/VEL_SP/SET_HOME/
+      STATUS/NAV); Channel = pure-arithmetic FIFO wire (serialization 8n/bps behind previous
+      tx + fixed latency; bounded in-flight bytes, send REFUSED deterministically when over
+      budget). Pins: per-type round-trips, byte-at-a-time chunking, corruption+resync,
+      garbage skip, arrival times exact closed-form (not a tick early), back-to-back burst
+      spacing, backpressure refuse+drain, idle-wire no history, run-twice. 11 tests
+      `test_coopfc_link.py` (2026-06-12)
 - [ ] P3-8 bench acceptance flights: hover RMS <0.15 m calm / <1.0 m in 8 m/s+Dryden; 200 m
       waypoint square cross-track <2 m; run-twice pins
 - [ ] P3-9 `@oracle` ArduPilot SITL (WSL2) waypoint-square envelope comparison, procedure doc'd
