@@ -105,9 +105,6 @@ interceptors:
   - { id: hawk-4, home: [ 500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }
   - { id: hawk-5, home: [-2200.0, -1500.0, 400.0], effector: projectile, max_speed: 80.0 }
   - { id: hawk-6, home: [ 1700.0,   300.0, 400.0], effector: projectile, max_speed: 80.0 }
-  # slower net carriers — debris-friendly kills for low/slow targets
-  - { id: net-1,  home: [-100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
-  - { id: net-2,  home: [ 100.0, -2500.0, 400.0], effector: net, max_speed: 50.0 }
 
 # Ground anti-air gun turrets (PHY-TUR): effectors of last resort slaved to
 # the fused track picture and the same clearance interlock as the UAVs.
