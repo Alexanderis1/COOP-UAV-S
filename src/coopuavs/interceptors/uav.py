@@ -45,6 +45,11 @@ from . import cooperation, guidance
 from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
+# A blocking/herding wingman switches from holding its cutoff post to
+# engaging once the target closes inside this multiple of its effector range
+# — generous, because a fast target (jet OWA) must be committed to early
+# enough to turn and merge. This is what makes the cooperative relay convert.
+SUPPORT_ENGAGE_FACTOR = 6.0
 MIN_PK_TO_REQUEST = 0.25   # don't waste ammo on envelope-edge shots
 MIN_PK_TO_RELEASE = 0.15   # abort if geometry collapsed while clearing
 # A clearance token lost in transit must not deadlock the interlock
@@ -210,7 +215,7 @@ class InterceptorUav(Node):
         elif self._role == "shooter":
             self._shooter_behaviour(track, t)
         else:
-            self._support_behaviour(track)
+            self._support_behaviour(track, t)
 
         # Integrate own flight at the node period (sim-side physics stand-in).
         self.body.step(period)
@@ -302,9 +307,17 @@ class InterceptorUav(Node):
             )
         )
 
-    def _support_behaviour(self, track: Track) -> None:
+    def _support_behaviour(self, track: Track, t: float) -> None:
         """Cooperative wingman: cutoff post if the target outruns the
         shooter (relay interception), herding flank otherwise.
+
+        The relay only pays off if the blocker actually *fires* when the
+        target flies into it. Once the target is within engagement reach of
+        this wingman, it stops holding the post and engages exactly like a
+        shooter — this is how a team of slower interceptors defeats a faster
+        target (e.g. the jet OWA the assigned primary can never tail-chase):
+        the kill is made by whichever airframe the target flew into, not by
+        the out-run primary.
 
         The relay decision keys on the *shooter's* speed (can the assigned
         effector platform win the tail chase?), taken from its telemetry —
@@ -317,6 +330,13 @@ class InterceptorUav(Node):
         link, SIM-COM-001) would both fabricate that peer's reachability
         and shift which post *we* claim — two blockers converge on one
         post and the corridor gaps."""
+        # Relay close-out: the target has reached this blocker — engage it.
+        tgt_now = track.position + track.velocity * max(0.0, t - track.header.stamp)
+        if (float(np.linalg.norm(tgt_now - self.body.position))
+                < self.effector.max_range * SUPPORT_ENGAGE_FACTOR):
+            self._shooter_behaviour(track, t)
+            return
+
         support_ids = [
             uid for uid in self._task.support_ids
             if uid == self.uav_id or uid in self._peers

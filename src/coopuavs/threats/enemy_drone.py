@@ -66,7 +66,11 @@ THREAT_PROFILES: dict[ThreatClass, ThreatProfile] = {
         warhead=True, terminal_speed=105.0, weave_ampl=4.0,
     ),
     ThreatClass.OWA_JET: ThreatProfile(
-        speed=95.0, cruise_alt=2800.0, dive_range=4500.0, mass=200.0, rcs=0.6,
+        # Terminal dive begins ~2.8 km out (a ~45 deg dive from 2.8 km AGL),
+        # not 4.5 km: a jet Shahed cruises at ~95 m/s and only sprints to
+        # ~155 m/s in the terminal phase, leaving a real cruise-phase
+        # interception window instead of being uncatchable end-to-end.
+        speed=95.0, cruise_alt=2800.0, dive_range=2800.0, mass=200.0, rcs=0.6,
         warhead=True, terminal_speed=155.0,
     ),
     ThreatClass.FPV: ThreatProfile(
