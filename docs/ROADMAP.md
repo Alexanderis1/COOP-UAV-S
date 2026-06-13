@@ -5,13 +5,7 @@ the literature survey in [RESEARCH.md](RESEARCH.md).
 
 ## Phase 1 — Harden the baseline (post-hackathon weeks 1–2)
 
-- [ ] **IMM tracking** (CV + coordinated turn + dive models) — the CV
-      filter lags terminal dives and weave; biggest single accuracy win.
-      (RESEARCH.md §3, filterpy/Stone Soup.)
-- [ ] **Reactive evaders** — give FPV/loitering threats evasion policies
-      (dodge nearest interceptor, altitude drops) so herding pressure has
-      something real to push against; today herding only pre-positions a
-      second shooter.
+
 - [x] **Forward high-altitude CAP sentinels** (PHY-SNT-004) — pickets that
       stand up *already on station* above the ground radar's envelope and
       forward of the defended area, carrying a look-down airborne
@@ -20,10 +14,10 @@ the literature survey in [RESEARCH.md](RESEARCH.md).
       `scenarios/high_diver_raid.yaml`. Placement is still hand-tuned;
       auto-optimising picket geometry against historical axes is the
       remaining piece.
-- [ ] **Fast-interceptor tier** — the 100 m/s jet OWA is beyond an 80 m/s
+- [x] **Fast-interceptor tier** — the 100 m/s jet OWA is beyond an 80 m/s
       propeller interceptor by physics, as in reality. Add a small number
       of 150+ m/s interceptors with their own cost/availability budget.
-- [ ] **Metrics module** — per-run scorecards (attrition by class,
+- [x] **Metrics module** — per-run scorecards (attrition by class,
       time-to-intercept distributions, debris cost integral, ammo per
       kill), batch report generation; promote the 10-seed Monte-Carlo from
       ad-hoc script to `coopuavs batch` output.
@@ -38,7 +32,7 @@ Cooperation:
       (safe-fraction) area objective for manoeuvring evaders and for seeding
       the learned policy (RESEARCH.md §1: Garcia/Casbeer/Von Moll/Pachter).
       Remaining: iterative area-gradient contraction controller.
-- [ ] **Decentralised allocation (CBBA)** behind the existing
+- [x] **Decentralised allocation (CBBA)** behind the existing
       `allocate(...)` interface; degrade gracefully when the base station
       link drops — the doctrinal argument for UAV autonomy.
 - [x] **MARL benchmark** (MAPPO via a PettingZoo-shaped wrapper around the
