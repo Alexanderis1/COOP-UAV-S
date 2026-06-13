@@ -45,26 +45,33 @@ def test_heuristic_is_deterministic():
     assert a.target_weights == b.target_weights and a.k_shooter == b.k_shooter
 
 
-def test_heuristic_confirms_ambiguous_decoy():
-    d = HeuristicSupervisor().decide(sit([trk(1, p_decoy=0.6)]))
-    assert 1 in d.confirm_first
-    assert d.target_weights.get(1, 1.0) < 1.0
+def test_heuristic_confirms_mildly_ambiguous_track():
+    # In [0.45, 0.6): flag a sensor look, but do NOT defer or deprioritise —
+    # a real OWA sits here early and must still be engageable.
+    d = HeuristicSupervisor().decide(sit([trk(1, p_decoy=0.5)]))
+    assert 1 in d.confirm_first and 1 not in d.defer
 
 
-def test_heuristic_defers_lost_cause_when_scarce():
-    # One savable credible threat and one un-savable low-threat track, but
-    # only one shooter: the lost cause is deferred to free the shooter.
+def test_heuristic_defers_leaning_decoy():
+    # In [0.6, 0.85) and not urgent: withhold a shooter, let EO/IR resolve.
+    d = HeuristicSupervisor().decide(sit([trk(1, p_decoy=0.7, tti=60.0)]))
+    assert 1 in d.defer
+
+
+def test_heuristic_never_defers_credible_threat():
+    # The failure mode of the first tuning: a credible (p_decoy<0.6) track,
+    # even un-savable and low-value with scarce shooters, must not be deferred.
     s = sit([trk(1, savable=True, score=0.8),
-             trk(2, savable=False, score=0.2)], shooters=1)
+             trk(2, p_decoy=0.4, savable=False, score=0.2)], shooters=1)
     d = HeuristicSupervisor().decide(s)
-    assert 2 in d.defer and 1 not in d.defer
+    assert 2 not in d.defer and 1 not in d.defer
 
 
-def test_heuristic_keeps_lost_cause_when_capacity_spare():
-    s = sit([trk(1, savable=True, score=0.8),
-             trk(2, savable=False, score=0.2)], shooters=8)
-    d = HeuristicSupervisor().decide(s)
-    assert 2 not in d.defer
+def test_heuristic_defers_urgent_decoy_never():
+    # Even a leaning-decoy is engaged if it is about to impact (tti below the
+    # floor): better to spend a round than risk an armed misclassification.
+    d = HeuristicSupervisor().decide(sit([trk(1, p_decoy=0.7, tti=10.0)]))
+    assert 1 not in d.defer
 
 
 def test_heuristic_adds_depth_to_hard_savable_target():

@@ -164,52 +164,62 @@ class HeuristicSupervisor:
 
     def __init__(
         self,
-        confirm_decoy_band: tuple[float, float] = (0.45, 0.85),
+        confirm_lo: float = 0.45,
+        defer_lo: float = 0.6,
+        defer_hi: float = 0.85,
+        defer_min_tti: float = 20.0,
         depth_threat: float = 0.6,
-        scarce_margin: int = 0,
     ):
-        self.confirm_lo, self.confirm_hi = confirm_decoy_band
+        # Bands: [confirm_lo, defer_lo) earns a sensor look; [defer_lo,
+        # defer_hi) is leaning-decoy and is withheld; >= defer_hi is already
+        # hard-ignored by the allocator (DECOY_IGNORE_THRESHOLD).
+        self.confirm_lo = confirm_lo
+        self.defer_lo = defer_lo
+        self.defer_hi = defer_hi
+        self.defer_min_tti = defer_min_tti
         self.depth_threat = depth_threat
-        self.scarce_margin = scarce_margin
 
     def decide(self, situation: TacticalSituation) -> SupervisorDirective:
         d = SupervisorDirective()
-        credible = [s for s in situation.tracks if s.p_decoy < 0.85]
-        savable_credible = [s for s in credible if s.savable]
-        scarce = situation.n_available_shooters <= len(savable_credible) + self.scarce_margin
+        # Spare-capacity gauge keyed on *credible* (p_decoy < defer_lo) savable
+        # threats — depth is only spent when shooters outnumber them.
+        savable_credible = [
+            s for s in situation.tracks if s.p_decoy < self.defer_lo and s.savable
+        ]
+        scarce = situation.n_available_shooters <= len(savable_credible)
 
         for s in situation.tracks:
-            # Priority order — defer (strongest) > confirm-first > concentrate.
-            if scarce and (not s.savable) and s.threat_score < self.depth_threat:
-                # Lost cause while the fleet is overcommitted: defer so a
-                # savable threat gets the shooter instead.
+            # Leaning-decoy but not yet hard-ignored, and not urgent: withhold
+            # a shooter and let EO/IR resolve it. A track only ever crosses
+            # into this band once the sensors lean decoy — a real OWA sits
+            # near p_decoy 0.5 until resolved, so this never delays a credible
+            # threat (the failure mode that made the earlier tuning leak).
+            if (self.defer_lo <= s.p_decoy < self.defer_hi
+                    and s.time_to_impact > self.defer_min_tti):
                 d.defer.add(s.track_id)
                 continue
 
-            # Ambiguous decoy: earn a sensor ID before spending a shooter
-            # (deprioritise, don't hard-defer — a real threat still engages
-            # if nothing savable needs the shooter).
-            if self.confirm_lo <= s.p_decoy <= self.confirm_hi:
+            # Mildly ambiguous: flag a confirming sensor look (no deprioritise,
+            # no defer — confirming must not delay engaging a real threat).
+            if self.confirm_lo <= s.p_decoy < self.defer_lo:
                 d.confirm_first.add(s.track_id)
-                d.target_weights[s.track_id] = 0.5
-                continue
 
-            # Concentrate force on savable, urgent, high-value threats.
+            # Concentrate force on savable, high-value threats; a second
+            # shooter (depth) only on the hardest such target with spare
+            # capacity.
             if s.savable and s.threat_score >= self.depth_threat:
                 d.target_weights[s.track_id] = 1.4
-                # Depth (second shooter) only with genuine spare capacity and
-                # for the hardest savable targets (fast / late intercept).
                 if (not scarce
                         and s.best_intercept_s is not None
                         and s.best_intercept_s > 0.5 * s.time_to_impact):
                     d.k_shooter[s.track_id] = 2
 
-        n_def, n_conf, n_depth = len(d.defer), len(d.confirm_first), len(d.k_shooter)
         d.rationale = (
-            f"heuristic: {len(savable_credible)}/{len(credible)} credible savable, "
+            f"heuristic: {len(savable_credible)} credible savable, "
             f"shooters={situation.n_available_shooters} "
             f"({'scarce' if scarce else 'sufficient'}); "
-            f"defer={n_def} confirm_first={n_conf} depth={n_depth}"
+            f"defer={len(d.defer)} confirm_first={len(d.confirm_first)} "
+            f"depth={len(d.k_shooter)}"
         )
         return clamp_directive(d, {s.track_id for s in situation.tracks})
 

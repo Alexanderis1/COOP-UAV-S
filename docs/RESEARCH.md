@@ -917,3 +917,72 @@ A 6-week-shaped learning path for one engineer (parallelizable across teammates 
   ground truth.
 - One relevant MDPI paper (Electronics 12(4):829, ground risk estimation) is flagged
   **RETRACTED** on the publisher page — do not cite it.
+
+---
+
+## Appendix A — Threat & interceptor realism calibration (2026-06)
+
+Profiles in `coopuavs/threats/enemy_drone.py` were recalibrated to verified
+2025 open-source data on the Ukrainian theatre. Speeds are point values
+inside reported ranges; treat as scenario parameters.
+
+| Class | Verified real performance | Implemented |
+|---|---|---|
+| Shahed-136 / Geran-2 | cruise 180–210 km/h (50–58 m/s); 2025 profile cruises at **2.0–2.8 km AGL** and dives steeply (≤60°) | 53 m/s @ 2200 m, 105 m/s terminal dive |
+| Geran-3 (jet Shahed-238) | recorded cruise ~300–350 km/h (~85–97 m/s), max ~550–600 km/h (~155–167 m/s) | 95 m/s cruise, 155 m/s terminal sprint |
+| Lancet-3 loitering | cruise ~80–110 km/h (22–30 m/s), impact ~300 km/h (~83 m/s) | 28 m/s cruise, 83 m/s terminal |
+| FPV kamikaze | ~110–140 km/h typical, agile, low | 38 m/s cruise, 60 m/s dash |
+| Gerbera decoy | mirrors strategic OWA profile | mirrors OWA (53 m/s @ 2200 m) |
+| **Interceptor (Sting-class)** | **280–315 km/h (78–87 m/s)**, ~25 km range, $2.5k | 80 m/s (288 km/h) — unchanged |
+
+Sources (located 2026-06-12): Wikipedia *HESA Shahed 136*; Army Recognition
+& Ukrainska Pravda on jet Shahed-238/Geran-3; Euromaidan/Yahoo on the
+high-cruise-then-steep-dive tactic; Wikipedia *ZALA Lancet*; Wild Hornets
+*Sting* product page and dev.ua/Defender 315 km/h report.
+
+**Raid sizing (`scenarios/saturation_raid.yaml`).** Russian 2025 raids run
+100–810+ vehicles per *night nationwide* (records 728 on 9 Jul, 810 on 7 Sep
+2025; 5,438 in June 2025), 40–60% Gerbera decoys, over 10+ regions in pulses.
+For a single 144 km² city the concurrent load follows Little's law
+(L = arrival-rate × dwell; dwell ≈ 12 km ÷ 55 m/s ≈ 180 s): a heavy
+multi-axis saturation pulse puts ~15–30 vehicles airborne over/approaching
+the box at once, ~30–40 across the engagement. The scenario models 29
+vehicles (40% decoys) in four overlapping multi-axis waves.
+
+## Appendix B — Hybrid two-loop AI orchestrator
+
+The leakage-critical **fast loop** (weapon-target assignment,
+`c2/assignment.py`) stays a deterministic, auditable optimiser. A **slow
+loop** (`c2/supervisor.py`) runs above it at a few-second cadence and shapes
+how the fleet is spent.
+
+**Safety invariants.** (1) *Advise-only* — a `SupervisorDirective` may only
+re-weight, defer, confirm-first, or add engagement depth; it has no field
+that releases a weapon, and the deterministic ROE + clearance interlock keeps
+sole fire authority. `clamp_directive` projects any (model-produced)
+directive onto the safe envelope (known ids, bounded weights/depth) before
+use. (2) *Deterministic fallback* — `HeuristicSupervisor` is the reproducible
+reference policy used whenever the model is unavailable, slow, or malformed.
+
+**Open-LLM substrate (chosen path).** `LLMSupervisor` takes a `chat_fn`
+(prompt → completion) wired to an OpenAI-compatible server hosting a
+fine-tuned open-weight model (Llama/Qwen-class). Fine-tuning is two-stage:
+*Stage 1 (SFT)* imitates the heuristic teacher — `supervisor_dataset.py` and
+`scripts/export_supervisor_dataset.py` emit chat-format JSONL from seeded
+rollouts (the teacher is deterministic, so the dataset is reproducible).
+*Stage 2 (RL/preference)* optimises the true objective — minimise leaked
+threat value — by re-scoring candidate directives against replay outcomes.
+
+**Honest finding (saturation raid, 12 seeds).** The deterministic teacher is
+**Pareto-neutral** here: armed leakage and total kills match the greedy
+baseline (≈5.2 armed leakers, 12.5 kills /29) while marginally reducing decoy
+kills. The reason is diagnostic, not a defect: this raid is **capacity-bound,
+not scheduling-bound** — 12 interceptors cannot cover ~17 credible threats
+arriving in a compressed window, so no scheduler can conjure capacity. The
+first tuning actively *hurt* (deferring real OWAs that look decoy-like early,
++1 armed leaker); the shipped tuning keys deferral on decoy-confidence
+(0.6–0.85) so it never delays a credible threat. The scheduler's value
+appears where capacity ≈ demand (the regime where prioritisation decides
+outcomes) — and as the substrate the Stage-2 RL policy improves on. The
+larger leakage levers remain **forward CAP geometry** and **earlier EO/IR
+discrimination**, per the fleet-sizing sweep.
