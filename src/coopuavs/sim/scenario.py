@@ -36,6 +36,7 @@ from ..interceptors.uav import InterceptorUav, SitlShellUav
 from ..mc.fcu_client import FcuClient
 from ..perception.fusion import FusionNode
 from ..sensors.acoustic import AcousticSensor
+from ..sensors.airborne_radar import AirborneRadar
 from ..sensors.base import mounted
 from ..sensors.eo_ir import EoIrSensor
 from ..sensors.radar import Radar
@@ -58,7 +59,27 @@ SENSOR_TYPES = {
     "rf": RfSensor,
     "eo_ir": EoIrSensor,
     "acoustic": AcousticSensor,
+    "airborne_radar": AirborneRadar,
 }
+
+# Sentinel sensor payload (PHY-SNT-001..004): the sensors mounted on a
+# patrol platform (they ride the airframe truth via ``mounted``). A scenario
+# may override per-sentinel with a ``payload:`` list of sensor specs; the
+# default is the v0.1 EO/IR + passive RF. A forward CAP picket adds
+# ``airborne_radar`` for the long look-down air picture (scenarios/
+# high_diver_raid.yaml). Node names default to ``{prefix}-{uav_id}`` — the
+# prefixes preserve the historical ``eo-``/``rf-`` names (and thus the
+# per-sensor RNG streams), so existing sentinel scenarios stay reproducible.
+MOUNTED_SENSOR_TYPES = {
+    "eo_ir": EoIrSensor,
+    "rf": RfSensor,
+    "airborne_radar": AirborneRadar,
+}
+_PAYLOAD_PREFIX = {"eo_ir": "eo", "rf": "rf", "airborne_radar": "aewr"}
+DEFAULT_SENTINEL_PAYLOAD = [
+    {"type": "eo_ir", "max_range": 3000.0, "full_id_range": 1000.0},
+    {"type": "rf", "max_range": 8000.0},
+]
 
 # Default wave timing for parametric raids (overridable per class group).
 DEFAULT_FIRST_TIME = 10.0
@@ -192,10 +213,14 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         icfgs.append((u.pop("id"), _resolve_home(u, env),
                       u.pop("effector"), u))
     scfgs = []
+    sentinel_payloads: dict[str, list] = {}
     for s in cfg.get("sentinels", []):
         s = dict(s)
-        scfgs.append((s.pop("id"), _resolve_home(s, env),
-                      s.pop("orbit"), s))
+        sid = s.pop("id")
+        payload = s.pop("payload", None)
+        sentinel_payloads[sid] = (payload if payload is not None
+                                  else DEFAULT_SENTINEL_PAYLOAD)
+        scfgs.append((sid, _resolve_home(s, env), s.pop("orbit"), s))
 
     # Fleet fidelity (PLAN_PROBLEM1 P4-3 stage 2): in sitl mode the
     # tactical stack runs as mc/interceptor_app.py on a VirtualMCU inside
@@ -307,13 +332,20 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         comms.register_endpoint(uid, platform)
 
     # Mounted sentinel payloads (PHY-SNT-*) ride the airframe truth —
-    # the adapter in sitl mode, the legacy body otherwise.
+    # the adapter in sitl mode, the legacy body otherwise. Each sentinel's
+    # payload list (default EO/IR + RF) is mounted in order; a forward CAP
+    # picket carries an airborne look-down radar on top (PHY-SNT-004).
     for uid, platform in sent_platforms.items():
-        world.add_node(mounted(EoIrSensor)(
-            f"eo-{uid}", world, platform, max_range=3000.0,
-            full_id_range=1000.0))
-        world.add_node(mounted(RfSensor)(
-            f"rf-{uid}", world, platform, max_range=8000.0))
+        for spec in sentinel_payloads[uid]:
+            spec = dict(spec)
+            stype = spec.pop("type")
+            cls = MOUNTED_SENSOR_TYPES.get(stype)
+            if cls is None:
+                raise ValueError(
+                    f"sentinel '{uid}' payload: unknown sensor type {stype!r}; "
+                    f"one of {sorted(MOUNTED_SENSOR_TYPES)}")
+            name = spec.pop("name", None) or f"{_PAYLOAD_PREFIX[stype]}-{uid}"
+            world.add_node(mounted(cls)(name, world, platform, **spec))
 
     for s in cfg.get("sensors", []):
         s = dict(s)
@@ -335,12 +367,23 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     bs_cfg = dict(cfg.get("base_station", {}))
     roe = RoeConfig(**bs_cfg.pop("roe", {}))
+    # Weapon-target allocator (docs/MARL.md): classical by default, or a
+    # trained cooperation policy when the scenario names one
+    # (`base_station: {allocator: learned, policy: path/to/policy.pt}`).
+    alloc_spec = bs_cfg.pop("allocator", None)
+    policy_path = bs_cfg.pop("policy", None) or bs_cfg.pop("policy_path", None)
+    allocator = None
+    if policy_path is not None and alloc_spec is None:
+        alloc_spec = "learned"
+    if alloc_spec is not None:
+        from ..c2.learned_allocator import get_allocator
+        allocator = get_allocator(alloc_spec, policy_path)
     world.add_node(
         BaseStation(
             world.bus, env, world.debris_model,
             uav_speeds={uid: u.max_speed for uid, u in uavs.items()},
             uav_effectors={uid: u.effector.type.value for uid, u in uavs.items()},
-            roe_config=roe, **bs_cfg,
+            roe_config=roe, allocator=allocator, **bs_cfg,
         )
     )
 

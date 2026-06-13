@@ -30,7 +30,7 @@ from coopuavs.coopfc.cbit import CbitEngine
 from coopuavs.coopfc.cbit.dictionary import act_rank, word_names
 
 from ..core.messages import Header, UavMode, UavState
-from . import guidance
+from . import guidance, patrol
 from .fcu_client import SitlBody
 from .interceptor_app import (
     BATT_LOW_DEBOUNCE_S, C2_LINK_FLOOR, LOITER_ALT, LOW_BATTERY_RTB,
@@ -42,7 +42,12 @@ class SentinelApp:
     def __init__(self, clock, rng, ports, *, uav_id: str, home, orbit: dict,
                  fcu_client, max_speed: float = 30.0, max_accel: float = 10.0,
                  battery_minutes: float = 40.0, cruise_speed: float | None = None,
-                 turnaround_s: float = 90.0):
+                 turnaround_s: float = 90.0, start_on_station: bool = False):
+        # start_on_station is honoured in point-mass fidelity (SentinelUav);
+        # in sitl the SitlEngine spawns every airframe on its pad, so a CAP
+        # sentinel transits out under FCU control — the flag is accepted for
+        # config parity but the engine owns the spawn point.
+        del start_on_station
         self.clock = clock
         self.rng = rng
         self.ports = ports
@@ -65,6 +70,12 @@ class SentinelApp:
         self.orbit_radius = float(orbit.get("radius", 800.0))
         self.orbit_alt = float(orbit.get("alt", 350.0))
         self.orbit_speed = float(orbit.get("speed", min(25.0, max_speed)))
+        self.pattern = str(orbit.get("pattern", "circle"))
+        if self.pattern not in patrol.PATTERNS:
+            raise ValueError(
+                f"unknown patrol pattern {self.pattern!r}; one of {patrol.PATTERNS}")
+        self.orbit_heading = float(orbit.get("heading_deg", 0.0))
+        self.orbit_leg = float(orbit.get("leg", 0.0))
         # Deterministic starting phase from the id (crc32 is unsalted).
         self._angle = float(zlib.crc32(uav_id.encode()) % 360) * np.pi / 180.0
 
@@ -139,6 +150,9 @@ class SentinelApp:
     def _patrol(self, period: float) -> None:
         """Verbatim orbit guidance from interceptors/sentinel.py, flown
         on the NAV estimate."""
+        if self.pattern == "racetrack":
+            self._patrol_racetrack(period)
+            return
         on_station = abs(
             float(np.linalg.norm(self.body.position[:2] - self.orbit_center))
             - self.orbit_radius
@@ -157,6 +171,25 @@ class SentinelApp:
             self.orbit_center[1] + self.orbit_radius * np.cos(ang),
             self.orbit_alt,
         ])
+        self._fly_to(waypoint)
+
+    def _patrol_racetrack(self, period: float) -> None:
+        """Barrier-CAP variant (PHY-SNT-004), flown on the NAV estimate."""
+        offset = patrol.path_offset(
+            "racetrack", self.orbit_center, self.orbit_radius,
+            self.body.position[:2],
+            heading_deg=self.orbit_heading, leg=self.orbit_leg)
+        on_station = offset < 150.0 and abs(self.body.position[2] - self.orbit_alt) < 60.0
+        if on_station:
+            self.mode = UavMode.PATROL
+            length = patrol.loop_length("racetrack", self.orbit_radius, self.orbit_leg)
+            self._angle = (self._angle
+                           + 2.0 * np.pi * self.orbit_speed * period / length) % (2.0 * np.pi)
+        else:
+            self.mode = UavMode.TRANSIT
+        waypoint = patrol.orbit_waypoint(
+            "racetrack", self.orbit_center, self.orbit_radius, self.orbit_alt,
+            self._angle, heading_deg=self.orbit_heading, leg=self.orbit_leg)
         self._fly_to(waypoint)
 
     # -------------------------------------------------------------- helpers
