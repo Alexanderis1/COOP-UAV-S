@@ -130,11 +130,20 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     bs_cfg = dict(cfg.get("base_station", {}))
     roe = RoeConfig(**bs_cfg.pop("roe", {}))
+    # Optional slow-loop AI supervisor (advise-only). YAML selects the
+    # deterministic reference policy; an LLM-backed supervisor is injected
+    # programmatically (it needs a model endpoint) — see docs/RESEARCH.md.
+    sup_name = bs_cfg.pop("supervisor", None)
+    supervisor = None
+    if sup_name in ("heuristic", "ai", True):
+        from ..c2.supervisor import HeuristicSupervisor
+        supervisor = HeuristicSupervisor()
     world.add_node(
         BaseStation(
             world.bus, env, world.debris_model,
             uav_speeds={uid: u.max_speed for uid, u in uavs.items()},
-            roe_config=roe, **bs_cfg,
+            roe_config=roe, supervisor=supervisor, log_event=world.log_event,
+            **bs_cfg,
         )
     )
 

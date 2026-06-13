@@ -46,6 +46,7 @@ def allocate(
     denied_tracks: set[int] = frozenset(),
     incumbents: dict[int, str] | None = None,
     task_ids: dict[tuple[int, str], int] | None = None,
+    directive: "object | None" = None,
 ) -> list[EngagementTask]:
     """``task_ids`` is the caller-owned registry mapping a (track, shooter)
     pairing to its task id. A pairing keeps its id across planning cycles —
@@ -54,15 +55,31 @@ def allocate(
     would silently break."""
     incumbents = incumbents or {}
     task_ids = task_ids if task_ids is not None else {}
+    # The optional slow-loop supervisor directive (advise-only): it may
+    # re-weight, defer, confirm-first, or request engagement depth, but it
+    # reaches allocation only as ordering and tasking — never as clearance.
+    deferred = set(getattr(directive, "defer", ()) or ())
+    confirm_first = set(getattr(directive, "confirm_first", ()) or ())
+    weights = getattr(directive, "target_weights", {}) or {}
+    k_shooter = getattr(directive, "k_shooter", {}) or {}
+
+    def eff_weight(tid: int) -> float:
+        w = float(weights.get(tid, 1.0))
+        if tid in confirm_first and tid not in weights:
+            w *= 0.5            # earn a sensor ID before committing a shooter
+        return w
+
     engage = [
         a for a in assessments
         if a.track_id in tracks
         and a.track_id not in denied_tracks
+        and a.track_id not in deferred
         and tracks[a.track_id].p_decoy < DECOY_IGNORE_THRESHOLD
     ]
-    engage.sort(key=lambda a: a.threat_score, reverse=True)
+    engage.sort(key=lambda a: a.threat_score * eff_weight(a.track_id), reverse=True)
     available = {u.uav_id: u for u in uavs}
     tasks: list[EngagementTask] = []
+    catchable_shooters: dict[int, str] = {}   # track -> primary shooter (for depth)
 
     for idx, a in enumerate(engage):
         if not available:
@@ -72,6 +89,8 @@ def allocate(
         shooter_id, t_int = _best_shooter(trk, a, available, uav_speeds, incumbents)
         shooter_speed = uav_speeds.get(shooter_id, 30.0)
         del available[shooter_id]
+        if t_int is not None:
+            catchable_shooters[a.track_id] = shooter_id
 
         kill_box_xy = risk_map.nearest_safe_cell(trk.position[0], trk.position[1])
         pairing = (a.track_id, shooter_id)
@@ -107,6 +126,36 @@ def allocate(
                 del available[u.uav_id]
 
         tasks.append(task)
+
+    # Depth pass (shoot-look-shoot): a hard, savable, high-value target the
+    # supervisor flagged for k>=2 gets a second independent shooter from
+    # whatever capacity is left after every other track has its primary. Each
+    # extra shooter is a normal task and still passes the ROE per shot.
+    for tid, k in sorted(k_shooter.items(), key=lambda kv: -tracks[kv[0]].speed
+                         if kv[0] in tracks else 0.0):
+        if not available or k < 2 or tid not in catchable_shooters or tid not in tracks:
+            continue
+        trk = tracks[tid]
+        for _ in range(k - 1):
+            if not available:
+                break
+            a = next((x for x in engage if x.track_id == tid), None)
+            extra_id, t_int = _best_shooter(trk, a, available, uav_speeds, incumbents)
+            if extra_id is None or t_int is None:
+                break              # no remaining UAV can actually catch it
+            del available[extra_id]
+            kill_box_xy = risk_map.nearest_safe_cell(trk.position[0], trk.position[1])
+            pairing = (tid, extra_id)
+            if pairing not in task_ids:
+                task_ids[pairing] = max(task_ids.values(), default=0) + 1
+            tasks.append(EngagementTask(
+                header=Header(stamp=t),
+                task_id=task_ids[pairing],
+                track_id=tid,
+                shooter_id=extra_id,
+                desired_kill_box=np.array([kill_box_xy[0], kill_box_xy[1], 0.0]),
+                priority=a.threat_score if a else trk.speed,
+            ))
 
     return tasks
 

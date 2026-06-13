@@ -35,10 +35,12 @@ from ..core.messages import (
 )
 from ..core.node import Node
 from ..sim.environment import Environment
+from ..interceptors.guidance import intercept_time
 from ..interceptors.uav import LOW_BATTERY_RTB
 from ..risk.debris import DebrisModel
 from . import assignment, threat_evaluation
 from .roe import DENIAL_TTL_S, RoeConfig, RulesOfEngagement
+from .supervisor import SupervisorPolicy, TacticalSituation, TrackSituation
 
 TASKS_TOPIC = "engagement/tasks"
 ROE_TOPIC = "c2/roe_evaluation"
@@ -64,11 +66,23 @@ class BaseStation(Node):
         uav_speeds: dict[str, float],
         rate_hz: float = 1.0,
         roe_config: RoeConfig | None = None,
+        supervisor: SupervisorPolicy | None = None,
+        supervisor_period_s: float = 3.0,
+        log_event=None,
     ):
         super().__init__("base_station", bus, rate_hz=rate_hz)
         self.env = env
         self.uav_speeds = uav_speeds
         self.roe = RulesOfEngagement(env.risk_map, debris, roe_config)
+        # Slow-loop AI supervisor (advise-only): None -> the C2 runs the
+        # deterministic fast loop exactly as before. The directive only
+        # shapes allocation; the ROE/clearance interlock is untouched.
+        self.supervisor = supervisor
+        self.supervisor_period_s = supervisor_period_s
+        self._directive = None
+        self._next_supervise = 0.0
+        self._log = log_event or (lambda *a, **k: None)
+        self._roe_cap = (roe_config or RoeConfig()).max_expected_collateral
 
         self._tracks: dict[int, object] = {}
         self._assessments: dict[int, ThreatAssessment] = {}
@@ -155,6 +169,17 @@ class BaseStation(Node):
             and t - u.header.stamp <= UAV_STATE_STALE_S
         ]
         denied = {tid for tid, t0 in self._denied.items() if t - t0 < DENIAL_TTL_S}
+
+        # Slow loop: refresh the supervisor directive at its own cadence and
+        # carry it between ticks. A stale id simply no longer matches a live
+        # track, so a held directive can only ever shape, never mis-fire.
+        if self.supervisor is not None and t >= self._next_supervise:
+            self._next_supervise = t + self.supervisor_period_s
+            situation = self._build_situation(t, live, available, denied)
+            self._directive = self.supervisor.decide(situation)
+            self._log("supervisor", t=round(t, 2),
+                      rationale=getattr(self._directive, "rationale", ""))
+
         tasks = assignment.allocate(
             list(self._assessments.values()),
             live,
@@ -165,6 +190,7 @@ class BaseStation(Node):
             denied_tracks=denied,
             incumbents=self._shooters,
             task_ids=self._task_ids,
+            directive=self._directive,
         )
         self._shooters = {task.track_id: task.shooter_id for task in tasks}
         self._task_ids = {
@@ -172,3 +198,36 @@ class BaseStation(Node):
             if pairing[0] in live
         }
         self._tasks_pub.publish(tasks)
+
+    # -- supervisor situation (fused estimates only, never ground truth) -------
+
+    def _build_situation(self, t, live, available, denied) -> TacticalSituation:
+        speeds = [self.uav_speeds.get(u.uav_id, 30.0) for u in available]
+        rows: list[TrackSituation] = []
+        for tid, trk in live.items():
+            a = self._assessments.get(tid)
+            if a is None:
+                continue
+            # Savability: can any ready shooter reach an intercept solution
+            # comfortably before the predicted impact?
+            best = None
+            for u, sp in zip(available, speeds):
+                ti = intercept_time(trk.position - u.position, trk.velocity, sp)
+                if ti is not None and (best is None or ti < best):
+                    best = ti
+            savable = bool(best is not None and best + 5.0 < a.time_to_impact)
+            cls = (max(trk.class_belief, key=trk.class_belief.get).value
+                   if getattr(trk, "class_belief", None) else "unknown")
+            rows.append(TrackSituation(
+                track_id=int(tid), threat_class=cls, p_decoy=float(trk.p_decoy),
+                speed=float(trk.speed), threat_score=float(a.threat_score),
+                time_to_impact=float(a.time_to_impact), savable=savable,
+                best_intercept_s=(float(best) if best is not None else None),
+                impact_zone=a.impact_zone.name,
+            ))
+        return TacticalSituation(
+            t=t, tracks=rows, n_available_shooters=len(available),
+            inventory_rounds=sum(u.ammo for u in available),
+            leakers_so_far=0, decoy_shots_so_far=0,
+            roe_collateral_cap=self._roe_cap,
+        )
