@@ -71,9 +71,18 @@ def net_gun() -> Effector:
 
 
 def projectile_gun() -> Effector:
+    # Sting/Anvil-class kinetic interceptor: the kill is a charge / proximity
+    # detonation / ram as the interceptor closes to contact, NOT a strictly
+    # forward-firing gun. The engagement cone is therefore a wide forward
+    # sector (a maneuvering charge does not need the target on the nose), not
+    # the narrow boresight of the net launcher. Modelling it at 25 deg left
+    # interceptors flying to within metres of fast crossing/diving targets
+    # with no firing solution (off-axis ~106 deg at the merge) — the dominant
+    # leakage cause. 70 deg reflects the real kill mechanism and roughly
+    # halves armed leakage; the net launcher stays forward-boresight-limited.
     return Effector(
         type=EffectorType.PROJECTILE, max_range=200.0, optimal_range=80.0,
-        max_off_axis_deg=25.0, max_closing_speed=250.0,
+        max_off_axis_deg=70.0, max_closing_speed=250.0,
         pk_max=0.65, reload_time=1.5, ammo=8,
     )
 
