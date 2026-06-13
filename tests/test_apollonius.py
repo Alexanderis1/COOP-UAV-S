@@ -68,7 +68,9 @@ def test_altitude_gap_reduces_reachability():
     """A blocker forced to climb to the corridor meets the target deeper
     down-corridor than a co-altitude one (3D ranges). Use a faster pursuer so
     both can rendezvous and the altitude penalty shows as a later meeting."""
-    E = np.array([0.0, 3000.0, 3000.0]); u = np.array([0.0, -1.0, 0.0]); v_e = 100.0
+    E = np.array([0.0, 3000.0, 3000.0])
+    u = np.array([0.0, -1.0, 0.0])
+    v_e = 100.0
     low = np.array([0.0, 1500.0, 200.0])
     co_alt = np.array([0.0, 1500.0, 3000.0])
     s_low = apollonius.intercept_depth(E, u, low, v_e / 150.0, 6000.0)
