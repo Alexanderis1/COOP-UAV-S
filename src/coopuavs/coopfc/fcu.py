@@ -58,7 +58,7 @@ from coopuavs.coopfc.estimation.alignment import Aligner
 from coopuavs.coopfc.estimation.ekf import Ekf, EkfParams
 from coopuavs.coopfc.params import ParamTable
 from coopuavs.coopfc.sched import Scheduler
-from coopuavs.coopfc.soc import SocEstimator, SocParams
+from coopuavs.coopfc.soc import SocEstimator, SocParams, sag_anomaly
 
 TICK_HZ = 800
 
@@ -370,8 +370,11 @@ class Fcu:
             ok, why = False, "NO_TOKEN"
         elif self._release_token[0] != int(track_id):
             ok, why = False, "TOKEN_MISMATCH"
-        elif (stamp - self._release_token[1]
-                > self.params.get("fcu.release_token_valid_s")):
+        elif not (0.0 <= stamp - self._release_token[1]
+                  <= self.params.get("fcu.release_token_valid_s")):
+            # Outside the freshness window in EITHER direction: a release
+            # stamped before its token is a clock/replay anomaly, never a
+            # valid release, and a hard interlock rejects it.
             ok, why = False, "TOKEN_STALE"
         else:
             ok, why = True, ""
@@ -456,9 +459,17 @@ class Fcu:
         if self._sub_esc.updated:
             msg = self._sub_esc.read()
             self.soc_est.update(msg.stamp, msg.v_bus, msg.i_bus)
+            # Same-cycle sag test for the veto: the CBIT BATT_SAG_ANOM
+            # word is computed later in the tick (cbit_fast) and would
+            # be one cycle stale here, delaying the failsafe on a dying
+            # pack. The latched annunciation still debounces the same
+            # condition for telemetry.
+            sag_anom, _ = sag_anomaly(
+                self.soc_est.soc, msg.v_bus, msg.i_bus, self.soc_est.v1,
+                self.params.get("fcu.batt_cells"),
+                self.params.get("fcu.batt_r0"))
             self.batt.update(now, msg.v_bus, soc=self.soc_est.soc,
-                             i_bus=msg.i_bus,
-                             sag_anom=self.cbit.raised("BATT_SAG_ANOM"))
+                             i_bus=msg.i_bus, sag_anom=sag_anom)
 
     def battery_fraction(self) -> float:
         """Telemetry fraction (STATUS batt_frac): the real coulomb SOC

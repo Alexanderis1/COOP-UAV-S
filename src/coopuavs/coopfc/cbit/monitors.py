@@ -35,7 +35,7 @@ import math
 from coopuavs.coopfc.battery_monitor import CRITICAL, LOW
 from coopuavs.coopfc.core import vec
 from coopuavs.coopfc.estimation.alignment import mag_yaw
-from coopuavs.coopfc.soc import ocv_v_cell
+from coopuavs.coopfc.soc import sag_anomaly
 
 from .engine import CbitEngine
 
@@ -108,11 +108,8 @@ SAT_STREAK_TICKS = 8
 # this — taps carry sigma 0.005 + lsb 0.01, so 80 mV is ~8x the noise
 # floor and ~1/3 of a healthy pack's full usable OCV span.
 CELL_SPREAD_V = 0.08
-# BATT_SAG_ANOM: measured bus volts below the SOC-implied expectation
-# OCV(soc) - I*(r0 + r1) by more than this margin per cell (the RC
-# branch lags toward I*r1 — using the settled value over-predicts sag
-# during load transients, which only makes the monitor conservative).
-SAG_MARGIN_V_CELL = 0.10
+# BATT_SAG_ANOM threshold and the sag test itself now live in soc.py
+# (shared by the batt_mon veto and this annunciation).
 # Watchdog cross-check.
 WDOG_FAST_MIN = 45         # fast fires per slow period (nominal 50)
 WDOG_SLOW_AGE_S = 2.5      # fast-side bound on slow-task recency
@@ -290,19 +287,14 @@ class FcuMonitors:
         if soc is None:
             return
         p = self.fcu.params.get
-        cells = p("fcu.batt_cells")
-        # Full ECM expectation incl. the tracked RC relaxation (the
-        # estimator integrates v1 from every frame; batt_mon runs before
-        # cbit_fast, sched order): the settled-sag shortcut i*(r0+r1)
-        # false-fired for ~3*tau1 after every sustained load DECREASE
-        # (dash -> hover), latching a fault that then disabled the SOC
-        # veto for the rest of the flight.
-        expected = (ocv_v_cell(soc) * cells
-                    - msg.i_bus * p("fcu.batt_r0") - self.fcu.soc_est.v1)
-        anom = msg.v_bus < expected - SAG_MARGIN_V_CELL * cells
-        eng.report("BATT_SAG_ANOM", anom, now,
-                   detail=f"{(expected - msg.v_bus) / cells:.2f} V/cell"
-                   if anom else "")
+        # Annunciation of the same instantaneous test the battery-failsafe
+        # veto reads in batt_mon (shared sag_anomaly): the engine debounces
+        # it here into the latched BATT_SAG_ANOM word. Tracked-v1 ECM
+        # expectation, so a post-dash hover relaxation reads no anomaly.
+        anom, detail = sag_anomaly(
+            soc, msg.v_bus, msg.i_bus, self.fcu.soc_est.v1,
+            p("fcu.batt_cells"), p("fcu.batt_r0"))
+        eng.report("BATT_SAG_ANOM", anom, now, detail=detail)
 
     # ------------------------------------------------------------- 1 Hz
 

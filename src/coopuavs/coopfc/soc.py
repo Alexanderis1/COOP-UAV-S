@@ -56,6 +56,36 @@ def ocv_v_cell(soc: float) -> float:
     return OCV_V[-1]
 
 
+# Terminal voltage may sag this far per cell below the ECM expectation
+# before the sag is "anomalous" — i.e. unexplained by I*R0 and the
+# tracked RC relaxation, so the coulomb SOC itself is impeached.
+SAG_MARGIN_V_CELL = 0.10
+
+
+def sag_anomaly(
+    soc: float | None, v_bus: float, i_bus: float, v1: float,
+    cells: int, r0: float, margin: float = SAG_MARGIN_V_CELL,
+) -> tuple[bool, str]:
+    """Is the loaded terminal voltage sagging below what the pack ECM can
+    explain? ``expected = OCV(soc)*cells - I*R0 - v1`` is the full ECM
+    prediction (the tracked RC relaxation ``v1`` keeps a post-dash hover
+    from reading anomalous); a deficit beyond ``margin`` per cell means
+    the sag is real charge loss and the coulomb estimate is suspect.
+
+    Pure function of the *current* frame: the CBIT engine debounces this
+    into the latched BATT_SAG_ANOM annunciation, while the battery-
+    failsafe veto reads it the same cycle (a dying pack with a stale
+    coulomb count must not wait out the annunciation debounce before the
+    voltage evidence is allowed to rule). Returns ``(False, "")`` for an
+    unseeded estimator — no SOC story to contradict."""
+    if soc is None:
+        return False, ""
+    deficit = (ocv_v_cell(soc) * cells - i_bus * r0 - v1) - v_bus
+    if deficit > margin * cells:
+        return True, f"{deficit / cells:.2f} V/cell"
+    return False, ""
+
+
 class SocParams(NamedTuple):
     capacity_ah: float = 16.0
     cells: int = 12
