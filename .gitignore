@@ -7,3 +7,9 @@ runs/
 build/
 dist/
 .claude/
+
+# Pitch deck — built artifacts (regenerate with scripts/build_deck.py); the
+# deck itself stays out of the repo. ~$* are transient MS Office lock files.
+*.pptx
+~$*
+deck_preview/
