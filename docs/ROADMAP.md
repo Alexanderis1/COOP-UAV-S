@@ -31,9 +31,13 @@ the literature survey in [RESEARCH.md](RESEARCH.md).
 ## Phase 2 — Deepen the two innovation pillars (weeks 3–6)
 
 Cooperation:
-- [ ] **Apollonius-circle containment** proper: escape-set computation and
-      area-minimising blocker placement against *reactive* evaders
-      (RESEARCH.md §1: Garcia/Casbeer/Von Moll/Pachter line of work).
+- [x] **Apollonius-circle containment** (`mc/apollonius.py`): exact
+      closed-form Apollonius rendezvous now drives the cooperative blocker
+      relay (`cooperation.cutoff_points`), replacing the v0.1 time-stepping
+      search; plus the game-theoretic containment arc and an escape-set
+      (safe-fraction) area objective for manoeuvring evaders and for seeding
+      the learned policy (RESEARCH.md §1: Garcia/Casbeer/Von Moll/Pachter).
+      Remaining: iterative area-gradient contraction controller.
 - [ ] **Decentralised allocation (CBBA)** behind the existing
       `allocate(...)` interface; degrade gracefully when the base station
       link drops — the doctrinal argument for UAV autonomy.
