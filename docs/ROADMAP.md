@@ -78,9 +78,6 @@ Risk-aware engagement:
 ## Known limitations of v0.1 (honest list)
 
 - Constant-velocity tracker lags manoeuvres (mitigated by onboard seeker).
-- Enemy drones do not react to interceptors; herding is therefore
-  positioning, not coercion.
-- Point-mass flight dynamics; no wind, weather, or terrain occlusion.
 - Effector Pk surfaces are plausible inventions, not measured data — no
   public Pk data exists for any C-UAS interceptor (RESEARCH.md §5).
 - Battery model is a linear drain; no recovery/rearm cycle (UAVs RTB and
