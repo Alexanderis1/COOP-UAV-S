@@ -94,21 +94,27 @@ sensors:
   - { type: acoustic, name: ac-nw, position: [-3500.0,  3000.0, 5.0] }
   - { type: acoustic, name: ac-ne, position: [ 3000.0,  3000.0, 5.0] }
 
-# 12 Sting-class interceptors (~80 m/s, 288 km/h) on a forward picket arc
-# straddling the N / NW / NE approach corridors at cruise altitude.
+# 16 Sting-class interceptors (~80 m/s, 288 km/h) on a forward picket arc at
+# 2400 m AGL — high enough to meet high-cruising Shaheds (2200 m) and engage
+# the jet OWA (2800 m) in its cruise phase before the terminal dive, instead
+# of being overflown by a fast target the lower picket could not climb to.
 interceptors:
-  - { id: hawk-1,  home: [-3200.0, 2400.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-2,  home: [-2400.0, 2800.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-3,  home: [-1600.0, 3100.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-4,  home: [ -800.0, 3300.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-5,  home: [    0.0, 3400.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-6,  home: [  800.0, 3300.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-7,  home: [ 1600.0, 3100.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-8,  home: [ 2400.0, 2800.0, 1800.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-9,  home: [-3000.0, 1200.0, 1500.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-10, home: [ 3000.0, 1200.0, 1500.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-11, home: [-1000.0, 2000.0, 1600.0], effector: projectile, max_speed: 80.0 }
-  - { id: hawk-12, home: [ 1000.0, 2000.0, 1600.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-1,  home: [-3400.0, 2726.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-2,  home: [-2947.0, 2856.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-3,  home: [-2493.0, 2973.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-4,  home: [-2040.0, 3077.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-5,  home: [-1587.0, 3162.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-6,  home: [-1133.0, 3229.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-7,  home: [ -680.0, 3274.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-8,  home: [ -227.0, 3297.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-9,  home: [  227.0, 3297.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-10, home: [  680.0, 3274.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-11, home: [ 1133.0, 3229.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-12, home: [ 1587.0, 3162.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-13, home: [ 2040.0, 3077.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-14, home: [ 2493.0, 2973.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-15, home: [ 2947.0, 2856.0, 2400.0], effector: projectile, max_speed: 80.0 }
+  - { id: hawk-16, home: [ 3400.0, 2726.0, 2400.0], effector: projectile, max_speed: 80.0 }
 
 turrets:
   - { id: turret-base,   position: [0.0, -2600.0, 5.0] }
