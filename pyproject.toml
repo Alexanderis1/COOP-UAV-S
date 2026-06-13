@@ -18,6 +18,16 @@ dependencies = [
 [project.optional-dependencies]
 viz = ["websockets>=14.0"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
+# Learned cooperation policy (docs/MARL.md). torch is the only hard
+# requirement to train; gymnasium/pettingzoo provide the formal spaces and
+# the API-conformance test, tensorboard optional logging — all degrade
+# gracefully if absent. CPU wheels are fine (the bottleneck is env stepping).
+train = [
+    "torch>=2.2",
+    "gymnasium>=0.29",
+    "pettingzoo>=1.24",
+    "tensorboard>=2.16",
+]
 
 [project.scripts]
 coopuavs = "coopuavs.cli:main"

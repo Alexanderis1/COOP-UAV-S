@@ -87,6 +87,38 @@ def main(argv: list[str] | None = None) -> None:
     city_p.add_argument("-o", "--output", type=Path,
                         default=Path("scenarios/urban_raid.yaml"))
 
+    train_p = sub.add_parser(
+        "train",
+        help="train the learned cooperation (WTA) policy with MAPPO "
+             "(requires the [train] extra: pip install -e '.[train]')")
+    train_p.add_argument("scenario", type=Path, nargs="?",
+                         default=Path("scenarios/high_diver_raid.yaml"))
+    train_p.add_argument("--steps", type=int, default=2_000_000,
+                         help="total environment steps (ignored once --minutes elapses)")
+    train_p.add_argument("--minutes", type=float, default=None,
+                         help="wall-clock training budget; stops and checkpoints "
+                              "when reached (use for fixed-time runs, e.g. Colab)")
+    train_p.add_argument("--n-envs", type=int, default=8,
+                         help="parallel env workers (≈ cores−2 on the box)")
+    train_p.add_argument("--rollout", type=int, default=64, help="steps/rollout")
+    train_p.add_argument("--horizon", type=int, default=220, help="episode length")
+    train_p.add_argument("--lr", type=float, default=3e-4)
+    train_p.add_argument("--seed", type=int, default=0)
+    train_p.add_argument("--out", type=Path, default=Path("runs/marl"))
+    train_p.add_argument("--sync", action="store_true",
+                         help="single-process envs (debug; default multiprocess)")
+    train_p.add_argument("--no-randomize", action="store_true",
+                         help="train on the fixed scenario raid, not randomised")
+
+    eval_p = sub.add_parser(
+        "eval",
+        help="A/B a trained policy vs the classical allocator over a seed sweep")
+    eval_p.add_argument("scenario", type=Path, nargs="?",
+                        default=Path("scenarios/high_diver_raid.yaml"))
+    eval_p.add_argument("--policy", type=Path, required=True,
+                        help="trained policy checkpoint (policy.pt)")
+    eval_p.add_argument("-n", "--runs", type=_positive_int, default=10)
+
     args = parser.parse_args(argv)
     if args.command == "run":
         _cmd_run(args)
@@ -99,6 +131,10 @@ def main(argv: list[str] | None = None) -> None:
         from .sim import citygen
         path = citygen.write_yaml(citygen.generate(args.seed), args.output)
         print(f"scenario written: {path}")
+    elif args.command == "train":
+        _cmd_train(args)
+    elif args.command == "eval":
+        _cmd_eval(args)
 
 
 def _cmd_run(args) -> None:
@@ -122,6 +158,33 @@ def _cmd_run(args) -> None:
     if not args.headless:
         from .viz.server import serve_replay
         serve_replay(path, port=args.port, host=args.host)
+
+
+def _cmd_train(args) -> None:
+    from .rl.mappo import MappoConfig, train
+    cfg = MappoConfig(
+        scenario=str(args.scenario), total_steps=args.steps, n_envs=args.n_envs,
+        rollout_steps=args.rollout, horizon=args.horizon, lr=args.lr,
+        seed=args.seed, out_dir=str(args.out), subproc=not args.sync,
+        randomize=not args.no_randomize,
+        time_budget_s=(args.minutes * 60.0 if args.minutes else None))
+    budget = f"{args.minutes:g} min" if args.minutes else f"{args.steps} steps"
+    print(f"training MAPPO on {args.scenario} -> {args.out} "
+          f"({args.n_envs} envs, budget: {budget})")
+    train(cfg)
+    print(f"policy written: {args.out / 'policy.pt'}")
+
+
+def _cmd_eval(args) -> None:
+    from .rl.evaluate import ab_compare
+    res = ab_compare(args.scenario, range(args.runs), policy=str(args.policy))
+    print(json.dumps({"seeds": res["seeds"], "greedy": res["greedy"],
+                      "learned": res["learned"]}, indent=2))
+    g, le = res["greedy"], res["learned"]
+    print("\n--- learned vs greedy (lower armed_leakers / debris better) ---")
+    for k in ("armed_leakers", "kills", "jet_leaks", "debris_cost", "strays",
+              "ammo_per_kill", "jet_mean_acq"):
+        print(f"  {k:16s} greedy={g.get(k)!s:>8}  learned={le.get(k)!s:>8}")
 
 
 def _cmd_batch(args) -> None:

@@ -21,6 +21,9 @@ for the track's lifetime.
 
 from __future__ import annotations
 
+import logging
+from typing import Callable
+
 import numpy as np
 
 from ..core.bus import MessageBus
@@ -29,6 +32,7 @@ from ..core.messages import (
     DebrisState,
     EngagementDecision,
     EngagementResult,
+    EngagementTask,
     FireRequest,
     Header,
     RoeEvaluation,
@@ -70,6 +74,12 @@ UAV_STATE_STALE_S = 5.0
 KILL_RECONFIRM_GRACE_S = 2.0
 TRACK_FRESH_S = 1.0
 
+_log = logging.getLogger("coopuavs.c2")
+
+# A weapon-target allocator: same call shape as ``assignment.allocate``,
+# returning the task set for this planning cycle.
+Allocator = Callable[..., "list[EngagementTask]"]
+
 
 class BaseStation(Node):
     def __init__(
@@ -82,10 +92,25 @@ class BaseStation(Node):
         roe_config: RoeConfig | None = None,
         uav_effectors: dict[str, str] | None = None,
         debris_policy: dict | None = None,
+        allocator: "Allocator | None" = None,
+        allocator_strict: bool = False,
     ):
         super().__init__("base_station", bus, rate_hz=rate_hz)
         self.env = env
         self.uav_speeds = uav_speeds
+        # Weapon-target allocation seam (SRS, docs/MARL.md): the classical
+        # priority-greedy ``assignment.allocate`` by default, or a swapped-in
+        # policy with the same signature — the learned cooperation policy
+        # (``c2/learned_allocator.py``) or an env-controlled allocator during
+        # MARL training. Always called through ``_allocate`` so a misbehaving
+        # policy can never freeze tasking: any exception falls back to the
+        # classical allocator and is logged, the raid keeps being defended.
+        self.allocator: "Allocator" = allocator or assignment.allocate
+        # Strict mode (MARL training): let a policy exception propagate so
+        # bugs surface, rather than masking them behind the classical
+        # fallback (which is the right behaviour only in deployment).
+        self.allocator_strict = bool(allocator_strict)
+        self.allocator_fallbacks = 0
         # Effector type per platform (PHY-GCS-006/007): debris tasks go only
         # to projectile carriers, and assignment is envelope-aware.
         self.uav_effectors = uav_effectors or {}
@@ -201,19 +226,30 @@ class BaseStation(Node):
             and t - u.header.stamp <= UAV_STATE_STALE_S
         ]
         denied = {tid for tid, t0 in self._denied.items() if t - t0 < DENIAL_TTL_S}
-        tasks = assignment.allocate(
+        alloc_args = (
             list(self._assessments.values()),
             live,
             available,
             self.uav_speeds,
             self.env.risk_map,
             t,
+        )
+        alloc_kwargs = dict(
             denied_tracks=denied,
             incumbents=self._shooters,
             task_ids=self._task_ids,
             debris_info=debris_info,
             uav_effectors=self.uav_effectors,
         )
+        try:
+            tasks = self.allocator(*alloc_args, **alloc_kwargs)
+        except Exception as exc:    # never let a policy fault freeze tasking
+            if self.allocator_strict:
+                raise
+            self.allocator_fallbacks += 1
+            _log.warning("allocator failed (%s); falling back to classical "
+                         "assignment for this cycle", exc)
+            tasks = assignment.allocate(*alloc_args, **alloc_kwargs)
         self._shooters = {task.track_id: task.shooter_id for task in tasks}
         self._task_ids = {
             pairing: tid for pairing, tid in self._task_ids.items()

@@ -12,9 +12,14 @@ the literature survey in [RESEARCH.md](RESEARCH.md).
       (dodge nearest interceptor, altitude drops) so herding pressure has
       something real to push against; today herding only pre-positions a
       second shooter.
-- [ ] **CAP station optimisation** — picket placement against historical
-      raid axes (today: hand-placed); launch latency was empirically the
-      difference between intercepts over fields vs over the city.
+- [x] **Forward high-altitude CAP sentinels** (PHY-SNT-004) — pickets that
+      stand up *already on station* above the ground radar's envelope and
+      forward of the defended area, carrying a look-down airborne
+      early-warning radar (`sensors/airborne_radar.py`), with a barrier-
+      racetrack patrol option. Cuts diving-jet acquisition latency ~36× in
+      `scenarios/high_diver_raid.yaml`. Placement is still hand-tuned;
+      auto-optimising picket geometry against historical axes is the
+      remaining piece.
 - [ ] **Fast-interceptor tier** — the 100 m/s jet OWA is beyond an 80 m/s
       propeller interceptor by physics, as in reality. Add a small number
       of 150+ m/s interceptors with their own cost/availability budget.
@@ -26,14 +31,21 @@ the literature survey in [RESEARCH.md](RESEARCH.md).
 ## Phase 2 — Deepen the two innovation pillars (weeks 3–6)
 
 Cooperation:
-- [ ] **Apollonius-circle containment** proper: escape-set computation and
-      area-minimising blocker placement against *reactive* evaders
-      (RESEARCH.md §1: Garcia/Casbeer/Von Moll/Pachter line of work).
+- [x] **Apollonius-circle containment** (`mc/apollonius.py`): exact
+      closed-form Apollonius rendezvous now drives the cooperative blocker
+      relay (`cooperation.cutoff_points`), replacing the v0.1 time-stepping
+      search; plus the game-theoretic containment arc and an escape-set
+      (safe-fraction) area objective for manoeuvring evaders and for seeding
+      the learned policy (RESEARCH.md §1: Garcia/Casbeer/Von Moll/Pachter).
+      Remaining: iterative area-gradient contraction controller.
 - [ ] **Decentralised allocation (CBBA)** behind the existing
       `allocate(...)` interface; degrade gracefully when the base station
       link drops — the doctrinal argument for UAV autonomy.
-- [ ] **MARL benchmark** (MAPPO via PettingZoo wrapper around the sim) vs
-      the geometric baseline; publishable comparison either way.
+- [x] **MARL benchmark** (MAPPO via a PettingZoo-shaped wrapper around the
+      sim) vs the geometric baseline — implemented: `coopuavs/rl/` (env,
+      shared-actor/centralised-critic MAPPO, CPU-parallel workers),
+      `c2/learned_allocator.py` (drop-in behind the `allocate` seam), and
+      `coopuavs eval` for the A/B. See docs/MARL.md.
 
 Risk-aware engagement:
 - [ ] **Intercept-point optimisation**: choose *where along the corridor*

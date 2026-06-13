@@ -97,6 +97,24 @@ sensors:
   - { type: acoustic, name: ac-w3, position: [-3000.0, -1800.0, 5.0] }
   - { type: acoustic, name: ac-nw, position: [-3500.0,  3000.0, 5.0] }
 
+# Forward high-altitude CAP sentinels (PHY-SNT-004) — opt-in. Uncomment to
+# stand up airborne early-warning pickets already on station above the radar's
+# envelope, forward of the city, against high-altitude divers. See
+# scenarios/high_diver_raid.yaml for a worked laydown and docs/MARL.md for why
+# early warning needs the learned cooperation policy to pay off in kills.
+# (Left commented so the verified v0.1 baseline + its perf gate are unchanged.)
+# sentinels:
+#   - id: cap-north
+#     home: [0.0, -2500.0, 0.0]
+#     max_speed: 42.0
+#     battery_minutes: 150.0
+#     start_on_station: true
+#     orbit: { pattern: racetrack, center: [0.0, 4200.0], heading_deg: 90.0,
+#              leg: 3600.0, radius: 700.0, alt: 3900.0, speed: 40.0 }
+#     payload:
+#       - { type: airborne_radar }
+#       - { type: eo_ir, max_range: 4500.0, full_id_range: 1500.0 }
+
 interceptors:
   # fast gun interceptors
   - { id: hawk-1, home: [-500.0, -2500.0, 400.0], effector: projectile, max_speed: 80.0 }

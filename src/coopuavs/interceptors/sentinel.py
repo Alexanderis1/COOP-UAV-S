@@ -22,6 +22,7 @@ import numpy as np
 
 from ..core.bus import MessageBus
 from ..core.messages import Header, UavCommand, UavMode, UavState
+from . import patrol
 from .airframe import LOW_BATTERY_RTB, UavAirframe
 
 
@@ -38,6 +39,7 @@ class SentinelUav(UavAirframe):
         battery_minutes: float = 40.0,
         cruise_speed: float | None = None,
         turnaround_s: float = 90.0,
+        start_on_station: bool = False,
     ):
         super().__init__(
             uav_id, bus, home,
@@ -49,10 +51,32 @@ class SentinelUav(UavAirframe):
         self.orbit_radius = float(orbit.get("radius", 800.0))
         self.orbit_alt = float(orbit.get("alt", 350.0))
         self.orbit_speed = float(orbit.get("speed", min(25.0, max_speed)))
+        # Patrol pattern (PHY-SNT-004): 'circle' is the v0.1 orbit (byte
+        # identical); 'racetrack' is a barrier CAP along ``heading_deg`` with
+        # straight legs of ``leg`` metres — a forward picket that keeps the
+        # look on a threat axis. Shape params live in the orbit dict.
+        self.pattern = str(orbit.get("pattern", "circle"))
+        if self.pattern not in patrol.PATTERNS:
+            raise ValueError(
+                f"unknown patrol pattern {self.pattern!r}; "
+                f"one of {patrol.PATTERNS}")
+        self.orbit_heading = float(orbit.get("heading_deg", 0.0))
+        self.orbit_leg = float(orbit.get("leg", 0.0))
         # Deterministic starting phase from the id: stable across runs and
         # platforms (Python's hash() is salted; crc32 is not).
         self._angle = float(zlib.crc32(uav_id.encode()) % 360) * np.pi / 180.0
         self._rtb_ordered = False
+        # Forward CAP pickets stand up *already on station* (PHY-SNT-004): a
+        # high-altitude diver gets no head start while the sentinel transits
+        # out from its pad. Spawn on the patrol path at the id phase, already
+        # in PATROL — the whole point is the time margin at t=0.
+        if start_on_station:
+            self.body.position = patrol.orbit_waypoint(
+                self.pattern, self.orbit_center, self.orbit_radius,
+                self.orbit_alt, self._angle,
+                heading_deg=self.orbit_heading, leg=self.orbit_leg, lead=0.0,
+            )
+            self.mode = UavMode.PATROL
 
         self._state_pub = self.create_publisher("uav/state")
         self.create_subscription("uav/command", self._on_command)
@@ -96,6 +120,9 @@ class SentinelUav(UavAirframe):
         """Fly the orbit: chase a waypoint advancing along the circle at
         the orbit's angular rate. Far from the circle this is a plain
         transit to the nearest orbit point."""
+        if self.pattern == "racetrack":
+            self._patrol_racetrack(period)
+            return
         on_station = abs(
             float(np.linalg.norm(self.body.position[:2] - self.orbit_center))
             - self.orbit_radius
@@ -116,6 +143,27 @@ class SentinelUav(UavAirframe):
             self.orbit_center[1] + self.orbit_radius * np.cos(ang),
             self.orbit_alt,
         ])
+        self._fly_to(waypoint)
+
+    def _patrol_racetrack(self, period: float) -> None:
+        """Barrier-CAP variant: advance the phase along the stadium loop
+        when on station, transit to the (frozen) current waypoint otherwise
+        (mirrors the circle's advance-only-on-station rule)."""
+        offset = patrol.path_offset(
+            "racetrack", self.orbit_center, self.orbit_radius,
+            self.body.position[:2],
+            heading_deg=self.orbit_heading, leg=self.orbit_leg)
+        on_station = offset < 150.0 and abs(self.body.position[2] - self.orbit_alt) < 60.0
+        if on_station:
+            self.mode = UavMode.PATROL
+            length = patrol.loop_length("racetrack", self.orbit_radius, self.orbit_leg)
+            self._angle = (self._angle
+                           + 2.0 * np.pi * self.orbit_speed * period / length) % (2.0 * np.pi)
+        else:
+            self.mode = UavMode.TRANSIT
+        waypoint = patrol.orbit_waypoint(
+            "racetrack", self.orbit_center, self.orbit_radius, self.orbit_alt,
+            self._angle, heading_deg=self.orbit_heading, leg=self.orbit_leg)
         self._fly_to(waypoint)
 
     def _publish_state(self, t: float) -> None:

@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..core.messages import Track
+from . import apollonius
 from .guidance import intercept_time
 
 
@@ -38,40 +39,26 @@ def cutoff_points(
     horizon: float = 120.0,
     spacing: float = 15.0,
 ) -> list[np.ndarray]:
-    """Reachable future points on the target's predicted corridor.
+    """Reachable future points on the target's predicted corridor — the
+    cooperative-relay blocker posts.
 
-    For each blocker, find the earliest corridor time tau such that the
-    blocker arrives at the corridor point before the target does (with
-    ``spacing`` seconds margin), then spread blockers down-corridor so a
-    miss at one post hands the target to the next — the relay.
+    Now computed with proper **Apollonius-circle** rendezvous geometry
+    (:func:`coopuavs.mc.apollonius.containment_posts`): each blocker's post is
+    its exact closed-form intercept point on the target's predicted corridor
+    — the point where blocker and target arrive simultaneously, i.e. where
+    the corridor crosses the blocker's Apollonius surface — replacing the
+    v0.1 fixed-step ``tau`` search. Blockers are spread down-corridor so a
+    miss at one post hands the target to the next (the relay), and a blocker
+    that cannot rendezvous on the corridor falls back to the deepest free
+    down-corridor slot. ``blocker_speeds`` is one speed per blocker (a scalar
+    is broadcast); reachability uses each airframe's own capability.
 
-    ``blocker_speeds`` is one speed per blocker (a scalar is broadcast):
-    reachability must be tested with each airframe's own capability, or a
-    mixed net/gun support pair claims posts the slower one cannot hold.
+    For a genuinely *manoeuvring* evader (FPV/Lancet), the area-minimising
+    containment arc (:func:`coopuavs.mc.apollonius.containment_arc`) closes
+    the lateral escape gap instead — see docs/RESEARCH.md §1.
     """
-    posts: list[np.ndarray] = []
-    claimed_tau: list[float] = []
-    p, v = track.position, track.velocity
-    if isinstance(blocker_speeds, (int, float)):
-        blocker_speeds = [float(blocker_speeds)] * n_blockers
-
-    for own, speed in zip(blocker_positions[:n_blockers], blocker_speeds):
-        best_tau = None
-        tau = 5.0
-        while tau <= horizon:
-            point = p + v * tau
-            t_arrive = np.linalg.norm(point - own) / max(speed, 1e-6)
-            margin_ok = t_arrive + spacing <= tau
-            slot_free = all(abs(tau - c) >= spacing for c in claimed_tau)
-            if margin_ok and slot_free:
-                best_tau = tau
-                break
-            tau += 2.5
-        if best_tau is None:
-            best_tau = min(horizon, (claimed_tau[-1] + spacing) if claimed_tau else horizon)
-        claimed_tau.append(best_tau)
-        posts.append(p + v * best_tau)
-    return posts
+    return apollonius.containment_posts(
+        track, n_blockers, blocker_positions, blocker_speeds, horizon, spacing)
 
 
 def herding_post(
