@@ -986,3 +986,30 @@ appears where capacity ≈ demand (the regime where prioritisation decides
 outcomes) — and as the substrate the Stage-2 RL policy improves on. The
 larger leakage levers remain **forward CAP geometry** and **earlier EO/IR
 discrimination**, per the fleet-sizing sweep.
+
+## Appendix C — Leakage-reduction log (goal: armed leakage -> 0)
+
+Benchmark: `saturation_raid.yaml`, 29 vehicles (17 armed), 12-seed Monte-Carlo,
+supervisor off. Diagnostic-driven, each change measured before keeping.
+
+| Change | Armed leakers /17 | Note |
+|---|---|---|
+| Baseline (12 rear picket) | 5.3 | starting point |
+| Capacity sweep 12→30 interceptors | ~5.0 | **adding airframes barely helps — not capacity-bound** |
+| Realistic kinetic engagement cone (25°→70°) | 3.0 | the dominant fix |
+| Realistic jet dive geometry (dive_range 4500→2800 m) | 3.7 | more realistic = harder; honest regression |
+| 16-interceptor forward picket at 2400 m AGL | 2.8 | meets high-cruisers/jet at altitude |
+
+Key diagnostics that drove this:
+- **Conversion-bound, not capacity-bound.** Interceptors spent 79% of the raid
+  in PURSUIT but 1% in ENGAGE; they reached a median 3 m closest approach but
+  at 106° off-boresight — the 25° cone (a forward-gun model) was wrong for a
+  Sting/Anvil-class kinetic ram/charge interceptor. Widening to a realistic
+  70° forward sector converted those merges and roughly halved armed leakage.
+- **Altitude coverage.** A 1700 m picket was overflown by the 2800 m jet; a
+  2400 m arc restored the interception window.
+- **The jet OWA is the physical residual (~2.3/3 leak).** An 80 m/s interceptor
+  cannot tail-chase a 155 m/s diving jet; this matches the real theatre, where
+  jet Shaheds are primarily a guns/SAM problem. Remaining levers: concentrate
+  cooperative blockers on the jet corridor (relay), and add a gun/SAM point-
+  defence layer. FPV, loitering, and (mostly) strategic OWA are solved.
