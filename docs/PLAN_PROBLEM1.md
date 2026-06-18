@@ -292,24 +292,136 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
 
 ### P3 — CoopFC flight stack in isolation (XL — largest phase)
 `sil/bench.py` harness: physics + hw + one FCU, no tactical stack. Import fence enforced.
-- [ ] P3-1 `core/vec.py` (vs scipy Rotation) + `core/topics.py` + `params.py` CRC overlay
-- [ ] P3-2 `sched.py` rate groups: exact fire counts over 10 s, overrun→fault, deterministic order
-- [ ] P3-3 `hal/` + `drivers/`: staleness flags, unit round-trips
-- [ ] P3-4 `estimation/alignment.py` (leveling accuracy, variance gate) + `ekf.py`: Sola F/Q
-      predict, covariance symmetry/PD guard; GPS/baro/mag sequential fusion + chi-square gating +
-      0.5 s ring-buffer OOSM; NEES/NIS 25-seed MC consistency (`@slow`); GPS-denied drift <envelope
-      5 min (PHY-UAV-011); 50 m spoof step rejected
-- [ ] P3-5 `control/` cascade + `mixer.py`: rate rise <60 ms overshoot <20%; 30° attitude step
-      settle <0.5 s; velocity zero steady-state error; anti-windup ramp recovery; desat priority
-- [ ] P3-6 `fcu.py` boot/PBIT/arming/modes + `battery_monitor`/failsafes: PBIT-blocks-arming,
-      setpoint-timeout→POS_HOLD, link-loss→RTL timeline, RTL home from 2 km under wind
-- [ ] P3-7 `link/coop_link.py`: framing/heartbeat/latency/bandwidth-queue determinism
-- [ ] P3-8 bench acceptance flights: hover RMS <0.15 m calm / <1.0 m in 8 m/s+Dryden; 200 m
-      waypoint square cross-track <2 m; run-twice pins
-- [ ] P3-9 `@oracle` ArduPilot SITL (WSL2) waypoint-square envelope comparison, procedure doc'd
-- [ ] P3-10 tuning-stop rule: tolerances unmet after budgeted tuning → STOP and replan (never
-      loosen gates silently)
-- GATE: bench + NEES + oracle + determinism; 1-vehicle RTF ≥20×, 20-instance projection ≥1×
+- [x] P3-1 `coopfc/core/vec.py` plain-float quat/vec math (validated vs scipy Rotation AND
+      physics helpers; ZYX euler w/ gimbal-pole branch; exact-map quat_integrate) +
+      `core/topics.py` uORB-style latest-value store + `params.py` CRC-checked overlay
+      (bool≠int pinned) + import fence: AST walk, no `coopuavs.*` escapes coopfc (relative
+      imports resolved), numpy only under `estimation/`. 42 tests `test_coopfc_{vec,topics,
+      params,fence}.py` (2026-06-11)
+- [x] P3-2 `coopfc/sched.py` rate groups: exact fire counts over 10 s (800/400/100/50/10/1 Hz),
+      registration order = within-tick pipeline, integer-tick derived time, duplicate names
+      rejected. Overruns MODELED not measured (declared `cost_ticks` busy window — wall-clock
+      would be nondeterministic; P5 injects overload by raising cost): due-fire inside busy
+      window skipped+counted, consecutive ≥ `overrun_fault_after` latches fault (CBIT
+      SCHED_OVERRUN seam). Exceptions propagate (VirtualMCU crash fence is the host's, P4).
+      14 tests `test_coopfc_sched.py` (2026-06-11)
+- [x] P3-3 `coopfc/hal/` HalIO seq-stamped latest-frame ports (host writes, drivers read —
+      MCU-portable seam) + `coopfc/drivers/` imu/gps/baro/mag/esc + `core/msgs.py` typed
+      NamedTuples. Shared staleness contract (no new seq = stale tick; latches at
+      `stale_after`, clears on fresh frame; GPS default 3 — first fix lands 2 driver ticks
+      after boot at 120 ms latency). Unit round-trips: coopfc-owned ISA inverse pinned
+      bit-near vs `hw.baro.altitude_from_pressure` over 0-10 km; esc rpm→rad/s inverts
+      encoding; baro rejects non-finite/<=0 Pa without publishing (bad_frames tally = CBIT
+      seam); GPS msg carries fix_stamp (OOSM key). 15 tests `test_coopfc_drivers.py`
+      (2026-06-11)
+- [x] P3-4 `estimation/alignment.py` (leveling, gyro bias, mag yaw, variance gate, honest P0) +
+      `ekf.py` Sola 15-state error-state EKF: PX4-style delayed horizon (OOSM structural,
+      exact-stamp fusion on the IMU lattice), chi-square gates, Joseph form, divergence latch.
+      Colored-error honesty: R inflation + mag yaw information floor + baro PARTIAL update
+      (gain masked to vertical channel — 15k correlated baro-drift fusions otherwise suppress
+      claimed sigma_vel 20x via maneuver-built cross-covariances; caught by the 4-sigma honesty
+      gate, isolated by baro-on/off A/B) + unmodeled-error budget on every reported sigma with
+      one-shot GNSS-denial injection (RESEARCH.md "P3 CoopFC flight stack"). NEES/NIS 25-seed
+      MC vs the real P2 devices (`@slow`, bounds not precision); GPS-denied 5 min: drift
+      km-class free-inertial (worst 5472 m, regression gate 7000 m, first-principles ~3.4 km
+      RSS scale) AND inside the filter's own 4-sigma claim — PHY-UAV-011 partial, VIO/datalink
+      fallback out of sim scope; 50 m spoof step gated (>=25 consecutive rejections). 17 tests
+      `test_coopfc_{alignment,ekf}.py` + 2 `@slow` `test_coopfc_ekf_mc.py` (2026-06-12)
+- [x] P3-5 `control/` cascade (rate PID 400 Hz w/ conditional anti-windup vs own clip AND
+      mixer axis_sat feedback; quaternion attitude P, Brescianini law, yaw_weight 0.4;
+      velocity PI -> (q_sp, thrust) via flatness map + u_hover sqrt thrust curve) +
+      `control/mixer.py` quad-X sequential desat, priority rp > collective > yaw, per-axis
+      directional saturation flags. Acceptance vs REAL plant (truth-fed; powertrain motor lag
+      in loop, plant RK4 800 Hz / ctl 400 / vel 50): roll+pitch rate rise <60 ms overshoot
+      <20%; yaw rate 0.5 rad/s settle 0.138 s, gated <0.20 s regression-style (user decision
+      2026-06-12 gate review, RESEARCH.md "P3-5 yaw rate gate": yaw authority ~30x weaker —
+      drag-torque actuation — 60 ms figure is a roll/pitch spec); 30° att step settle <0.5 s;
+      vel zero SS error calm + 5 m/s wind; integrator frozen-while-saturated white-box pin +
+      2.5 s saturated-dash recovery; mixer analytic desat pins; run-twice bit-identical.
+      14 tests `test_coopfc_control.py` (2026-06-12)
+- [x] P3-6 `fcu.py` (sched-wired pipeline drivers→est_intake 400→est_update 50→batt→pbit→
+      nav 50→rate_mix 400; FCU-owned ParamTable; rate feedback = latest gyro − EKF bias) +
+      `control/position.py` P→vel_sp + `battery_monitor.py` (upward-latching NORMAL→LOW→CRIT,
+      1 s debounce). FSM BOOT(align, auto-retry on variance gate)→STANDBY(PBIT: align/stale/
+      EKF/no-GPS-fusion/battery/PARAM_CRC/sched-faults)→ARMED modes OFFBOARD/POS_HOLD/RTL/LAND;
+      failsafe priority BATT_CRIT→LAND > LINK_LOSS→RTL > BATT_LOW→RTL > OFFBOARD_TIMEOUT→
+      POS_HOLD, first reason latched; touchdown = altitude-floor of home datum (documented
+      bench placeholder until P4 ground). Pins: PBIT-blocks-arming + recovery; vibration
+      align retry; setpoint-timeout→POS_HOLD; link-loss→RTL tick-exact timeline; battery
+      debounce + LOW→RTL→CRIT→LAND + CRIT-beats-link-loss; disarmed actuators zero; RTL
+      integration flights through HAL+EKF+cascade vs real plant (perfect frames): 120 m fast,
+      2 km under 6 m/s crosswind `@slow` (41.9 s wall, lands <190 s, disarms). 10 tests
+      `test_coopfc_fcu.py` (2026-06-12)
+- [x] P3-7 `link/coop_link.py`: MAVLink-shaped framing (sync|len u16|id u8|payload|crc32,
+      streaming decoder, corrupt frame costs exactly one frame + resync, bad_frames CBIT
+      tally); struct-packed msg registry (HEARTBEAT/ARM/DISARM/SET_MODE/VEL_SP/SET_HOME/
+      STATUS/NAV); Channel = pure-arithmetic FIFO wire (serialization 8n/bps behind previous
+      tx + fixed latency; bounded in-flight bytes, send REFUSED deterministically when over
+      budget). Pins: per-type round-trips, byte-at-a-time chunking, corruption+resync,
+      garbage skip, arrival times exact closed-form (not a tick early), back-to-back burst
+      spacing, backpressure refuse+drain, idle-wire no history, run-twice. 11 tests
+      `test_coopfc_link.py` (2026-06-12)
+- [x] P3-8 `sil/bench.py` (physics + P2 hw devices w/ real noise/latency/quantization + one
+      FCU; frozen-stand boot, devices-sample-truth→FCU→actuators→plant micro-tick; Dryden
+      world-rotated) + acceptance flights. Hover gate SPLIT (user decision 2026-06-12,
+      RESEARCH.md): CONTROL error |est−hold| gets the plan numbers — <0.15 m calm / <1.0 m
+      in 8 m/s+Dryden w20=8 (measured 0.07–0.08 m both); TRUTH error gated at the GNSS
+      device budget 2.0 m RMS (measured 0.5–0.9 m; GM wander floor, RTK-class hover is out
+      of suite scope by design). 200 m waypoint square via MC-role OFFBOARD velocity guidance
+      on NAV telemetry: TRUTH cross-track <2 m (passes at face value). Run-twice bit-identical
+      (truth + nav + actuators). PERF gate re-scoped (user decision 2026-06-12, RESEARCH.md):
+      1-vehicle RTF ≥3× (measured 3.6–3.7×; the pre-P1 "≥20×" died with the N-independent
+      ~0.2 s/sim-s plant floor) + 20-instance projection ≥1× per the P4 fleet architecture
+      C20 = C_phys+dev(N=20) + 20·C_fcu(direct) — measured RTF 1.24–1.38×; enabled by a
+      sha256-verified VALUE-IDENTICAL selection-indexed EKF fusion refactor (`_fuse_sel`).
+      5 tests `test_coopfc_bench.py` (2 fast + 2 @slow + 1 @perf) (2026-06-12)
+- [x] P3-9 `@oracle` ArduPilot SITL (WSL2, official prebuilt stable ArduCopter, EKF3) flies
+      the same 200 m square via `scripts/oracle/export_ardupilot_square.py` (pymavlink,
+      offline-oracle policy, fixture committed); `test_oracle_ardupilot.py` envelope bands:
+      both complete, lap ratio [0.5,2.0] (35 vs 38 s), leg cross-track same class (1.81 vs
+      0.67 m — bench flies real GNSS GM wander), cruise ±30%, alt band ±4 m. Setup +
+      re-baseline procedure in tests/fixtures/oracle/README.md (2026-06-12)
+- [x] P3-10 tuning-stop rule: EXERCISED 2026-06-12 — P3-8 hover-truth-RMS and RTF-20× gates
+      were physically unreachable (GNSS GM wander floor; N-independent plant cost); stopped,
+      raised to user, resolved by explicit decision (gate split + re-scope, RESEARCH.md) —
+      never loosened silently
+- GATE: bench ✓ + NEES ✓ + oracle ✓ (RotorPy + ArduPilot) + determinism ✓; perf per the
+  2026-06-12 user re-scope: 1-vehicle RTF ≥3× (meas. 3.6–3.7×), 20-instance projection ≥1×
+  (meas. 1.24–1.38×). STOPPED for user gate review per cadence.
+- [x] P3-R gate-review fixes (2026-06-12, 7-angle/20-verifier review of PR #10; 10 confirmed,
+      all fixed TDD-first, 13 new tests): **F1** GPS driver poll 50 Hz (was 10 — off-phase
+      from the 120 ms fix delivery, every bench fix reached the EKF 200 ms old, 60 ms past
+      lag_s, silently fused ~42 ms stale; new `ekf.late_meas` CBIT seam counts behind-horizon
+      stamps, pinned ==0 through real device timing; gps stale_after 15 keeps the 300 ms
+      window); **F2** touchdown datum frozen at LAND entry + armed `cmd_set_home` refuses
+      home z at/above vehicle (TOCTOU → mid-air disarm); **F3** EKF pos0/vel0 seeded from the
+      latest fix (origin prior chi-gated out any spawn >~870 m: PBIT NO_GPS_FUSION forever);
+      **F4** link decoder rejects length fields > registry MAX_PAYLOAD (corrupt len byte
+      stalled decode ~9 s → spurious LINK_LOSS RTL); **F5** arming seeds `_last_hb` (no-
+      heartbeat-ever flight had LINK_LOSS structurally disabled); **F6** param-table mag
+      declination threaded into EkfParams (split defaults = persistent yaw bias under
+      overlay); **F7** cmd_arm resets `_q_sp/_thrust/_sat` (re-arm ran up to 15 ticks on the
+      previous flight's terminal setpoints); **F8** EKF intake early-returns when diverged
+      (unbounded gps/baro/mag deque growth post-divergence); **F9** esc driver rejects
+      non-finite/non-positive frames like baro (NaN v_bus sustains the battery debounce —
+      NaN >= x is False — into latched CRITICAL → forced LAND); **F10** wire enum tables
+      (STATE/MODE/FAILSAFE/BATT codes) pinned in the link registry, cross-checked against the
+      fcu vocabulary. Full fast suite 550 + ruff + @slow/@perf/@oracle re-run green.
+- [x] P3-R2 cut-findings pass (2026-06-12, user-directed "fix all + decide yaw"): **(a)** hover
+      gates grew a VERTICAL channel — control z plan-class <0.15/1.0 m (measured 0.028-0.037),
+      truth z 3.0 m RMS vertical device budget (gps_gm_v 2.4 ⊕ baro drift 1.25 filter-blended;
+      measured 1.21-2.43 over seeds, +23% regression headroom); **(b)** `_fuse_sel` equivalence
+      now a COMMITTED default-suite pin vs a test-side dense Joseph reference (all 4 sensor
+      blocks + masked baro partial update + spoof-gate case); **(c)** Joseph update expanded to
+      rank-m selection form (~5x fewer multiplies; algebraic identity, pinned by (b)) + baro
+      gain mask precomputed; **(d)** strapdown deduplicated — one `_strapdown_step` feeds both
+      mainline and output replay (sha256 BIT-IDENTICAL pre/post on a 6 s maneuvering-EKF and a
+      3 s bench run); output predictor kept FULL replay (exact) over PX4-style incremental
+      delta (approximate) per the fidelity goal — perf headroom delegated to (c), @perf green;
+      **(e)** `mag_yaw` deduplicated alignment↔EKF (same sha256 proof); **(f)** bench hot-loop
+      preallocation (u/z buffers, hoisted zeros; sha256 bit-identical); **(g)** yaw settle gate
+      re-stamped as user decision and TIGHTENED 0.40 → 0.20 s regression gate (+45% over the
+      deterministic 0.138 s; RESEARCH.md "P3-5 yaw rate gate"). Suites re-run green.
 
 ### P4 — Fleet integration (XL — riskiest; staged strangler)
 - [ ] P4-1 `sil/vehicle.py` FriendlyVehicle protocol-conformance test (pins full duck-type contract)
