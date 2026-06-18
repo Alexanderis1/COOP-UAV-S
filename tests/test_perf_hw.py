@@ -47,7 +47,7 @@ def _build(n: int):
 
 
 def _tick_range(devs, n, truth, start: int, ticks: int) -> None:
-    quat, omega, accel, pos, vel, alt, rotor, v_bus, i_bus, los = truth
+    quat, omega, accel, pos, vel, alt, rotor, v_bus, i_bus, v_cells, los = truth
     for k in range(start, start + ticks):
         devs["gps"].tick(pos, vel)
         if k % 2 == 0:
@@ -58,7 +58,7 @@ def _tick_range(devs, n, truth, start: int, ticks: int) -> None:
         if k % 32 == 0:
             devs["imu"].fifo_read()                         # 25 Hz drain
         if k % 80 == 0:
-            devs["esc"].sample(rotor, v_bus, i_bus)
+            devs["esc"].sample(rotor, v_bus, i_bus, v_cells)
             devs["gimbal"].point_at(los)
             devs["gimbal"].step(0.1)
             devs["gimbal"].in_fov(los)
@@ -73,6 +73,7 @@ def _cpu_per_sim_s(n: int, sim_seconds: float = 4.0) -> float:
              rng.uniform(-50, 50, (n, 3)), rng.normal(size=(n, 3)),
              rng.uniform(40, 120, n), np.full((n, 4), 900.0),
              np.full(n, 44.4), np.full(n, 120.0),
+             np.full((n, 12), 44.4 / 12.0),       # cell taps (P5-1f wire)
              rng.normal(size=(n, 3)) + [[200.0, 0.0, 0.0]])
     steps = round(sim_seconds * BASE_HZ)
     _tick_range(devs, n, truth, 0, 160)                     # warmup

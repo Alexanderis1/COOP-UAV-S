@@ -72,7 +72,9 @@ def _run(devices: dict, n: int, ticks: int = 400) -> dict:
             if "mag" in devices:
                 out["mag"].append(devices["mag"].sample(quat))
         if "esc" in devices and k % 80 == 0:                 # 10 Hz
-            out["esc"].append(devices["esc"].sample(rotor, v_bus, i_bus).rpm)
+            out["esc"].append(devices["esc"].sample(
+                rotor, v_bus, i_bus,
+                np.repeat(v_bus[:, None] / 12, 12, axis=1)).rpm)
     return {k: np.stack(v) for k, v in out.items() if v}
 
 

@@ -107,7 +107,12 @@ def test_numpy_only_under_estimation():
 # (truth quarantine: an mc/ module that can import sim/ can read truth).
 
 MC_ALLOWED_PREFIXES = ("coopuavs.mc", "coopuavs.core.messages",
-                       "coopuavs.core.ports", "coopuavs.coopfc.link")
+                       "coopuavs.core.ports", "coopuavs.coopfc.link",
+                       # P5-4: the MC shares the flight stack's CBIT
+                       # vocabulary (fault dictionary + a local engine
+                       # for MC-side faults like LINK_C2_LOSS) — still
+                       # flight software, never the simulator.
+                       "coopuavs.coopfc.cbit")
 
 
 def _mc_modules() -> list[Path]:
@@ -136,7 +141,8 @@ def test_no_simulator_import_escapes_mc():
                 assert ok, (
                     f"{py.relative_to(mc_root.parent)} imports {name!r}: "
                     "MC software may only reach coopuavs.mc, core.messages, "
-                    "core.ports and coopfc.link — never the simulator"
+                    "core.ports, coopfc.link and coopfc.cbit — never the "
+                    "simulator"
                 )
     finally:
         COOPFC_ROOT, PKG_PREFIX = saved

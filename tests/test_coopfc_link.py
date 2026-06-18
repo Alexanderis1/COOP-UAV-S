@@ -170,14 +170,22 @@ def test_enum_tables_cover_fcu_vocabulary_and_round_trip():
 
     assert set(STATE_CODES) == {fcu.BOOT, fcu.STANDBY, fcu.ARMED}
     assert set(MODE_CODES) == {"", fcu.OFFBOARD, fcu.POS_HOLD, fcu.RTL,
-                               fcu.LAND}
+                               fcu.LAND, fcu.FAILSAFE_ATT}
+    # 5+ are the CBIT-commanded reasons (P5-1c additive: the fault codes
+    # of actioned non-mirror dictionary rows — cross-checked against the
+    # dictionary by test_coopfc_cbit_actions.py).
     assert set(FAILSAFE_CODES) == {"", "BATT_CRIT", "LINK_LOSS", "BATT_LOW",
-                                   "OFFBOARD_TIMEOUT"}
+                                   "OFFBOARD_TIMEOUT", "EKF_DIVERGED",
+                                   "IMU_STALE", "GYRO_STUCK",
+                                   "MOTOR_RESPONSE", "DR_BUDGET_LOW",
+                                   "CELL_IMBALANCE"}
     assert set(BATT_CODES) == {bm.NORMAL, bm.LOW, bm.CRITICAL}
+    from coopuavs.coopfc.link import DEGRADED_CODES, DEGRADED_NAMES
     for codes, names in ((STATE_CODES, STATE_NAMES),
                          (MODE_CODES, MODE_NAMES),
                          (FAILSAFE_CODES, FAILSAFE_NAMES),
-                         (BATT_CODES, BATT_NAMES)):
+                         (BATT_CODES, BATT_NAMES),
+                         (DEGRADED_CODES, DEGRADED_NAMES)):
         assert all(0 <= v <= 255 for v in codes.values())
         assert {v: k for k, v in codes.items()} == names
 

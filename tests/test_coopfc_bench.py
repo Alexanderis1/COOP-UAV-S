@@ -236,7 +236,8 @@ def test_bench_rtf_and_fleet_projection():
         baro = Baro(BaroParams.from_dict(dev["baro"]), n, rng.spawn(1)[0])
         mag = Mag(MagParams.from_dict(dev["mag"]), n, rng.spawn(1)[0])
         esc = EscTelem(EscTelemParams.from_dict(dev["esc_telem"]), n,
-                       cfg.n_rotors, rng.spawn(1)[0])
+                       cfg.n_rotors, rng.spawn(1)[0],
+                       cells=int(cfg.battery["n_series"]))
         plant = MultirotorPlant(cfg, n)
         motor = MotorEsc(n, cfg.n_rotors, **cfg.motor)
         pt = Powertrain(motor, BatteryEcm(n, **cfg.battery), 350.0)
@@ -260,7 +261,9 @@ def test_bench_rtf_and_fleet_projection():
                     mag.sample(state[:, 6:10])
                 omega_r, v_bus, i_bus = pt.step(DT, throttle)
                 if k % 80 == 0:
-                    esc.sample(omega_r, v_bus, i_bus)
+                    # P5-1f wire: cell taps ride every ESC frame
+                    esc.sample(omega_r, v_bus, i_bus,
+                               pt.battery.cell_voltages(v_bus))
                 state = plant.step(state, DT, omega_r, wind, RHO)
 
         loop(round(1.0 * TICK_HZ))                       # warm-up

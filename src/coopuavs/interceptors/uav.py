@@ -55,6 +55,11 @@ from .airframe import LOW_BATTERY_RTB, UavAirframe
 from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
+# P5-5 release pairing (SitlShellUav): a staged FireRequest with no FCU
+# pulse ack inside this window was refused (or lost on the wire) — the
+# round never left the rail, the magazine gets it back. Generous against
+# the real transport (~2x link latency + one MC tick << 1 s).
+RELEASE_TIMEOUT_S = 1.0
 
 
 class InterceptorUav(UavAirframe):
@@ -352,6 +357,12 @@ class SitlShellUav(InterceptorUav):
     A crashed MCU (exception fence, SIM-SIL-003) goes silent here: no
     telemetry, no fire traffic — the FCU flies its own link-loss
     failsafe home. ``mc_crashed`` exposes the latch.
+
+    P5-5 (release via FCU): the app's fire traffic is STAGED here and
+    published to the bus only when the FCU hard interlock's release
+    pulse comes back (``release_ack`` mailbox, fed by the engine); a
+    stage that times out (``RELEASE_TIMEOUT_S``) was refused — ammo is
+    restored and ``release_refused`` tallies it.
     """
 
     def __init__(self, uav_id, bus, home, effector, mcu, **kwargs):
@@ -371,6 +382,11 @@ class SitlShellUav(InterceptorUav):
         self._from_request = box("fire_request")
         self._from_fire = box("fire")
         self._from_cue = box("cue")
+        # P5-5 release pairing: fires out of the app are STAGED until
+        # the FCU hard interlock's pulse ack (engine-fed mailbox).
+        self._from_ack = box("release_ack")
+        self._staged: list = []            # (FireRequest, staged_at)
+        self.release_refused = 0
 
     @property
     def mc_crashed(self) -> bool:
@@ -409,8 +425,32 @@ class SitlShellUav(InterceptorUav):
             self._state_pub.publish(msg)
         for msg in self._from_request.drain():
             self._request_pub.publish(msg)
+        # P5-5 hard interlock: a FireRequest out of the app is staged,
+        # not published — the round leaves the rail only when the FCU
+        # pulses (release_ack). Stage before draining acks: by node
+        # cadence the ack for a fire staged this same update may
+        # already be waiting. One ack = one release.
         for msg in self._from_fire.drain():
-            self._fire_pub.publish(msg)
+            self._staged.append((msg, t))
+        for ack in self._from_ack.drain():
+            for j, (msg, _) in enumerate(self._staged):
+                if msg.track_id == ack[0]:
+                    self._fire_pub.publish(self._staged.pop(j)[0])
+                    break
+        # NACK-by-timeout: no pulse inside the window — the FCU refused
+        # (or the command died on the wire). The round never left the
+        # rail; the magazine gets it back.
+        kept = []
+        for msg, t0 in self._staged:
+            if t - t0 > RELEASE_TIMEOUT_S:
+                # Clamp: a REARM restore while a stage was pending must
+                # not overfill the magazine.
+                self.effector.ammo = min(self.effector.ammo + 1,
+                                         self._ammo_capacity)
+                self.release_refused += 1
+            else:
+                kept.append((msg, t0))
+        self._staged = kept
         for cue in self._from_cue.drain():
             self._cue = cue
 

@@ -11,14 +11,17 @@ UavHealth digest in P5). Inputs are the Powertrain step outputs
 (omega, v_bus, i_bus) — the telemetry chain adds only measurement noise
 and quantization, never its own electrical model.
 
-Deviations (documented in TRACEABILITY): voltage/current are pack-level
-(the BatteryEcm has no per-cell states; per-cell imbalance telemetry
-arrives with the P5 CELL_IMBALANCE fault work) and there is no temperature
-channel (no thermal model — RESEARCH.md known limitation).
+Per-cell voltage channels (P5-1f, the CELL_IMBALANCE telemetry): each
+frame also carries the ``cells`` series-cell voltages — a BMS cell-tap
+read with its own (smaller) noise and conversion grid. The model takes
+the per-cell truth from ``BatteryEcm.cell_voltages`` (equal split +
+OCV deviation; cell-to-cell resistance variation out of scope). No
+temperature channel (no thermal model — RESEARCH.md known limitation).
 
-Draw layout (frozen): per sample, per vehicle child:
-standard_normal(rotors + 2) = [rpm white x rotors, voltage white,
-current white].
+Draw layout (frozen; CHANGED in P5-1f — the P2/P4 layout was
+rotors + 2): per sample, per vehicle child:
+standard_normal(rotors + 2 + cells) = [rpm white x rotors,
+voltage white, current white, cell-tap white x cells].
 """
 
 from __future__ import annotations
@@ -49,12 +52,15 @@ class EscTelemParams:
     rpm_lsb: float
     v_lsb: float
     i_lsb: float
+    sigma_v_cell: float
+    v_cell_lsb: float
 
     def __post_init__(self):
         _require(np.isfinite(self.rate_hz) and self.rate_hz > 0.0,
                  f"rate_hz must be finite > 0, got {self.rate_hz!r}")
         for field in ("sigma_rpm", "sigma_v", "sigma_i",
-                      "rpm_lsb", "v_lsb", "i_lsb"):
+                      "rpm_lsb", "v_lsb", "i_lsb",
+                      "sigma_v_cell", "v_cell_lsb"):
             v = getattr(self, field)
             _require(np.isfinite(v) and v >= 0.0,
                      f"{field} must be finite >= 0, got {v!r}")
@@ -67,7 +73,9 @@ class EscTelemParams:
                    sigma_i=float(cfg["sigma_i"]),
                    rpm_lsb=float(cfg["rpm_lsb"]),
                    v_lsb=float(cfg["v_lsb"]),
-                   i_lsb=float(cfg["i_lsb"]))
+                   i_lsb=float(cfg["i_lsb"]),
+                   sigma_v_cell=float(cfg["sigma_v_cell"]),
+                   v_cell_lsb=float(cfg["v_cell_lsb"]))
 
 
 @dataclass(frozen=True)
@@ -77,28 +85,34 @@ class EscTelemFrame:
     rpm: np.ndarray       # (n, rotors) mechanical shaft rpm
     voltage: np.ndarray   # (n,) pack bus V
     current: np.ndarray   # (n,) pack bus A
+    cells: np.ndarray     # (n, cells) series-cell V (BMS cell taps)
 
 
 class EscTelem:
     """n identical telemetry chains; one spawned child stream per vehicle."""
 
     def __init__(self, params: EscTelemParams, n: int, rotors: int,
-                 rng: np.random.Generator):
+                 rng: np.random.Generator, cells: int = 12):
         _require(isinstance(n, int) and not isinstance(n, bool) and n >= 1,
                  f"n must be an int >= 1, got {n!r}")
         _require(isinstance(rotors, int) and not isinstance(rotors, bool)
                  and rotors >= 1,
                  f"rotors must be an int >= 1, got {rotors!r}")
+        _require(isinstance(cells, int) and not isinstance(cells, bool)
+                 and cells >= 1,
+                 f"cells must be an int >= 1, got {cells!r}")
         self.params = params
         self.n = n
         self.rotors = rotors
+        self.cells = cells
         self._children = rng.spawn(n)
-        self._eps = np.empty((n, rotors + 2))
+        self._eps = np.empty((n, rotors + 2 + cells))
 
     def sample(self, rotor_omega: np.ndarray, v_bus: np.ndarray,
-               i_bus: np.ndarray) -> EscTelemFrame:
+               i_bus: np.ndarray, v_cells: np.ndarray) -> EscTelemFrame:
         """One frame at rate_hz from the Powertrain step outputs:
-        rotor_omega (n, rotors) rad/s, v_bus (n,) V, i_bus (n,) A."""
+        rotor_omega (n, rotors) rad/s, v_bus (n,) V, i_bus (n,) A,
+        v_cells (n, cells) V (``BatteryEcm.cell_voltages``)."""
         eps = self._eps
         for i, g in enumerate(self._children):
             g.standard_normal(out=eps[i])
@@ -107,6 +121,8 @@ class EscTelem:
         rpm = rotor_omega * RPM_PER_RAD_S + eps[:, :r] * p.sigma_rpm
         volt = v_bus + eps[:, r] * p.sigma_v
         curr = i_bus + eps[:, r + 1] * p.sigma_i
+        cell = v_cells + eps[:, r + 2:] * p.sigma_v_cell
         return EscTelemFrame(rpm=stoch.quantize(rpm, p.rpm_lsb),
                              voltage=stoch.quantize(volt, p.v_lsb),
-                             current=stoch.quantize(curr, p.i_lsb))
+                             current=stoch.quantize(curr, p.i_lsb),
+                             cells=stoch.quantize(cell, p.v_cell_lsb))

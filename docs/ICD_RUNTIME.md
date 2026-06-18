@@ -102,6 +102,19 @@ Note `pos`/`vel` in sitl runs are the platform's EKF **estimates** (the
 operational picture — nav error is visible by design); ground truth
 stays on `/eval`.
 
+v0.5 (P5-4, additive): the `health` value is the UavHealth digest the
+MC publishes at its node rate (>= 1 Hz, PHY-UAV-013):
+
+```json
+{"faults":u32,"codes":[s],"inhibit_fire":bool,
+ "inhibit_arming":bool,"degraded":""|"RTL"|"LAND"|"FAILSAFE_ATT"}
+```
+
+`faults` is the CBIT fault word (bit positions are the
+`coopfc/cbit/dictionary.py` registry, pinned by test_coopfc_cbit);
+`codes` is its decoded name list (bit order). The word merges the
+FCU's HEALTH telemetry with MC-side faults (e.g. `LINK_C2_LOSS`).
+
 ### 2.3 Authorisation flow (SRS HMI-AUT, ORC-002)
 
 ```json

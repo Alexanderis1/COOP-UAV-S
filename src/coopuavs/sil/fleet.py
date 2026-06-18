@@ -51,6 +51,7 @@ from coopuavs.coopfc.fcu import ARMED, TICK_HZ, Fcu
 from coopuavs.coopfc.hal import HalIO
 from coopuavs.coopfc.link.coop_link import (
     BATT_CODES,
+    DEGRADED_CODES,
     FAILSAFE_CODES,
     MODE_CODES,
     MODE_NAMES,
@@ -90,6 +91,7 @@ ESC_HZ = 10
 LINK_HZ = 50
 NAV_HZ = 25
 STATUS_HZ = 10
+HEALTH_HZ = 1     # CBIT northbound (P5-1c; PHY-UAV-013 needs >= 1 Hz)
 
 
 class _FcuLink:
@@ -188,8 +190,14 @@ class SitlEngine:
                 f"airframe classes disagree on rotor count {rotor_counts}: "
                 "the fleet shares one ESC telemetry bank")
         n_rotors = rotor_counts.pop()
+        cell_counts = {g.pt.battery.n_series for g in self.groups}
+        if len(cell_counts) != 1:
+            raise ValueError(
+                f"airframe classes disagree on series cells {cell_counts}: "
+                "the fleet shares one ESC telemetry bank")
         self.esc = EscTelem(EscTelemParams.from_dict(dev["esc_telem"]), n,
-                            n_rotors, stream("sensor/esc_telem"))
+                            n_rotors, stream("sensor/esc_telem"),
+                            cells=cell_counts.pop())
 
         self._imu_every = self._divisor(base_hz, self.imu.params.rate_hz, "imu")
         self._baro_mag_every = self._divisor(base_hz, BARO_MAG_HZ, "baro/mag")
@@ -197,6 +205,7 @@ class SitlEngine:
         self._link_every = self._divisor(base_hz, LINK_HZ, "link")
         self._nav_every = self._divisor(base_hz, NAV_HZ, "nav telemetry")
         self._status_every = self._divisor(base_hz, STATUS_HZ, "status telemetry")
+        self._health_every = self._divisor(base_hz, HEALTH_HZ, "health telemetry")
         self.heartbeat_every = (round(base_hz / heartbeat_hz)
                                 if heartbeat_hz else 0)
         self.links: list[_FcuLink | None] = [None] * n
@@ -216,8 +225,29 @@ class SitlEngine:
                 weather.wind_speed, stream("dryden"))
 
         self.hals = [HalIO() for _ in range(n)]
-        self.fcus = [Fcu(hal, overlay=fcu_overlay) for hal in self.hals]
+        # Per-vehicle pack calibration (P5-1f): each FCU is configured
+        # with ITS airframe's battery datasheet values (capacity/R) —
+        # configuration data, not a truth leak; an explicit scenario
+        # overlay for these keys wins.
+        self.fcus = []
+        for i, hal in enumerate(self.hals):
+            batt = self.groups[self._group_of[i]].cfg.battery
+            overlay = {
+                "fcu.batt_capacity_ah": float(batt["capacity_ah"]),
+                "fcu.batt_r0": float(batt["r0"]),
+                "fcu.batt_r1": float(batt["r1"]),
+                "fcu.batt_tau1_s": float(batt["r1"]) * float(batt["c1"]),
+                "fcu.batt_cells": int(batt["n_series"]),
+            }
+            if fcu_overlay:
+                overlay.update(fcu_overlay)
+            self.fcus.append(Fcu(hal, overlay=overlay))
         self._act_ports = [hal.port("actuators") for hal in self.hals]
+        # Release-pulse collection (P5-5): last seen effector-port seq
+        # per vehicle — a new write becomes a release ack in the MC
+        # mailbox (ORDERING §6, after the FCU loop).
+        self._eff_ports = [hal.port("effector") for hal in self.hals]
+        self._eff_seq = [0] * n
 
         self._flying = np.zeros(n, dtype=bool)
         self._omega_r = np.zeros((n, n_rotors))
@@ -230,6 +260,20 @@ class SitlEngine:
         self._esc_out = (np.zeros((n, n_rotors)), esc_v, np.zeros(n))
         self._u_buf = np.zeros((n, n_rotors))
         self._z_buf = np.empty(n)
+        self._cells_buf = np.empty((n, self.esc.cells))
+        # P5-2a fault state (lazy; see the fault-seam block below).
+        self._drop: dict | None = None
+        self._stuck: np.ndarray | None = None
+        self._stuck_frame: list = []
+        self._motor_scale: np.ndarray | None = None
+        # P5-2b schedule: (time, seq, kind, uid, params, on) sorted;
+        # applied at macro boundaries (deterministic, no RNG).
+        self._fault_sched: list = []
+        self._fault_seq = 0
+        # Accepted windows per (uid, kind, discriminator): overlap is a
+        # schedule-time error (the clearing edge restores the HEALTHY
+        # value — an enclosing window would be silently wiped).
+        self._fault_windows: list = []
 
     @staticmethod
     def _divisor(base_hz: int, rate_hz: float, name: str) -> int:
@@ -285,6 +329,197 @@ class SitlEngine:
             raise ValueError(f"vehicle {uav_id!r} already has an MC")
         self.mcs[i] = mcu
 
+    # ---------------------------------------------------------- fault seams
+    # P5-2a (SIM-SIL-003). All lazy: a never-faulted engine runs the
+    # exact pre-P5 arithmetic. None of the faults consume RNG — they
+    # mask or transform the EXISTING streams (device banks keep drawing
+    # for every vehicle, faulted or not, so draw histories never move).
+
+    _DROP_KINDS = ("imu", "gps", "baro", "mag", "esc")
+
+    def fault_sensor_dropout(self, uid: str, sensor: str,
+                             on: bool = True) -> None:
+        """Dead wire: the device keeps sampling (and drawing), its HAL
+        frames stop arriving — the matching driver goes stale."""
+        if sensor not in self._DROP_KINDS:
+            raise ValueError(f"unknown sensor {sensor!r}; "
+                             f"one of {self._DROP_KINDS}")
+        if self._drop is None:
+            self._drop = {k: np.zeros(self.n, dtype=bool)
+                          for k in self._DROP_KINDS}
+        self._drop[sensor][self.index[uid]] = on
+
+    def fault_gps_denied(self, uid: str, on: bool = True) -> None:
+        """GNSS denial: frames keep flowing, fix_type reads NONE."""
+        self.gps.set_denied(self.index[uid], on)
+
+    def fault_gps_degraded(self, uid: str, scale: float) -> None:
+        """Multipath/interference: white GPS errors scaled (1.0 = off)."""
+        self.gps.set_degraded(self.index[uid], scale)
+
+    def fault_imu_noise(self, uid: str, scale: float) -> None:
+        """Vibration/EMI: white IMU noise scaled (1.0 = off)."""
+        self.imu.set_noise_scale(self.index[uid], scale)
+
+    def fault_gyro_stuck(self, uid: str, on: bool = True) -> None:
+        """Stuck sensor: the vehicle's HAL keeps receiving the LAST imu
+        frame verbatim (fresh frames, frozen values — the GYRO_STUCK
+        signature, distinct from a dead wire)."""
+        if self._stuck is None:
+            self._stuck = np.zeros(self.n, dtype=bool)
+            self._stuck_frame = [None] * self.n
+        self._stuck[self.index[uid]] = on
+
+    def fault_motor(self, uid: str, rotor: int, scale: float) -> None:
+        """ESC-gain fault: rotor's effective command scaled (0 = dead
+        output; ~0.775 = the flyable 40%%-thrust-loss class, user
+        decision 2026-06-12)."""
+        if not 0.0 <= scale <= 1.0:
+            raise ValueError(f"motor scale must be in [0, 1], got {scale!r}")
+        if self._motor_scale is None:
+            self._motor_scale = np.ones_like(self._u_buf)
+        self._motor_scale[self.index[uid], rotor] = scale
+
+    def fault_mc_link_jam(self, uid: str, on: bool = True) -> None:
+        """RF jam on the FCU<->MC link: both directions silent."""
+        link = self.links[self.index[uid]]
+        if link is None:
+            raise ValueError(f"vehicle {uid!r} has no MC link to jam")
+        link.up.jammed = on
+        link.down.jammed = on
+
+    def _battery_of(self, uid: str):
+        i = self.index[uid]
+        return (self.groups[self._group_of[i]].pt.battery,
+                int(self._local_of[i]))
+
+    def fault_cell_imbalance(self, uid: str, delta: float) -> None:
+        """Weak cell (physics-level, BatteryEcm seam): cell 0 sits
+        ``delta`` SOC below the pack mean, the rest split the excess
+        (zero-mean spread — charge state unchanged). delta 0 clears.
+        Caveat: an imbalance fault switches that battery BANK to the
+        per-cell OCV path (sum of cell curves) — sub-ulp arithmetic
+        difference vs the unfaulted product form, documented in
+        physics/battery.py; never injected = exact pre-P5 path."""
+        batt, li = self._battery_of(uid)
+        n = batt.n_series
+        deltas = np.full(n, delta / (n - 1))
+        deltas[0] = -delta
+        batt.inject_cell_imbalance(li, deltas if delta else np.zeros(n))
+
+    def fault_batt_r0(self, uid: str, scale: float) -> None:
+        """Aged/cold pack: series resistance scaled (1.0 = off) — the
+        physics-level BATT_SAG_ANOM source."""
+        batt, li = self._battery_of(uid)
+        batt.inject_r0_scale(li, scale)
+
+    # Scenario `faults:` kinds (P5-2b) -> required parameter keys.
+    FAULT_KINDS = {
+        "gps_denial": frozenset(),
+        "gps_degraded": frozenset({"scale"}),
+        "sensor_dropout": frozenset({"sensor"}),
+        "imu_noise": frozenset({"scale"}),
+        "gyro_stuck": frozenset(),
+        "motor": frozenset({"rotor", "scale"}),
+        "mc_link_jam": frozenset(),
+        "cell_imbalance": frozenset({"delta"}),
+        "batt_r0_scale": frozenset({"scale"}),
+    }
+
+    def schedule_fault(self, t: float, uid: str, kind: str,
+                       until: float | None = None, **params) -> None:
+        """Queue a fault window (P5-2b, SIM-SIL-003): applied at the
+        first macro boundary at/after ``t``; ``until`` schedules the
+        clearing edge (omit = permanent). Deterministic by construction
+        — the schedule consumes no RNG and fires on the macro lattice."""
+        required = self.FAULT_KINDS.get(kind)
+        if required is None:
+            raise ValueError(f"unknown fault kind {kind!r}; "
+                             f"one of {sorted(self.FAULT_KINDS)}")
+        if set(params) != required:
+            raise ValueError(
+                f"fault {kind!r} takes exactly params {sorted(required)}, "
+                f"got {sorted(params)}")
+        if uid not in self.index:
+            raise ValueError(f"unknown vehicle {uid!r} in fault schedule")
+        if not math.isfinite(t) or (until is not None
+                                    and not math.isfinite(until)):
+            raise ValueError(f"fault times must be finite, got t={t!r} "
+                             f"until={until!r}")
+        if until is not None and not until > t:
+            raise ValueError(f"fault until={until!r} must be > t={t!r}")
+        if kind == "sensor_dropout" and params["sensor"] not in self._DROP_KINDS:
+            raise ValueError(f"unknown sensor {params['sensor']!r}; "
+                             f"one of {self._DROP_KINDS}")
+        # Parameter semantics validated HERE (the loud-at-build contract):
+        # an accepted schedule must never explode mid-run at its boundary.
+        if kind == "motor":
+            rotor = params["rotor"]
+            if (isinstance(rotor, bool) or int(rotor) != rotor
+                    or not 0 <= rotor < self._u_buf.shape[1]):
+                raise ValueError(f"rotor {rotor!r} out of range")
+            if not (math.isfinite(params["scale"])
+                    and 0.0 <= params["scale"] <= 1.0):
+                raise ValueError(
+                    f"motor scale must be in [0, 1], got {params['scale']!r}")
+        if kind in ("gps_degraded", "imu_noise", "batt_r0_scale"):
+            if not (math.isfinite(params["scale"]) and params["scale"] > 0.0):
+                raise ValueError(f"{kind} scale must be finite and > 0, "
+                                 f"got {params['scale']!r}")
+        if kind == "cell_imbalance":
+            if not (math.isfinite(params["delta"])
+                    and 0.0 < params["delta"] <= 0.5):
+                raise ValueError(f"cell_imbalance delta must be in (0, 0.5], "
+                                 f"got {params['delta']!r}")
+        if kind == "mc_link_jam" and self.links[self.index[uid]] is None:
+            # Links are attached before faults are scheduled (scenario
+            # build order) — a linkless jam target is a config error now,
+            # not a crash at the window boundary.
+            raise ValueError(f"vehicle {uid!r} has no MC link to jam")
+        key = (uid, kind, params.get("sensor"), params.get("rotor"))
+        t0 = float(t)
+        t1 = float(until) if until is not None else math.inf
+        for wkey, a, b in self._fault_windows:
+            if wkey == key and t0 < b and a < t1:
+                raise ValueError(
+                    f"fault windows overlap for {uid!r} {kind!r}: "
+                    f"[{a}, {b}) and [{t0}, {t1}) — the clearing edge "
+                    "restores the healthy value, so nesting is ill-defined")
+        self._fault_windows.append((key, t0, t1))
+        self._fault_sched.append(
+            (t0, self._fault_seq, kind, uid, dict(params), True))
+        self._fault_seq += 1
+        if until is not None:
+            self._fault_sched.append(
+                (t1, self._fault_seq, kind, uid, dict(params), False))
+            self._fault_seq += 1
+        # Same-boundary edges: clearing edges apply BEFORE raising edges
+        # (touching windows [a,b)+[b,c) work whatever order they were
+        # scheduled in), then schedule order.
+        self._fault_sched.sort(key=lambda e: (e[0], e[5], e[1]))
+
+    def _apply_fault(self, kind: str, uid: str, params: dict,
+                     on: bool) -> None:
+        if kind == "gps_denial":
+            self.fault_gps_denied(uid, on)
+        elif kind == "gps_degraded":
+            self.fault_gps_degraded(uid, params["scale"] if on else 1.0)
+        elif kind == "sensor_dropout":
+            self.fault_sensor_dropout(uid, params["sensor"], on)
+        elif kind == "imu_noise":
+            self.fault_imu_noise(uid, params["scale"] if on else 1.0)
+        elif kind == "gyro_stuck":
+            self.fault_gyro_stuck(uid, on)
+        elif kind == "motor":
+            self.fault_motor(uid, params["rotor"],
+                             params["scale"] if on else 1.0)
+        elif kind == "mc_link_jam":
+            self.fault_mc_link_jam(uid, on)
+        elif kind == "cell_imbalance":
+            self.fault_cell_imbalance(uid, params["delta"] if on else 0.0)
+        elif kind == "batt_r0_scale":
+            self.fault_batt_r0(uid, params["scale"] if on else 1.0)
+
     def set_pad(self, uav_id: str, pos, *, recharge_s: float = 90.0,
                 radius: float = 25.0) -> None:
         """Pad charger (P4-4 rearm cycle, user decision: full land-dock):
@@ -309,6 +544,9 @@ class SitlEngine:
             raise ValueError(
                 f"engine clock {self.clock.now:.6f} s out of step with "
                 f"world t={t:.6f} s (engine must be installed at build)")
+        while self._fault_sched and self._fault_sched[0][0] <= t + 1e-9:
+            _, _, kind, uid, params, on = self._fault_sched.pop(0)
+            self._apply_fault(kind, uid, params, on)
         self._micro.run_macro_step(t, dt)
 
     # -------------------------------------------------------------- micro tick
@@ -334,25 +572,50 @@ class SitlEngine:
             else:
                 a_w = np.zeros((self.n, 3))
             gyro, accel = self.imu.sample(quat, st[:, 10:13], a_w)
+            drop = self._drop["imu"] if self._drop is not None else None
             for i, hal in enumerate(self.hals):
-                hal.port("imu").write((tuple(gyro[i]), tuple(accel[i])))
+                if drop is not None and drop[i]:
+                    continue                  # dead wire (bank still drew)
+                frame = (tuple(gyro[i]), tuple(accel[i]))
+                if self._stuck is not None and self._stuck[i]:
+                    if self._stuck_frame[i] is None:
+                        self._stuck_frame[i] = frame    # freeze here
+                    frame = self._stuck_frame[i]
+                elif self._stuck is not None:
+                    self._stuck_frame[i] = None
+                hal.port("imu").write(frame)
         fix = self.gps.tick(st[:, 0:3], st[:, 3:6])
         if fix is not None:
+            drop = self._drop["gps"] if self._drop is not None else None
             for i, hal in enumerate(self.hals):
+                if drop is not None and drop[i]:
+                    continue
                 hal.port("gps").write((tuple(fix.pos[i]), tuple(fix.vel[i]),
                                        int(fix.fix_type[i]), fix.stamp_s))
         if k % self._baro_mag_every == 0:
             self._z_buf[:] = st[:, 2]
             p = self.baro.sample(self._z_buf)
             field = self.mag.sample(st[:, 6:10])
+            drop_b = self._drop["baro"] if self._drop is not None else None
+            drop_m = self._drop["mag"] if self._drop is not None else None
             for i, hal in enumerate(self.hals):
-                hal.port("baro").write(float(p[i]))
-                hal.port("mag").write(tuple(field[i]))
+                if drop_b is None or not drop_b[i]:
+                    hal.port("baro").write(float(p[i]))
+                if drop_m is None or not drop_m[i]:
+                    hal.port("mag").write(tuple(field[i]))
         if k % self._esc_every == 0:
-            f = self.esc.sample(*self._esc_out)
+            omega_r, v_bus, i_bus = self._esc_out
+            v_cells = self._cells_buf
+            for g in self.groups:
+                v_cells[g.rows] = g.pt.battery.cell_voltages(v_bus[g.rows])
+            f = self.esc.sample(omega_r, v_bus, i_bus, v_cells)
+            drop = self._drop["esc"] if self._drop is not None else None
             for i, hal in enumerate(self.hals):
+                if drop is not None and drop[i]:
+                    continue
                 hal.port("esc").write((tuple(f.rpm[i]), float(f.voltage[i]),
-                                       float(f.current[i])))
+                                       float(f.current[i]),
+                                       tuple(f.cells[i])))
 
     def _link_task(self, fcu: Fcu, link: _FcuLink, now: float, k: int) -> None:
         """FCU side of the wire: dispatch arrived commands (P3-R F10 wire
@@ -378,9 +641,23 @@ class SitlEngine:
                     fcu.cmd_set_home((v["x"], v["y"], v["z"]))
                 elif name == "BATT_RESET":
                     fcu.cmd_batt_reset()
+                elif name == "CLEARANCE_TOKEN":
+                    fcu.cmd_clearance_token(v["track_id"], v["issued"])
+                elif name == "WEAPON_RELEASE":
+                    fcu.cmd_weapon_release(v["stamp"], v["track_id"])
+        if k % self._health_every == 0:
+            # BEFORE the nav gate: a vehicle bricked pre-alignment (dead
+            # IMU, PARAM_CRC, align retries) is exactly what PHY-UAV-013
+            # must surface — gating HEALTH on nav reported it healthy.
+            cbit = fcu.cbit
+            flags = (int(cbit.inhibit_arming)
+                     | (int(cbit.inhibit_fire) << 1))
+            link.down.send(encode_msg(
+                "HEALTH", now, cbit.word(), flags,
+                DEGRADED_CODES[cbit.degraded_mode()]), now)
         nav = fcu.nav
         if nav is None:
-            return    # nothing worth telemetering until alignment
+            return    # nav/status telemetry needs an aligned estimator
         if k % self._nav_every == 0:
             q, p, vel = nav.q, nav.pos, nav.vel
             link.down.send(encode_msg(
@@ -390,7 +667,7 @@ class SitlEngine:
             link.down.send(encode_msg(
                 "STATUS", now, STATE_CODES[fcu.state], MODE_CODES[fcu.mode],
                 FAILSAFE_CODES[fcu.failsafe], BATT_CODES[fcu.batt.state],
-                nav.sigma_pos_h, fcu.batt.fraction()), now)
+                nav.sigma_pos_h, fcu.battery_fraction()), now)
 
     def _tick(self, now: float) -> None:
         # 1. devices sample truth (pre-step state, ZOH inputs)
@@ -409,6 +686,20 @@ class SitlEngine:
             fcu.run_tick()
             if link is not None and link_due:
                 self._link_task(fcu, link, now, k)
+
+        # 2b. release-pulse collection (P5-5, linked vehicles only): a
+        # new effector-port write since the last tick is the hard
+        # interlock's authorized pulse — posted as a release ack into
+        # the MC mailbox; the world-side shell pairs it with its staged
+        # FireRequest.
+        for i, port in enumerate(self._eff_ports):
+            if self.links[i] is None:
+                continue
+            seq, frame = port.read()
+            if seq != self._eff_seq[i]:
+                self._eff_seq[i] = seq
+                if self.mcs[i] is not None:
+                    self.mcs[i].ports.box("release_ack").post(frame)
 
         # 3. MC tick if due (P4-3): hosted mission computers on the micro
         # clock, behind their crash fences (a dead MC is silent, the
@@ -441,6 +732,11 @@ class SitlEngine:
             _, frame = self._act_ports[i].read()
             if frame is not None:
                 u[i] = frame
+        if self._motor_scale is not None:
+            # ESC-gain fault: the FCU's command leaves the FCU intact;
+            # the ESC delivers less (the cmd-vs-rpm signature the
+            # MOTOR_RESPONSE monitor reads).
+            u *= self._motor_scale
 
         if self.dryden is not None:
             # One bank draw per tick from t=0, armed or not: per-vehicle

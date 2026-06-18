@@ -164,6 +164,18 @@ class Imu:
         self._fifo_write = 0
         self._fifo_count = 0
         self._fifo_overflow = False
+        # P5-2a fault seam (SIM-SIL-003), lazy: scales the WHITE noise
+        # only (vibration/EMI class) on the same draws — no layout
+        # change, no-fault path bit-identical.
+        self._wn_fault: np.ndarray | None = None
+
+    def set_noise_scale(self, i: int, scale: float) -> None:
+        """Scale vehicle ``i``'s white gyro/accel noise (1.0 = healthy)."""
+        if not scale > 0.0:
+            raise ValueError(f"noise scale must be > 0, got {scale!r}")
+        if self._wn_fault is None:
+            self._wn_fault = np.ones((self.n, 1))
+        self._wn_fault[i, 0] = float(scale)
 
     def sample(self, quat: np.ndarray, omega_body: np.ndarray,
                accel_world: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -179,7 +191,10 @@ class Imu:
         gyro = omega_body + self._b0_gyro
         gyro += self._rw_gyro.step(eps[:, 6:9])
         gyro += self._gm_gyro.step(eps[:, 12:15])
-        gyro += eps[:, 0:3] * self._wn_gyro
+        if self._wn_fault is None:
+            gyro += eps[:, 0:3] * self._wn_gyro
+        else:
+            gyro += eps[:, 0:3] * (self._wn_gyro * self._wn_fault)
         np.clip(gyro, -self._fs_gyro, self._fs_gyro, out=gyro)
         gyro = stoch.quantize(gyro, p.gyro_lsb)
 
@@ -187,7 +202,10 @@ class Imu:
         accel = f_body + self._b0_accel
         accel += self._rw_accel.step(eps[:, 9:12])
         accel += self._gm_accel.step(eps[:, 15:18])
-        accel += eps[:, 3:6] * self._wn_accel
+        if self._wn_fault is None:
+            accel += eps[:, 3:6] * self._wn_accel
+        else:
+            accel += eps[:, 3:6] * (self._wn_accel * self._wn_fault)
         np.clip(accel, -self._fs_accel, self._fs_accel, out=accel)
         accel = stoch.quantize(accel, p.accel_lsb)
 

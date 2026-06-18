@@ -143,6 +143,29 @@ class Gps:
         self._eps = np.empty((n, 9))
         self._k = 0
         self._queue: deque[tuple[int, GpsFix]] = deque()
+        # P5-2a fault seams (SIM-SIL-003), lazy: None = the exact pre-P5
+        # arithmetic path. Denial = the receiver still emits frames but
+        # with fix_type NONE (tracking nothing — denial is not a dead
+        # wire); degradation scales the white errors (multipath /
+        # interference) on the SAME draws, so fault windows consume no
+        # extra stream and the no-fault path stays bit-identical.
+        self._denied: np.ndarray | None = None
+        self._wn_scale: np.ndarray | None = None
+
+    def set_denied(self, i: int, denied: bool = True) -> None:
+        """GNSS denial for vehicle ``i``: fixes carry FIX_NONE."""
+        if self._denied is None:
+            self._denied = np.zeros(self.n, dtype=bool)
+        self._denied[i] = denied
+
+    def set_degraded(self, i: int, scale: float) -> None:
+        """Scale vehicle ``i``'s white position/velocity errors
+        (1.0 = healthy; multiplies the same draws, no layout change)."""
+        if not scale > 0.0:
+            raise ValueError(f"degrade scale must be > 0, got {scale!r}")
+        if self._wn_scale is None:
+            self._wn_scale = np.ones(self.n)
+        self._wn_scale[i] = float(scale)
 
     def tick(self, pos_world: np.ndarray, vel_world: np.ndarray) -> GpsFix | None:
         """One device-clock tick: samples truth on the rate lattice, returns
@@ -162,8 +185,15 @@ class Gps:
         for i, g in enumerate(self._children):
             g.standard_normal(out=eps[i])
         pos = pos_world + self._gm_scale * self._gm.step(eps[:, 0:3])
-        pos += eps[:, 3:6] * self._wn_pos
-        vel = vel_world + eps[:, 6:9] * self.params.sigma_vel
+        if self._wn_scale is None:
+            pos += eps[:, 3:6] * self._wn_pos
+            vel = vel_world + eps[:, 6:9] * self.params.sigma_vel
+        else:
+            s = self._wn_scale[:, None]
+            pos += eps[:, 3:6] * self._wn_pos * s
+            vel = vel_world + eps[:, 6:9] * self.params.sigma_vel * s
         fix_type = np.full(self.n, FIX_3D, dtype=np.uint8)
+        if self._denied is not None:
+            fix_type[self._denied] = FIX_NONE
         return GpsFix(pos=pos, vel=vel, fix_type=fix_type,
                       stamp_ticks=k, stamp_s=k / self.clock_hz)

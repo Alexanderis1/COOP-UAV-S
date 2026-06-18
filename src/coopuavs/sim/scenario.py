@@ -137,6 +137,43 @@ def _parse_sitl(raw) -> dict:
     return out
 
 
+# `faults:` block (P5-2b, SIM-SIL-003): a list of timed fault windows
+# injected at the hw/link level by the SitlEngine schedule. Structure is
+# validated here (loud, before any build work); semantics (rotor range,
+# sensor names) by SitlEngine.schedule_fault. Only legal with
+# fidelity.fleet=sitl — point-mass vehicles have no hw to fault.
+_FAULT_COMMON_KEYS = {"t", "uav", "kind", "until"}
+
+
+def _parse_faults(raw, ids: set) -> list[dict]:
+    from ..sil.fleet import SitlEngine
+
+    out = []
+    for k, entry in enumerate(raw or []):
+        f = dict(entry)
+        missing = {"t", "uav", "kind"} - set(f)
+        if missing:
+            raise ValueError(f"faults[{k}]: missing keys {sorted(missing)}")
+        kind = f["kind"]
+        required = SitlEngine.FAULT_KINDS.get(kind)
+        if required is None:
+            raise ValueError(
+                f"faults[{k}]: unknown kind {kind!r}; "
+                f"one of {sorted(SitlEngine.FAULT_KINDS)}")
+        unknown = set(f) - _FAULT_COMMON_KEYS - required
+        if unknown:
+            raise ValueError(f"faults[{k}] ({kind}): unknown keys "
+                             f"{sorted(unknown)}")
+        missing = required - set(f)
+        if missing:
+            raise ValueError(f"faults[{k}] ({kind}): missing params "
+                             f"{sorted(missing)}")
+        if f["uav"] not in ids:
+            raise ValueError(f"faults[{k}]: unknown uav {f['uav']!r}")
+        out.append(f)
+    return out
+
+
 def build(cfg: dict, seed: int | None = None) -> Scenario:
     fidelity = _parse_fidelity(cfg.get("fidelity"))
     env = Environment.from_config(cfg["environment"])
@@ -232,9 +269,20 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
             sentinels[uid] = shell
             sent_platforms[uid] = FriendlyVehicle(engine, uid, home,
                                                   tactical=shell)
+        # Timed fault windows (P5-2b): scheduled after every link/MCU
+        # is attached so jam targets exist; a scenario without the
+        # block schedules nothing (bit-identical, SIM-SIL-003).
+        for f in _parse_faults(cfg.get("faults"), set(engine.ids)):
+            engine.schedule_fault(
+                f.pop("t"), f.pop("uav"), f.pop("kind"),
+                until=f.pop("until", None), **f)
     else:
         if cfg.get("sitl"):
             raise ValueError("a `sitl:` block requires fidelity.fleet=sitl")
+        if cfg.get("faults"):
+            raise ValueError(
+                "a `faults:` block requires fidelity.fleet=sitl "
+                "(point-mass vehicles have no hw to fault, SIM-SIL-003)")
         for uid, home, eff_name, extra in icfgs:
             uavs[uid] = InterceptorUav(
                 uav_id=uid, bus=world.bus, home=home,

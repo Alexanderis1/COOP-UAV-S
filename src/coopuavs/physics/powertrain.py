@@ -85,7 +85,8 @@ class Powertrain:
         s = np.sum(theta * theta, axis=1)
         bemf = m.ke * np.sum(theta * m.omega, axis=1)
         emf = b.ocv(b.soc) - b.v1
-        v_bus = (emf + (b.r0 / m.r_w) * bemf) / (1.0 + b.r0 * s / m.r_w)
+        r0 = b._r0()    # P5 aged-pack fault seam (scalar un-faulted)
+        v_bus = (emf + (r0 / m.r_w) * bemf) / (1.0 + r0 * s / m.r_w)
         i_bus = (s * v_bus - bemf) / m.r_w
         return v_bus, i_bus
 
@@ -99,7 +100,7 @@ class Powertrain:
         b = self.battery
         _, i_star = self.solve_bus(throttle)
         i_bus = np.clip(i_star, -self.i_bus_max_a, self.i_bus_max_a)
-        v_bus = b.ocv(b.soc) - b.v1 - b.r0 * i_bus
+        v_bus = b.ocv(b.soc) - b.v1 - b._r0() * i_bus
         v_bus = np.clip(v_bus, self.v_bus_min, self.v_bus_max)
         omega, _ = self.motor.step(dt, throttle, v_bus)
         b.step(dt, i_bus)

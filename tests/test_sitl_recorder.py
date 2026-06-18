@@ -43,7 +43,9 @@ def test_sitl_recording_carries_attitude_and_nav_quality():
     assert len(att) == 4
     assert abs(float(np.linalg.norm(att)) - 1.0) < 0.01   # unit quaternion
     assert 0.0 < u["nav_q"] < 10.0                        # sigma_pos_h, m
-    assert "health" not in u                              # arrives P5
+    # P5-4: the UavHealth digest rides every sitl entry (ICD v0.5);
+    # a healthy boot reports a clean word.
+    assert u["health"]["faults"] == 0 and u["health"]["codes"] == []
     # the replay file serialises (json round-trip safety)
     import json
     json.dumps(last)

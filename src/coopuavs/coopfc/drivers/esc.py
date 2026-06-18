@@ -1,10 +1,11 @@
 """ESC telemetry driver (10 Hz task).
 
-HAL frame (normative): ``((rpm_0..rpm_R-1), v_bus, i_bus)`` — mechanical
-shaft rpm per rotor (the hw/esc_telem.py convention; eRPM pole-pair
-conversion is already done device-side), bus volts, bus amps. The driver
+HAL frame (normative, P5-1f shape): ``((rpm_0..rpm_R-1), v_bus, i_bus,
+(v_cell_0..v_cell_C-1))`` — mechanical shaft rpm per rotor (the
+hw/esc_telem.py convention; eRPM pole-pair conversion is already done
+device-side), bus volts, bus amps, BMS cell-tap volts. The driver
 converts rpm to rad/s (omega = rpm * 2*pi / 60) and publishes
-``esc_status`` carrying both.
+``esc_status`` carrying everything.
 
 Garbage frames (non-finite rpm/volts/amps, non-positive bus volts) are
 rejected without publishing, like the baro driver: a NaN ``v_bus`` fed
@@ -29,12 +30,14 @@ class EscDriver(Driver):
         super().__init__(port, topics.advertise("esc_status", EscMsg), stale_after)
 
     def _convert(self, now: float, frame) -> bool:
-        rpm, v_bus, i_bus = frame
+        rpm, v_bus, i_bus, v_cells = frame
         rpm_t = tuple(float(r) for r in rpm)
+        cells_t = tuple(float(c) for c in v_cells)
         v, i = float(v_bus), float(i_bus)
         if (not all(math.isfinite(r) for r in rpm_t)
                 or not math.isfinite(v) or v <= 0.0
-                or not math.isfinite(i)):
+                or not math.isfinite(i)
+                or not all(math.isfinite(c) for c in cells_t)):
             return False
         self._pub.publish(EscMsg(
             stamp=now,
@@ -42,5 +45,6 @@ class EscDriver(Driver):
             omega=tuple(r * _RPM_TO_RAD_S for r in rpm_t),
             v_bus=v,
             i_bus=i,
+            cells=cells_t,
         ))
         return True

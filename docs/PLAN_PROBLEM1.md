@@ -545,15 +545,159 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       (2026-06-12).
 
 ### P5 — CBIT + fault injection (M)
-- [ ] P5-1 `cbit/` dictionary+engine+monitors: table-driven test per fault (detection latency,
-      latch, degraded mode); `inhibit_fire` end-to-end suppression of staged fire request
-- [ ] P5-2 scenario `faults:` block (sensor dropout, GPS denial, motor-out, link jam) injected at
-      hw/link level on dedicated streams (SIM-SIL-003); no-fault scenarios bit-identical
-- [ ] P5-3 degraded-mode scenarios: motor-out→controlled descent no-CRITICAL-wreck; GPS-denied
-      5 min→DR bound+RTB; interlock holds under every injected fault
-- [ ] P5-4 `UavHealth` ≥1 Hz to C2 + recorder + TRACEABILITY rows (PHY-UAV-013/033 → high)
-- [ ] P5-5 FCU-side hard fire interlock: clearance token mirrored over coop_link; FCU refuses
-      WEAPON_RELEASE without valid token (additive; MC-side interlock already live since P4)
+User decisions 2026-06-12 (kickoff): (1) CELL_IMBALANCE/SOC = FULL scope — per-cell voltages in
+battery ECM + esc_telem wire, FCU coulomb-count SOC estimator, battery failsafe arbitrates
+voltage AND SOC (owns the P4 full-power-climb sag-trip); affected P4 energy/e2e pins
+re-baselined with before/after report. (2) Motor-out = PARTIAL degradation (~40% rotor thrust
+loss, flyable) → MOTOR_RESPONSE → LAND; full-out injectable but documented unrecoverable (quad
+physics, PX4 parity), excluded from the no-wreck gate. (3) P5-5 = RELEASE VIA FCU: MC stages
+FireRequest on bus + sends WEAPON_RELEASE(token) over coop_link; FCU validates token + CBIT
+inhibit_fire, emits release pulse via HAL effector port; world pairs pulse with staged request;
+fire-timing/clearance-twin pins re-baselined (honest transport).
+CBIT command authority: the legacy `_failsafes` chain KEEPS BATT/LINK/OFFBOARD authority
+(no-fault runs bit-identical); CBIT adds actions only for faults nothing else handles. Priority
+pinned: FAILSAFE_ATT (nav-loss class) > BATT_CRIT > CBIT LAND class > LINK_LOSS > BATT_LOW >
+CBIT RTL class > OFFBOARD_TIMEOUT.
+- [x] P5-1a `coopfc/cbit/` dictionary + engine core: FaultSpec table (23 codes, severity/
+      latching/debounce/inhibit_arming/inhibit_fire/degraded_mode, stable wire bit each —
+      bit map pinned literally); CbitEngine raise/clear/debounce/latch/aggregate (inhibit
+      flags, fault word u32, snapshot with onset-time `since`). Source-latching faults
+      (BatteryMonitor, ekf.diverged, sched) are NON-latching mirrors of that latch (double
+      latch would deadlock recoveries the source machinery owns, e.g. touchdown realignment).
+      Invariants tested: CRIT ⇒ inhibits arm+fire; mirror rows never command. 39 table-driven
+      tests test_coopfc_cbit.py; 648 fast green, fence green, ruff clean (2026-06-12)
+- [x] P5-1b FCU monitors at 50 Hz + 1 Hz (`cbit/monitors.py`, sched tasks after rate_mix,
+      ORDERING "PWM→CBIT→link"; observation-only — authority is P5-1c). Findings baked into
+      monitor design: (1) MAG_FAULT cannot ride innovation rejects — the EKF yaw-information
+      floor STOPS mag fusion once converged, so the monitor compares mag-derived yaw vs EKF yaw
+      directly (same tilt guard as fusion, 0.5 rad threshold); (2) SAT_PERSIST signature =
+      motors railed (±1e-3 margin — desat lands epsilon inside the clip), NOT axis_sat flags
+      (they oscillate with anti-windup); 3 s debounce so max-perf transients don't trip;
+      (3) GPS_DEGRADED needs windowed reject counts (multipath interleaves accepts → an
+      instantaneous streak never completes a debounce); (4) EKF_INNOV = reject streaks in ≥2
+      sensor families (one family = that sensor's own code); (5) MOTOR_RESPONSE = relative
+      rpm-share vs u-share deficit >12% (no motor constants needed), detail carries rotor index.
+      Fcu adds _sat_streak/_u_last/_align_retries counters + fcu.gyro_range/accel_range/
+      dr_sigma_budget params. 21 tests test_coopfc_cbit_monitors.py incl. no-fault-word-zero
+      baseline; perfectly-constant synthetic gyro frames correctly read as GYRO_STUCK (harness
+      dithers — live MEMS never repeats a sample). 669 fast + @slow bench/fcu/e2e/ekf-mc green,
+      ruff clean (2026-06-12)
+- [x] P5-1c degraded-mode actions + wire export: FAILSAFE_ATT = RATE-ONLY flight (gyro rate
+      damping + fixed sub-hover collective `fcu.fs_att_thrust` 0.45 — on a diverged estimator
+      the position/velocity loops fly a fiction; bench-verified controlled descent, rates <1
+      rad/s); CBIT slots in `_failsafes` per the pinned order, first-reason latch preserved
+      (escalation switches MODE, never the latched reason — tested); cmd_arm refuses on
+      latched CBIT inhibitors ("CBIT: <codes>"); cmd_set_mode hard-refuses leaving FAILSAFE_ATT
+      while the nav-loss fault is raised; HEALTH msg id 9 "<dIBB" (fault word u32 + inhibit
+      flags + degraded code) at 1 Hz engine-side + DEGRADED_CODES table; FcuClient
+      health/fault_word/cbit_* props; FAILSAFE_CODES += 6 CBIT reasons, MODE_CODES +=
+      FAILSAFE_ATT (additive, vocab pins updated same commit); SynthHost/FlightHost gyro gets
+      1e-6 sin dither (constant synthetic frames correctly read as GYRO_STUCK). MOTOR_RESPONSE
+      discriminator rewritten on the real-flight evidence: unexplained spread (rpm spread w/o
+      u spread = pre-trim deficit; u spread w/o rpm spread = post-trim overcommand) — share
+      ratios false-fire on healthy banked orbits (affine motor droop, elasticity ≤2) and pack
+      brownout (which must stay BATT_LOW's reason) (2026-06-12)
+- [x] P5-1e `inhibit_fire` end-to-end: app vetoes the release chain while
+      `client.cbit_inhibit_fire` (no requests, no token consumption, no release; tokens age out
+      on CLEARANCE_VALID_S); staged-request suppression + post-clear resume tested scripted, and
+      the full wire chain (param bit-rot → PARAM_CRC → HEALTH → client → app holds fire with an
+      AUTHORIZED token in hand) tested on the hosted engine; stage-2 twins untouched green;
+      _StubClient += cbit_inhibit_fire (2026-06-12)
+- [x] P5-1d mag fault → disable-mag + GPS-maneuver yaw (user decision 2026-06-12: plan's
+      yaw-from-GPS-course invalid — fleet strafes with yaw_sp=0, course ≠ heading; PX4 parity
+      would need GSF, declined per P3-10 stop rule; RESEARCH.md "P5-1d mag-fault yaw
+      fallback"). `Ekf.mag_trusted` + `mag_excluded` tally: latched MAG_FAULT drops mag at
+      intake (reject tallies stop moving — known-bad sensors must not spam the innovation
+      seams); exclusion re-applied to post-touchdown rebuilt EKFs while latched. Pins: spam
+      stops, P_yaw grows honestly, latch survives field recovery + EKF rebuild. Documented
+      residual: slow in-gate field drift is undetectable without an independent yaw reference
+      (2026-06-12)
+- [x] P5-1f SOC + per-cell (decision 1), three commits:
+      (i) per-cell telemetry: BatteryEcm cell_delta_soc/r0_scale fault seams (un-faulted =
+      bitwise pre-P5, pinned) + cell_voltages(); esc_telem `cells` channel (draw layout
+      [rpm,v,i,cells] — documented change, pin updated); HAL esc frame 4-tuple through
+      driver/EscMsg/bench/fleet; sitl floors green unchanged.
+      (ii) coopfc/soc.py OCV-seeded coulomb counting (rest-window seed, never seeds from sag;
+      reset rides BATT_RESET; table = pinned copy of physics curve); fleet engine configures
+      each FCU from ITS airframe pack (16 vs 24 Ah); CELL_IMBALANCE (tap spread >80 mV) +
+      BATT_SAG_ANOM (sag beyond OCV(soc)−I(R0+R1) by 0.1 V/cell) monitors; bench pin: SOC
+      tracks truth ±0.02 over 20 s.
+      (iii) arbitration: voltage crossings vetoed only while charged (soc>0.5) AND loaded
+      (>10 A) AND sag-consistent — a raised BATT_SAG_ANOM impeaches the coulomb estimate and
+      lifts the veto (the truth-collapse harnesses caught the stale-count hole); SOC drives own
+      LOW/CRIT 0.25/0.10 via the same upward latch; rest-blend recal learns pad charging;
+      REARM_MIN_BATT 0.5 gate before BATT_RESET (half-filled pack must not be declared
+      swapped); STATUS batt_frac = real SOC once seeded. RESEARCH.md "P5-1f SOC estimation".
+      BEFORE/AFTER: e2e kill floors + energy-cycle pins passed UNCHANGED (no tactical
+      re-baseline); re-pinned surfaces are harness-level only (synthetic hosts carry 5 A
+      avionics load — armed flight at zero bus current was a harness fiction) (2026-06-12)
+- [x] P5-2a sil injection seams (SIM-SIL-003): gps.set_denied (frames flow w/ FIX_NONE —
+      denial ≠ dead wire) + set_degraded (white-error scale on the SAME draws); imu
+      set_noise_scale; engine fault_sensor_dropout (dead wire: bank still draws, driver goes
+      stale), fault_gyro_stuck (fresh frames, frozen values), fault_motor (ESC-gain u-scale;
+      0.775 = flyable 40% class), fault_mc_link_jam (Channel.jammed: sends refused, arrivals
+      lost, tallied). NO fault consumes RNG (masks/transforms of existing streams — the
+      `faults/*` stream reservation stays for future stochastic faults); explicit-noop faults
+      bitwise-invisible + faulted run-twice bitwise (pins). Each kind detected end-to-end by
+      its CBIT code on a hovering engine; ESC_STALE (bit 23) ADDED to the dictionary — the
+      dropout matrix exposed that a dead telemetry bus blinds the battery monitor + SOC
+      counter with no code to say so. Jam pin honors the P3 first-reason contract
+      (OFFBOARD_TIMEOUT before LINK_LOSS escalation). C2-side jam deferred to the comms work
+      (P7-1) — the MC link is the P5 "link jam". 14 tests test_sitl_faults.py (2026-06-12)
+- [x] P5-2b scenario `faults:` block: list of timed windows {t, uav, kind, until?, params...}
+      → SitlEngine.schedule_fault (macro-boundary application, deterministic, no RNG);
+      structure validated loud in scenario._parse_faults (unknown kind/key/uav/missing
+      params), semantics in the engine (rotor range, sensor names, until>t); faults without
+      fidelity.fleet=sitl = build error; scenario-level e2e: SITL_SMALL + gps_denial on u1 →
+      GPS_LOSS raised on u1 only (2026-06-12)
+- [x] P5-3 degraded-mode scenarios (test_sitl_degraded.py, 10 tests): (1) motor-degraded
+      mid-raid via the scenario faults block → detected, owned the failsafe reason, controlled
+      descent to touchdown latch, re-arming refused on the latched fault, raid CRITICAL==0;
+      (2) GPS denial with a 300 m home leg → claimed sigma honestly covers |est−truth|
+      (<4σ throughout, measured ~0.1-0.3σ), DR budget orders RTB (~20 s at the 8 m default —
+      airborne-past-budget is asserted impossible), truth lands <60 m from home on the
+      drifting estimate; @slow literal 5-minute PHY-UAV-011 window sustained; (3) interlock
+      matrix: a shooter mid-engagement under EVERY fault kind with no token delivered → zero
+      releases (never-self-authorize; token-in-hand veto = P5-1e tests) (2026-06-12)
+- [x] P5-4 `UavHealth` ≥1 Hz to C2 + recorder: digest dict {faults u32, codes, inhibit_fire,
+      inhibit_arming, degraded} on UavState.health at the app rate (10 Hz ≥ 1 Hz, same comms
+      layer as everything — no new topic needed, the P4-7 field carries it); merges the FCU
+      HEALTH word with an MC-side CbitEngine (LINK_C2_LOSS: quality <0.2 — the C2 radio is the
+      MC's, invisible to the FCU; inhibits release even with a token in hand — a clearance
+      nobody can re-confirm authorizes a stale geometry; veto resumes on link recovery, fresh
+      tokens release). mc/ fence allowlist += coopfc.cbit (flight-stack vocabulary, documented).
+      Recorder passes the digest through (P4-7 seam); ICD_RUNTIME v0.5 additive (digest
+      schema); pointmass keeps the EXACT v0.3 key set (pin kept); TRACEABILITY
+      PHY-UAV-013/033 → high. 5 tests test_sitl_health.py + recorder pin updated (2026-06-12)
+- [x] P5-5 FCU-side hard fire interlock (decision 3): CLEARANCE_TOKEN (msg 10) mirrored on
+      accept + WEAPON_RELEASE (msg 11) over coop_link; FCU refuses release unless ARMED +
+      CBIT-clean + token matches the track inside `fcu.release_token_valid_s` (3.0 ==
+      CLEARANCE_VALID_S, cross-checked; freshness compared MC clock domain ONLY — the FCU
+      clock is boot-relative), success consumes the token (one token = one release) and
+      pulses the `effector` HAL port; refusals tallied by reason. Engine collects pulses
+      after the FCU loop (ORDERING §6 note) → `release_ack` MC mailbox; the shell STAGES
+      the app's FireRequest and publishes to the bus only on the matching ack, restoring
+      ammo + tallying `release_refused` on the 1.0 s NACK-by-timeout. Fire payload byte-
+      unchanged (twins hold as-is); e2e CI kill seeds and @slow floor survived the honest
+      transport (~2x link latency + 1 MC tick) UNCHANGED — no re-baseline needed. 8 tests
+      test_sitl_release.py (2026-06-12)
+- [x] P5-R review fixes (2026-06-12, PR #12 review): (C1) token/release wire track_id i32 —
+      debris pseudo-tracks are NEGATIVE, u32 pack crashed the MC on its first debris
+      clearance; (H1) only AUTHORIZED clearances mirror a token (HOLD/DENIED must not arm
+      the hard interlock); (H2) HEALTH northbound moved BEFORE the nav gate (bricked-on-pad
+      vehicle reported healthy); (H3) CBIT debounce continuity — a reporting gap >1.5 s
+      restarts a pending debounce (parked half-debounce raised instantly across
+      disarm/dropout/realign windows); (H4) FCU models the pack RC relaxation: SocEstimator
+      tracks v1 (tau1 = r1*c1 per airframe) and inverts rest reads against TRUE OCV
+      (landing rest no longer drags a correct count down), SAG_ANOM expectation uses
+      tracked v1 instead of settled i*(r0+r1) (dash->hover no longer false-latches and
+      kills the SOC veto); (M1/M2) fault schedule: overlap windows rejected, off-edges
+      before on-edges at the same boundary, scale/rotor/finiteness/linkless-jam validated
+      loud at schedule time; (M3) EKF_INNOV baro family uses BARO_REJ_MIN; plus
+      snapshot.since onset contract, ALIGN_FAIL retry reset, full MC-digest merge, ammo
+      refund clamp, RELEASE_TIMEOUT < reload pin, physics-level battery injection kinds
+      (cell_imbalance/batt_r0_scale) closing the F6 end-to-end gap + interlock matrix rows
+      (2026-06-12)
 - GATE: fault matrix 100% test-covered
 
 ### P6 — 6DOF threats + saturation (L; parallel after P1)

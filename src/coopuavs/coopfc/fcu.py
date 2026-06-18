@@ -41,6 +41,8 @@ from typing import NamedTuple
 from coopuavs.coopfc.battery_monitor import (
     CRITICAL, LOW, NORMAL, BatteryMonitor, BattParams,
 )
+from coopuavs.coopfc.cbit import CbitEngine
+from coopuavs.coopfc.cbit.monitors import FcuMonitors
 from coopuavs.coopfc.control import (
     AttCtl, QuadXMixer, RateCtl, VelCtl,
 )
@@ -56,6 +58,7 @@ from coopuavs.coopfc.estimation.alignment import Aligner
 from coopuavs.coopfc.estimation.ekf import Ekf, EkfParams
 from coopuavs.coopfc.params import ParamTable
 from coopuavs.coopfc.sched import Scheduler
+from coopuavs.coopfc.soc import SocEstimator, SocParams, sag_anomaly
 
 TICK_HZ = 800
 
@@ -76,6 +79,28 @@ FCU_DEFAULTS = {
     "fcu.vel_max_h": 15.0,
     "fcu.vel_max_up": 5.0,
     "fcu.vel_max_down": 3.0,
+    # CBIT (P5-1b): IMU full-scale limits for the range monitor (defaults
+    # match the interceptor_devices ICM-42688 class: 2000 dps / 16 g) and
+    # the dead-reckoning position-sigma budget (DR_BUDGET_LOW).
+    "fcu.gyro_range_rad_s": 34.9,
+    "fcu.accel_range_m_s2": 157.0,
+    "fcu.dr_sigma_budget_m": 8.0,
+    # FAILSAFE_ATT collective: just under the ~0.55 hover point so the
+    # rate-damped descent is gentle, not ballistic.
+    "fcu.fs_att_thrust": 0.45,
+    # Pack calibration (P5-1f; defaults = the interceptor_quad pack —
+    # per-airframe values are overlaid by the host, e.g. the fleet
+    # engine reads them off each vehicle's airframe class).
+    "fcu.batt_capacity_ah": 16.0,
+    "fcu.batt_r0": 0.036,
+    "fcu.batt_r1": 0.018,
+    "fcu.batt_tau1_s": 15.0,      # r1*c1 — the RC relaxation the SOC
+                                  # estimator and SAG_ANOM model
+
+    # Hard interlock token freshness (P5-5): must equal the MC-side
+    # mc/fire_control.CLEARANCE_VALID_S — the two ends of one window
+    # (cross-checked by test_sitl_release.py).
+    "fcu.release_token_valid_s": 3.0,
 }
 
 BOOT = "BOOT"
@@ -86,6 +111,11 @@ OFFBOARD = "OFFBOARD"
 POS_HOLD = "POS_HOLD"
 RTL = "RTL"
 LAND = "LAND"
+# Rate-only flight (P5-1c, the nav-loss degraded mode): on a diverged
+# estimator the position/velocity loops fly a fiction — gyro rate
+# damping at a fixed sub-hover thrust is what an attitude failsafe can
+# honestly promise (level-ish controlled descent, no nav required).
+FAILSAFE_ATT = "FAILSAFE_ATT"
 
 
 class FcuStatus(NamedTuple):
@@ -128,6 +158,10 @@ class Fcu:
         self.mag_drv = MagDriver(hal.port("mag"), self.topics)
         self.esc_drv = EscDriver(hal.port("esc"), self.topics)
         self.actuators = hal.port("actuators")
+        # Release pulse output (P5-5): one write per authorized release,
+        # frame (track_id, stamp) — the host pairs it with the staged
+        # FireRequest (fleet engine -> world-side shell).
+        self.effector_port = hal.port("effector")
 
         self._sub_imu = self.topics.subscribe("imu_raw")
         self._sub_gps = self.topics.subscribe("gps_fix")
@@ -142,6 +176,11 @@ class Fcu:
             cells=p("fcu.batt_cells"), low_v_cell=p("fcu.batt_low_v_cell"),
             crit_v_cell=p("fcu.batt_crit_v_cell"),
             debounce_s=p("fcu.batt_debounce_s")))
+        self.soc_est = SocEstimator(SocParams(
+            capacity_ah=p("fcu.batt_capacity_ah"),
+            cells=p("fcu.batt_cells"),
+            r0=p("fcu.batt_r0"), r1=p("fcu.batt_r1"),
+            tau1_s=p("fcu.batt_tau1_s")))
         self.pos_ctl = PosCtl(PosParams(
             kp=p("fcu.pos_kp"), vel_max_h=p("fcu.vel_max_h"),
             vel_max_up=p("fcu.vel_max_up"),
@@ -173,6 +212,20 @@ class Fcu:
         self._sat = (0, 0, 0)
         self._last_imu = None
         self.touchdown = False
+        # CBIT observation counters (P5-1b; read by cbit/monitors.py):
+        # consecutive 400 Hz rate ticks with a blocked mixer axis, the
+        # latest mixer output, and alignment restarts this power-up.
+        self._sat_streak = 0
+        self._u_last = (0.0, 0.0, 0.0, 0.0)
+        self._align_retries = 0
+        self.cbit = CbitEngine()
+        self._cbit_mon = FcuMonitors(self, self.cbit)
+        self._fs_att_thrust = p("fcu.fs_att_thrust")
+        # Hard interlock state (P5-5): the latest mirrored clearance
+        # token (track_id, issued — MC clock domain) and the tallies.
+        self._release_token: tuple[int, float] | None = None
+        self.releases = 0
+        self.release_refusals: dict[str, int] = {}
 
         s = self.sched
         s.add("imu_drv", 400, self.imu_drv.tick)
@@ -186,6 +239,10 @@ class Fcu:
         s.add("pbit", 10, self._pbit_task)
         s.add("nav", 50, self._nav_task)
         s.add("rate_mix", 400, self._rate_mix_task)
+        # ORDERING pipeline slot: "... mixer -> PWM -> CBIT -> link" —
+        # the monitors observe the tick the pipeline just produced.
+        s.add("cbit_fast", 50, self._cbit_mon.fast)
+        s.add("cbit_slow", 1, self._cbit_mon.slow)
 
     # ------------------------------------------------------------- host API
 
@@ -200,6 +257,12 @@ class Fcu:
             return False, f"not in STANDBY (state={self.state})"
         if not self.pbit_ok:
             return False, "PBIT: " + ",".join(self.pbit_reasons)
+        inhibitors = self.cbit.arming_inhibitors()
+        if inhibitors:
+            # Latched CBIT faults survive their condition clearing (a
+            # repaired-looking sensor is not a repaired sensor); PBIT
+            # alone would re-arm through them.
+            return False, "CBIT: " + ",".join(inhibitors)
         nav = self.nav
         if nav is None:
             return False, "no nav solution yet"
@@ -229,6 +292,11 @@ class Fcu:
     def cmd_set_mode(self, mode: str) -> tuple[bool, str]:
         if self.state != ARMED:
             return False, "not armed"
+        if (self.mode == FAILSAFE_ATT
+                and self.cbit.degraded()[0] == FAILSAFE_ATT):
+            # The nav-loss fault is still raised: every other mode would
+            # fly the diverged estimate. Hard refusal, not etiquette.
+            return False, "FAILSAFE_ATT: nav-loss fault active"
         if mode == OFFBOARD:
             now = self.sched.now
             if self._sp_stamp is None or (
@@ -275,6 +343,47 @@ class Fcu:
         if self.state == ARMED:
             return False, "armed: battery reset is a ground operation"
         self.batt.reset()
+        self.soc_est.reset()      # re-seed from the new pack's rest OCV
+        # Battery-family CBIT latches belong to the swapped-out pack.
+        self.cbit.clear("BATT_SAG_ANOM")
+        self.cbit.clear("CELL_IMBALANCE")
+        return True, ""
+
+    def cmd_clearance_token(self, track_id: int, issued: float) -> None:
+        """MC-side clearance token mirrored over the wire (P5-5):
+        latest wins. ``issued`` is the clearance stamp in the MC clock
+        domain — cmd_weapon_release compares the release stamp against
+        it ONLY (never sched.now: the FCU clock is boot-relative)."""
+        self._release_token = (int(track_id), float(issued))
+
+    def cmd_weapon_release(self, stamp: float, track_id: int) -> tuple[bool, str]:
+        """The FCU-side hard fire interlock (P5-5, PHY-UAV-021/033):
+        release only ARMED, CBIT-clean, against the mirrored token for
+        THIS track inside its freshness window. Success consumes the
+        token (one token = one release) and pulses the effector port;
+        refusals are tallied by reason."""
+        if self.state != ARMED:
+            ok, why = False, "NOT_ARMED"
+        elif self.cbit.inhibit_fire:
+            ok, why = False, "CBIT_INHIBIT"
+        elif self._release_token is None:
+            ok, why = False, "NO_TOKEN"
+        elif self._release_token[0] != int(track_id):
+            ok, why = False, "TOKEN_MISMATCH"
+        elif not (0.0 <= stamp - self._release_token[1]
+                  <= self.params.get("fcu.release_token_valid_s")):
+            # Outside the freshness window in EITHER direction: a release
+            # stamped before its token is a clock/replay anomaly, never a
+            # valid release, and a hard interlock rejects it.
+            ok, why = False, "TOKEN_STALE"
+        else:
+            ok, why = True, ""
+        if not ok:
+            self.release_refusals[why] = self.release_refusals.get(why, 0) + 1
+            return False, why
+        self._release_token = None
+        self.effector_port.write((int(track_id), float(stamp)))
+        self.releases += 1
         return True, ""
 
     # ------------------------------------------------------------ alignment
@@ -298,6 +407,10 @@ class Fcu:
                 if res is not None:
                     if res.ok:
                         self.align_result = res
+                        # ALIGN_FAIL counts retries THIS alignment, not
+                        # per power-up history: a windy boot must not
+                        # poison every later healthy realignment window.
+                        self._align_retries = 0
                         # Seed the nominal position from the latest fix:
                         # starting at the world origin under the wide
                         # alignment prior leaves any spawn beyond ~870 m
@@ -314,6 +427,7 @@ class Fcu:
                         self.state = STANDBY
                     else:           # moved/vibrating: retry from scratch
                         self._aligner = self._new_aligner()
+                        self._align_retries += 1
                 return
             self.ekf.on_imu(imu.stamp, imu.gyro, imu.accel)
         if self.ekf is None:
@@ -331,6 +445,11 @@ class Fcu:
     def _est_update(self, now: float) -> None:
         if self.ekf is None:
             return
+        if self.ekf.mag_trusted and self.cbit.raised("MAG_FAULT"):
+            # P5-1d: exclude the corrupted yaw source, latched per
+            # flight (re-applied here to any rebuilt post-touchdown
+            # EKF while the fault stays latched).
+            self.ekf.mag_trusted = False
         self.nav = self.ekf.update(now)
         self._pub_nav.publish(self.nav)
 
@@ -338,7 +457,25 @@ class Fcu:
 
     def _batt_task(self, now: float) -> None:
         if self._sub_esc.updated:
-            self.batt.update(now, self._sub_esc.read().v_bus)
+            msg = self._sub_esc.read()
+            self.soc_est.update(msg.stamp, msg.v_bus, msg.i_bus)
+            # Same-cycle sag test for the veto: the CBIT BATT_SAG_ANOM
+            # word is computed later in the tick (cbit_fast) and would
+            # be one cycle stale here, delaying the failsafe on a dying
+            # pack. The latched annunciation still debounces the same
+            # condition for telemetry.
+            sag_anom, _ = sag_anomaly(
+                self.soc_est.soc, msg.v_bus, msg.i_bus, self.soc_est.v1,
+                self.params.get("fcu.batt_cells"),
+                self.params.get("fcu.batt_r0"))
+            self.batt.update(now, msg.v_bus, soc=self.soc_est.soc,
+                             i_bus=msg.i_bus, sag_anom=sag_anom)
+
+    def battery_fraction(self) -> float:
+        """Telemetry fraction (STATUS batt_frac): the real coulomb SOC
+        once seeded, the conservative voltage proxy until then."""
+        soc = self.soc_est.soc
+        return soc if soc is not None else self.batt.fraction()
 
     def _pbit_task(self, now: float) -> None:
         if self.state == BOOT:
@@ -378,11 +515,34 @@ class Fcu:
         self._land_datum = self.home[2]
 
     def _failsafes(self, now: float) -> None:
+        """Priority chain, pinned (PLAN_PROBLEM1 P5): FAILSAFE_ATT
+        (nav-loss) > BATT_CRIT > CBIT LAND > LINK_LOSS > BATT_LOW >
+        CBIT RTL > OFFBOARD_TIMEOUT. The CBIT slots command only for
+        faults the legacy chain does not own (mirror rows excluded by
+        the engine), so no-fault flights are bit-identical to P4. The
+        failsafe REASON latches first-come (P3 contract) even when a
+        later fault escalates the mode."""
         p = self.params.get
+        act, cause = self.cbit.degraded()
+        if act == FAILSAFE_ATT:
+            # Position/velocity control is meaningless on a diverged
+            # estimator — outranks every position-tracking response.
+            if self.mode != FAILSAFE_ATT:
+                self.mode = FAILSAFE_ATT
+                self.failsafe = self.failsafe or cause
+            return
+        if self.mode == FAILSAFE_ATT:
+            return    # fault cleared in flight: hold until a command
         if self.batt.state == CRITICAL and self.mode != LAND:
             self._enter_land()
             self.mode = LAND
             self.failsafe = self.failsafe or "BATT_CRIT"
+            return
+        if act == LAND and self.mode != LAND:
+            # Get-down-now class (motor/IMU damage): preempts RTL.
+            self._enter_land()
+            self.mode = LAND
+            self.failsafe = self.failsafe or cause
             return
         if self.mode in (RTL, LAND):
             return
@@ -396,6 +556,11 @@ class Fcu:
             self._enter_rtl()
             self.mode = RTL
             self.failsafe = self.failsafe or "BATT_LOW"
+            return
+        if act == RTL:
+            self._enter_rtl()
+            self.mode = RTL
+            self.failsafe = self.failsafe or cause
             return
         if (self.mode == OFFBOARD
                 and now - self._sp_stamp > p("fcu.offboard_timeout_s")):
@@ -414,6 +579,8 @@ class Fcu:
         if self.state != ARMED or nav is None:
             return
         self._failsafes(now)
+        if self.mode == FAILSAFE_ATT:
+            return    # rate-only: the 400 Hz task flies, no setpoints
         p = self.params.get
         yaw_sp = self._sp_yaw if self.mode == OFFBOARD else 0.0
         if self.mode == OFFBOARD:
@@ -463,14 +630,32 @@ class Fcu:
     def _rate_mix_task(self, now: float) -> None:
         if self.state != ARMED or self.nav is None:
             self.actuators.write((0.0, 0.0, 0.0, 0.0))
+            self._sat_streak = 0
             return
         # Rate feedback: latest gyro minus EKF bias (NavState is 50 Hz).
         imu = self._last_imu
         b_g = self.ekf.b_g
         omega = (imu.gyro[0] - b_g[0], imu.gyro[1] - b_g[1],
                  imu.gyro[2] - b_g[2])
-        rate_sp = self.att_ctl.update(self._q_sp, self.nav.q)
+        if self.mode == FAILSAFE_ATT:
+            # Nav-loss flight: damp all rotation, fixed sub-hover
+            # collective — no attitude estimate consulted.
+            rate_sp = (0.0, 0.0, 0.0)
+            thrust = self._fs_att_thrust
+        else:
+            rate_sp = self.att_ctl.update(self._q_sp, self.nav.q)
+            thrust = self._thrust
         torque = self.rate_ctl.update(rate_sp, omega, 1.0 / 400.0, self._sat)
-        u, flags = self.mixer.mix(self._thrust, torque)
+        u, flags = self.mixer.mix(thrust, torque)
         self._sat = flags.axis_sat
+        # Persistent-saturation observable (CBIT): motors pinned at the
+        # rails. The per-axis flags oscillate with the anti-windup
+        # (demand backs off the tick after it pins), but railed outputs
+        # are the steady signature of unachievable demand. Margin, not
+        # equality: desaturation arithmetic lands epsilon inside the
+        # clip on some ticks (measured 5e-7) — still pinned.
+        self._sat_streak = (self._sat_streak + 1
+                            if any(ui <= 1e-3 or ui >= 0.999 for ui in u)
+                            else 0)
+        self._u_last = u
         self.actuators.write(u)

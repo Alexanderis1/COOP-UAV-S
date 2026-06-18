@@ -143,18 +143,23 @@ def test_mag_draw_layout_is_exactly_as_documented():
 
 
 def test_esc_telem_draw_layout_is_exactly_as_documented():
-    # per sample: [0:r] rpm white, [r] voltage white, [r+1] current white.
-    r = 4
+    # per sample (P5-1f layout): [0:r] rpm white, [r] voltage white,
+    # [r+1] current white, [r+2:r+2+c] cell-tap white.
+    r, c = 4, 12
     p = EscTelemParams(rate_hz=10.0, sigma_rpm=5.0, sigma_v=0.02,
-                       sigma_i=0.1, rpm_lsb=0.0, v_lsb=0.0, i_lsb=0.0)
-    telem = EscTelem(p, N, r, np.random.default_rng(SEED))
+                       sigma_i=0.1, rpm_lsb=0.0, v_lsb=0.0, i_lsb=0.0,
+                       sigma_v_cell=0.005, v_cell_lsb=0.0)
+    telem = EscTelem(p, N, r, np.random.default_rng(SEED), cells=c)
     omega = np.full((N, r), 900.0)
     v_bus = np.full(N, 44.4)
     i_bus = np.full(N, 120.0)
-    frame = telem.sample(omega, v_bus, i_bus)
-    _, eps = _draws(0, r + 2)
+    v_cells = np.full((N, c), 44.4 / c)
+    frame = telem.sample(omega, v_bus, i_bus, v_cells)
+    _, eps = _draws(0, r + 2 + c)
     e = eps[0]
     np.testing.assert_array_equal(frame.rpm,
                                   omega * RPM_PER_RAD_S + e[:, :r] * 5.0)
     np.testing.assert_array_equal(frame.voltage, v_bus + e[:, r] * 0.02)
     np.testing.assert_array_equal(frame.current, i_bus + e[:, r + 1] * 0.1)
+    np.testing.assert_array_equal(frame.cells,
+                                  v_cells + e[:, r + 2:] * 0.005)

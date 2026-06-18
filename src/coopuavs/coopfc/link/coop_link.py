@@ -55,6 +55,22 @@ MSG = {
     # Battery swapped/recharged on the pad (P4-4 rearm cycle): the FCU
     # clears its upward-latched battery monitor — refused while armed.
     8: ("BATT_RESET", "<d", ("stamp",)),
+    # CBIT health northbound (P5-1c, 1 Hz): the u32 fault word (bit
+    # positions = cbit/dictionary.py, pinned), inhibit flags (bit 0 =
+    # arming, bit 1 = fire), and the active degraded-mode action.
+    9: ("HEALTH", "<dIBB", ("stamp", "faults", "flags", "degraded")),
+    # FCU-side hard fire interlock (P5-5, decision 3 release-via-FCU):
+    # the MC mirrors an accepted clearance token down the wire, then
+    # commands release; the FCU validates token correlation + freshness
+    # + CBIT inhibit_fire and emits the pulse on its effector HAL port.
+    # ``stamp``/``issued`` live in the MC clock domain — freshness is
+    # release.stamp - token.issued ONLY (the FCU clock is boot-relative,
+    # never comparable across domains).
+    # track_id is SIGNED i32: debris pseudo-tracks are negative by
+    # contract (world.next_debris_ref, SIM-DEB-003) and ride the same
+    # clearance/release chain.
+    10: ("CLEARANCE_TOKEN", "<did", ("stamp", "track_id", "issued")),
+    11: ("WEAPON_RELEASE", "<di", ("stamp", "track_id")),
 }
 _BY_NAME = {name: (mid, fmt) for mid, (name, fmt, _) in MSG.items()}
 
@@ -71,14 +87,23 @@ MAX_PAYLOAD = max(struct.calcsize(fmt) for _, fmt, _ in MSG.values())
 # pins the mapping here. Cross-checked against the fcu/battery_monitor
 # vocabularies by test_coopfc_link.py.
 STATE_CODES = {"BOOT": 0, "STANDBY": 1, "ARMED": 2}
-MODE_CODES = {"": 0, "OFFBOARD": 1, "POS_HOLD": 2, "RTL": 3, "LAND": 4}
+MODE_CODES = {"": 0, "OFFBOARD": 1, "POS_HOLD": 2, "RTL": 3, "LAND": 4,
+              "FAILSAFE_ATT": 5}
+# 5+ (P5-1c, additive): CBIT-commanded failsafe reasons = the fault
+# codes of non-mirror dictionary rows with a degraded response
+# (cross-checked against cbit/dictionary.py by test_coopfc_cbit_actions).
 FAILSAFE_CODES = {"": 0, "BATT_CRIT": 1, "LINK_LOSS": 2, "BATT_LOW": 3,
-                  "OFFBOARD_TIMEOUT": 4}
+                  "OFFBOARD_TIMEOUT": 4, "EKF_DIVERGED": 5, "IMU_STALE": 6,
+                  "GYRO_STUCK": 7, "MOTOR_RESPONSE": 8, "DR_BUDGET_LOW": 9,
+                  "CELL_IMBALANCE": 10}
 BATT_CODES = {"NORMAL": 0, "LOW": 1, "CRITICAL": 2}
+# HEALTH.degraded wire codes = the cbit/dictionary.py action vocabulary.
+DEGRADED_CODES = {"": 0, "RTL": 1, "LAND": 2, "FAILSAFE_ATT": 3}
 STATE_NAMES = {v: k for k, v in STATE_CODES.items()}
 MODE_NAMES = {v: k for k, v in MODE_CODES.items()}
 FAILSAFE_NAMES = {v: k for k, v in FAILSAFE_CODES.items()}
 BATT_NAMES = {v: k for k, v in BATT_CODES.items()}
+DEGRADED_NAMES = {v: k for k, v in DEGRADED_CODES.items()}
 
 
 def encode_msg(name: str, *values) -> bytes:
@@ -158,9 +183,17 @@ class Channel:
         self._in_flight = 0
         self.sent = 0
         self.dropped = 0
+        # P5-2a jam seam (SIM-SIL-003 link fault): while jammed, sends
+        # are refused AND anything arriving is lost on the air — both
+        # tallied in ``dropped``. Default off: no behavior change.
+        self.jammed = False
 
     def send(self, frame: bytes, now: float) -> bool:
-        """Queue a frame; False = refused (in-flight budget exceeded)."""
+        """Queue a frame; False = refused (in-flight budget exceeded
+        or the link is jammed)."""
+        if self.jammed:
+            self.dropped += 1
+            return False
         n = len(frame)
         if self._in_flight + n > self.queue_max_bytes:
             self.dropped += 1
@@ -179,4 +212,7 @@ class Channel:
             _, frame = self._wire.popleft()
             self._in_flight -= len(frame)
             out.append(frame)
+        if self.jammed and out:
+            self.dropped += len(out)
+            return []
         return out

@@ -26,10 +26,16 @@ import zlib
 
 import numpy as np
 
+from coopuavs.coopfc.cbit import CbitEngine
+from coopuavs.coopfc.cbit.dictionary import act_rank, word_names
+
 from ..core.messages import Header, UavMode, UavState
 from . import guidance
 from .fcu_client import SitlBody
-from .interceptor_app import BATT_LOW_DEBOUNCE_S, LOITER_ALT, LOW_BATTERY_RTB
+from .interceptor_app import (
+    BATT_LOW_DEBOUNCE_S, C2_LINK_FLOOR, LOITER_ALT, LOW_BATTERY_RTB,
+    REARM_MIN_BATT,
+)
 
 
 class SentinelApp:
@@ -66,6 +72,8 @@ class SentinelApp:
         self._in_command = box("command")
         self._in_link = box("link_quality")
         self._out_state = box("uav_state")
+        # MC-side CBIT (P5-4; interceptor_app rationale).
+        self._cbit = CbitEngine()
 
     @property
     def battery(self) -> float:
@@ -79,13 +87,17 @@ class SentinelApp:
                 self._rtb_ordered = True
         for q in self._in_link.drain():
             self.link_quality = q
+        self._cbit.report("LINK_C2_LOSS",
+                          self.link_quality < C2_LINK_FLOOR, now)
         self._update(now)
 
     def _update(self, t: float) -> None:
         period = 1.0 / self.clock.tick_hz
 
         if self.mode == UavMode.REARM:
-            if t >= (self._rearm_until or 0.0):
+            if t >= (self._rearm_until or 0.0) and self.battery >= REARM_MIN_BATT:
+                # Same pack-swap declaration gate as the interceptor
+                # (interceptor_app.REARM_MIN_BATT rationale).
                 self._rearm_until = None
                 self._client.request_batt_reset()
                 self._client.hold_arm = False
@@ -158,6 +170,22 @@ class SentinelApp:
     def _at(self, point: np.ndarray, radius: float = 25.0) -> bool:
         return bool(np.linalg.norm(self.body.position - point) < radius)
 
+    def _health(self) -> dict:
+        """Northbound UavHealth digest (P5-4; interceptor_app rationale)."""
+        word = self._client.fault_word | self._cbit.word()
+        deg_fcu = self._client.cbit_degraded
+        deg_mc = self._cbit.degraded_mode()
+        return {
+            "faults": word,
+            "codes": word_names(word),
+            "inhibit_fire": bool(self._client.cbit_inhibit_fire
+                                 or self._cbit.inhibit_fire),
+            "inhibit_arming": bool(self._client.cbit_inhibit_arming
+                                   or self._cbit.inhibit_arming),
+            "degraded": (deg_fcu if act_rank(deg_fcu) >= act_rank(deg_mc)
+                         else deg_mc),
+        }
+
     def _publish_state(self, t: float) -> None:
         nav, status = self._client.nav, self._client.status
         self._out_state.post(
@@ -178,5 +206,6 @@ class SentinelApp:
                             if nav is not None else None),
                 nav_quality=(status["sigma_pos_h"]
                              if status is not None else None),
+                health=self._health(),
             )
         )

@@ -171,13 +171,15 @@ def test_esc_driver_rpm_to_rad_s_round_trip():
     sub = topics.subscribe("esc_status")
     omega = (800.0, 810.0, 790.0, 805.0)  # rad/s, mechanical shaft
     rpm = tuple(w * 60.0 / math.tau for w in omega)  # hw encoding
-    hal.port("esc").write((rpm, 44.4, 95.0))
+    cells = (3.70,) * 11 + (3.69,)
+    hal.port("esc").write((rpm, 44.4, 95.0, cells))
     drv.tick(0.1)
     msg = sub.read()
     assert msg.omega == pytest.approx(omega, abs=1e-9)
     assert msg.rpm == rpm
     assert msg.v_bus == 44.4
     assert msg.i_bus == 95.0
+    assert msg.cells == cells             # P5-1f BMS cell taps
 
 
 def test_esc_driver_rejects_garbage_without_publishing():
@@ -188,15 +190,17 @@ def test_esc_driver_rejects_garbage_without_publishing():
     hal, topics = HalIO(), TopicStore()
     drv = EscDriver(hal.port("esc"), topics)
     sub = topics.subscribe("esc_status")
-    for bad in (((math.nan,) * 4, 44.4, 95.0),
-                ((800.0,) * 4, math.nan, 95.0),
-                ((800.0,) * 4, math.inf, 95.0),
-                ((800.0,) * 4, 0.0, 95.0),
-                ((800.0,) * 4, 44.4, math.nan)):
+    cells = (3.7,) * 12
+    for bad in (((math.nan,) * 4, 44.4, 95.0, cells),
+                ((800.0,) * 4, math.nan, 95.0, cells),
+                ((800.0,) * 4, math.inf, 95.0, cells),
+                ((800.0,) * 4, 0.0, 95.0, cells),
+                ((800.0,) * 4, 44.4, math.nan, cells),
+                ((800.0,) * 4, 44.4, 95.0, (math.nan,) * 12)):
         hal.port("esc").write(bad)
         drv.tick(0.1)
     assert sub.updated is False  # nothing published
-    assert drv.bad_frames == 5
+    assert drv.bad_frames == 6
 
 
 # ------------------------------------------------------- scheduler integration

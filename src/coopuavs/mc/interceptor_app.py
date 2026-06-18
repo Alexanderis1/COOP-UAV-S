@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..core.messages import Header, Track, UavMode, UavState
+from coopuavs.coopfc.cbit import CbitEngine
+from coopuavs.coopfc.cbit.dictionary import act_rank, word_names
+
+from ..core.messages import EngagementDecision, Header, Track, UavMode, UavState
 from . import cooperation, guidance
 from .fire_control import ABORT_TASK, PURSUING, TERMINAL_RANGE_FACTOR, FireControl
 from .fcu_client import SitlBody
@@ -36,6 +39,17 @@ LOW_BATTERY_RTB = 0.15
 # spool-up reads ~0.1 for one sample): like the FCU monitor, the MC
 # floor must hold continuously before it triggers.
 BATT_LOW_DEBOUNCE_S = 2.0
+# Pack-swap declaration gate (P5-1f): the turnaround timer alone is not
+# "pack ready" — the pad charger's current never crosses the bus sense,
+# so BATT_RESET must wait until telemetry shows the charge actually
+# aboard, or the post-swap SOC re-seed reads a half-charged pack and
+# latches BATT_LOW on a vehicle that is still filling. 0.5 = the P4
+# partial-top-up operating point (deadline launches stay possible).
+REARM_MIN_BATT = 0.5
+# C2 link quality below this = LINK_C2_LOSS (P5-4): the MC's own CBIT
+# fault — the FCU cannot see the C2 radio. Inhibits release (dictionary
+# row): with C2 lost, even a token already in hand must not fire.
+C2_LINK_FLOOR = 0.2
 # Idle/RTB hold point sits this far above the pad: the SITL plant has
 # no ground contact (deferred, user decision 2026-06-12), so only the
 # FCU's LAND mode — controlled descent + touchdown latch at the home
@@ -71,6 +85,10 @@ class InterceptorApp:
         self.effector = effector
         self._ammo_capacity = effector.ammo
         self._fc = FireControl(uav_id, effector)
+        # MC-side CBIT (P5-4): faults only the MC can see (the C2 radio
+        # is the MC's, not the FCU's); merged with the FCU HEALTH word
+        # into the northbound UavState.health digest.
+        self._cbit = CbitEngine()
 
         self._task = None
         self._role: str = "none"
@@ -107,6 +125,16 @@ class InterceptorApp:
         for msg in self._in_clearance.drain():
             if msg.uav_id == self.uav_id:
                 self._fc.accept_clearance(msg, self._task)
+                if (self._fc.clearance is msg
+                        and msg.decision == EngagementDecision.AUTHORIZED):
+                    # Accepted AND authorized: mirror the token down the
+                    # wire so the FCU hard interlock can correlate the
+                    # release (P5-5). HOLD/DENIED must NOT arm the FCU —
+                    # the interlock backstops exactly the case where MC
+                    # software misfires on a refused clearance. Stamps
+                    # stay in the MC clock domain.
+                    self._client.send_clearance_token(
+                        msg.track_id, msg.header.stamp)
         for msg in self._in_command.drain():
             if msg.uav_id == self.uav_id and msg.command == "rtb":
                 self._rtb_ordered = True
@@ -137,6 +165,8 @@ class InterceptorApp:
 
     def tick(self, now: float) -> None:
         self._drain()
+        self._cbit.report("LINK_C2_LOSS",
+                          self.link_quality < C2_LINK_FLOOR, now)
         self._update(now)
         # Seeker-cue picture for the world-side gimbal shell: the same
         # estimate-only track guidance flies on (SIM-GT-001).
@@ -146,10 +176,10 @@ class InterceptorApp:
         period = 1.0 / self.clock.tick_hz
 
         if self.mode == UavMode.REARM:
-            if t >= (self._rearm_until or 0.0):
-                # Turnaround complete: pack swapped/recharged (the FCU
-                # clears its latched monitor), magazine restored, back
-                # to the fight. Battery itself reads from telemetry.
+            if t >= (self._rearm_until or 0.0) and self.battery >= REARM_MIN_BATT:
+                # Turnaround complete AND the charge is aboard: pack
+                # swapped/recharged (the FCU clears its latched
+                # monitor), magazine restored, back to the fight.
                 self._rearm_until = None
                 self.effector.ammo = self._ammo_capacity
                 self._client.request_batt_reset()
@@ -231,15 +261,34 @@ class InterceptorApp:
             )
         self.body.command_velocity(v_cmd)
 
+        if self._client.cbit_inhibit_fire or self._cbit.inhibit_fire:
+            # CBIT veto (P5-1e + P5-4): the FCU's health word — or the
+            # MC's own (C2 link lost: a token in hand authorizes a
+            # geometry nobody can re-confirm) — says release is unsafe.
+            # Keep pursuing, but the release chain is frozen: no new
+            # requests, no token consumption, no release. Tokens age
+            # out on their own freshness window (CLEARANCE_VALID_S);
+            # the FCU-side hard interlock (P5-5) backs this veto with
+            # its own token + CBIT validation on the other end.
+            return
         action = self._fc.engage(
             t, self._task, track, tgt_pos,
             self.body.position, self.body.velocity,
-            self._out_request.post, self._out_fire.post)
+            self._out_request.post, self._fire_pub)
         if action == PURSUING:
             return
         self.mode = UavMode.ENGAGE
         if action == ABORT_TASK:
             self._task = None
+
+    def _fire_pub(self, msg) -> None:
+        """Release chain (P5-5, decision 3): the FireRequest is staged
+        with its EXACT legacy payload (the sitl twins pin
+        byte-equality) while the actual release is commanded through
+        the FCU hard interlock — the world-side shell publishes the
+        staged request only on the FCU's pulse ack."""
+        self._out_fire.post(msg)
+        self._client.send_weapon_release(msg.track_id)
 
     def _support_behaviour(self, track: Track) -> None:
         support_ids = [
@@ -306,6 +355,28 @@ class InterceptorApp:
     def _at(self, point: np.ndarray, radius: float = 25.0) -> bool:
         return bool(np.linalg.norm(self.body.position - point) < radius)
 
+    def _health(self) -> dict:
+        """Northbound UavHealth digest (P5-4, PHY-UAV-013/033): the FCU
+        HEALTH word merged with the MC's own faults; rides UavState at
+        the app rate (10 Hz >= the 1 Hz requirement) through the same
+        comms layer as everything else."""
+        word = self._client.fault_word | self._cbit.word()
+        # EVERY field merges both engines: a future MC-side fault with an
+        # arming inhibit or degraded response must not silently vanish
+        # from the digest while its code shows.
+        deg_fcu = self._client.cbit_degraded
+        deg_mc = self._cbit.degraded_mode()
+        return {
+            "faults": word,
+            "codes": word_names(word),
+            "inhibit_fire": bool(self._client.cbit_inhibit_fire
+                                 or self._cbit.inhibit_fire),
+            "inhibit_arming": bool(self._client.cbit_inhibit_arming
+                                   or self._cbit.inhibit_arming),
+            "degraded": (deg_fcu if act_rank(deg_fcu) >= act_rank(deg_mc)
+                         else deg_mc),
+        }
+
     def _publish_state(self, t: float) -> None:
         nav, status = self._client.nav, self._client.status
         self._out_state.post(
@@ -327,5 +398,6 @@ class InterceptorApp:
                             if nav is not None else None),
                 nav_quality=(status["sigma_pos_h"]
                              if status is not None else None),
+                health=self._health(),
             )
         )
