@@ -917,3 +917,55 @@ A 6-week-shaped learning path for one engineer (parallelizable across teammates 
   ground truth.
 - One relevant MDPI paper (Electronics 12(4):829, ground risk estimation) is flagged
   **RETRACTED** on the publisher page — do not cite it.
+
+---
+
+## P1 physics core - equation sources (added 2026-06-11)
+
+Per-equation traceability for `src/coopuavs/physics/` (plan rule: one
+citation per implemented equation; module docstrings carry the same
+references next to the code). Items marked **[standard reference, URL not
+verified]** follow the convention of the Verification notes above; every
+equation is additionally pinned by an analytic unit test, so no citation
+below is load-bearing for correctness.
+
+| Model / equation | Implementation | Source |
+|---|---|---|
+| Quaternion kinematics `q_dot = 1/2 q (x) (0, w)` | `rigid_body.quat_derivative` | J. Sola, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508 (2017), eq. (199). |
+| Euler rotational dynamics `w_dot = J^-1 (tau - w x Jw)` | `rigid_body.derivatives` | Beard & McLain, *Small Unmanned Aircraft* (Princeton UP, 2012), eq. 3.15-3.17. [standard reference] |
+| Classic RK4, per-step quaternion renorm | `rigid_body.rk4_step` | Press et al., *Numerical Recipes*, 3rd ed., sec. 17.1. [standard reference] |
+| ISA troposphere T/p/rho/a | `atmosphere.py` | U.S. Standard Atmosphere 1976 (NOAA-S/T 76-1562); ICAO Doc 7488. [standard reference] |
+| Dryden forming filters + low-altitude sigma/L table | `dryden.py` | MIL-F-8785C, *Flying Qualities of Piloted Airplanes* (1980), sec. 3.7.2; transfer-function forms as in Beard & McLain sec. 4.4. |
+| Rotor thrust `kf w^2`, yaw reaction `km w^2`, allocation | `multirotor.wrench` | Mahony, Kumar & Corke, *Multirotor aerial vehicles*, IEEE Robotics & Automation Magazine 19(3), 2012. [standard reference] |
+| Ground effect `T_IGE/T_OGE = 1/(1-(R/4z)^2)` | `multirotor._ground_effect` | Cheeseman & Bennett, *The effect of the ground on a helicopter rotor in forward flight*, ARC R&M 3021 (1955). [standard reference] |
+| Linear rotor drag `f = -D v_air_body` | `multirotor.wrench` | Faessler, Franchi & Scaramuzza, *Differential flatness of quadrotor dynamics subject to rotor drag...*, IEEE RA-L 3(2), 2018. |
+| Brushless motor/ESC: `i=(dV-Ke w)/Rw`, `J_r w_dot = Kt i - k_q w^2`, `Ke=Kt=60/(2 pi KV)` | `motor.py` | Standard DC-machine model; multirotor application per Mahony et al. 2012. [standard reference] |
+| Thevenin 1-RC battery ECM + OCV(SOC) | `battery.py` | Chen & Rincon-Mora, *Accurate electrical battery model capable of predicting runtime and I-V performance*, IEEE Trans. Energy Conversion 21(2), 2006. |
+| Implicit DC-bus fixed point `v_bus = (OCV - V1 + (R0/R_w) Ke sum(theta_r w_r)) / (1 + R0 sum(theta_r^2)/R_w)`, `i_bus = (sum(theta_r^2) v_bus - Ke sum(theta_r w_r)) / R_w` | `powertrain.py` | No external source: closed-form simultaneous (Kirchhoff) solution of the two component models above, at pre-step omega/SOC/V1. Stability rationale: the quasi-static armature plus the ECM R0 feedthrough give any explicit one-step-lag composition a loop gain `g = R0 sum(theta_r^2)/R_w` (= 3.6 theta^2 for interceptor_quad, 2.0 theta^2 for fpv_quad) — a fixed-point iteration that diverges for g > 1 (above ~hover throttle) at ANY dt, so the loop must be solved implicitly. Bus current is then clamped to the YAML `i_bus_max_a` (ESC/BMS limit, ~1.5x steady full-throttle draw) and bus voltage to [3.0, 4.2] V/cell. |
+| Fixed-wing aero: blended lift 4.9-4.10, induced drag 4.11, lateral set 4.14, prop 4.15, stability->body 4.19 | `fixedwing.py` (FRD verbatim, `M=diag(1,-1,-1)` flip to FLU) | Beard & McLain 2012, ch. 4. [standard reference] |
+| Slab-method segment vs AABB | `collision.py` | Ericson, *Real-Time Collision Detection* (2005), sec. 5.3.3 (Kay-Kajiya). [standard reference] |
+| Oracle simulator | `scripts/oracle/export_rotorpy.py` | Folk, Paulos & Kumar, *RotorPy: a Python-based multirotor simulator...*, arXiv:2306.04485 (2023); rotorpy 2.1.2. |
+
+Airframe parameter files (`physics/params/*.yaml`) are
+invented-but-self-consistent (no public data for these classes) and are
+pinned by trim/terminal/envelope tests - the YAML headers say so explicitly.
+
+Known model-validity limitations (gate review 2, 2026-06-11; both kept
+as-is by decision, with the same warnings carried in the code):
+
+- **B&M eq. 4.15 windmill drag** (`fixedwing.py`): at throttle cut the
+  verbatim prop model produces NEGATIVE thrust
+  `~ -1/2 rho S_prop C_prop Va^2` — about -643 N for shahed_fw at 50 m/s
+  cruise, ~2.5x the total aero drag (~260 N). Faithful to the book away
+  from its design point; P6 threat behaviors must not model throttle-cut
+  glides / engine-out trajectories without revisiting (clamp or a
+  momentum-theory windmill model).
+- **interceptor_quad constant kf/km at dash** (`params/interceptor_quad.yaml`):
+  the committed KV/R_w/12S imply a full-throttle ceiling of ~1400 rad/s
+  (13.4 krpm) on the 0.178 m prop — tip Mach ~0.73 on a stiff 44.4 V bus
+  (~M 0.59-0.69 with pack sag), ~1.7x class-typical 14" prop rpm ratings;
+  at the 80 m/s dash the helical advancing-tip Mach reaches ~0.8, where
+  compressibility invalidates the constant-kf/km quadratic model. Hover
+  (738 rad/s, tip M ~0.38) is fine. No pin is affected (the RotorPy oracle
+  shares the constant-coefficient model class); revisit (kf(Mach) rolloff
+  or larger/slower props) if dash-regime fidelity becomes load-bearing.

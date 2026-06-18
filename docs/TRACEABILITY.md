@@ -50,6 +50,29 @@
 | PHY-SNT-003 (sentinel endurance/turnaround) | Shared `UavAirframe` battery + RTB/REARM cycle; patrol auto-resume | high | — |
 | PHY-CHG-001 (rooftop/adjacent charging stations) | `ChargingStation` objects in `sim/environment.py`; UAV homes resolved to stations; citygen sites them on rooftops/pads | representative | Charge model is the existing turnaround timer; no power/queueing model. |
 
+## Staged models — physics core (P1, not yet wired into the sim)
+
+P1 delivered `src/coopuavs/physics/` standalone (plan Problem-1; wiring
+arrives in P4 for the fleet and P6 for threats — the PHY rows above keep
+describing the live legacy path until then). Equation citations:
+RESEARCH.md "P1 physics core". Validation per model:
+
+| Model | Will serve | Fidelity | Validation pins |
+|---|---|---|---|
+| `physics/rigid_body.py` batched quat 6DOF RK4 | PHY-UAV-001 dynamics (replaces point-mass via SIM-PHX-005), 6DOF threats | high | free-fall exact; analytic spin; 60 s torque-free energy/momentum drift < 1e-9 (diagonal and Jxz inertia); order-4 slope; state-dependent-wrench exponential-decay anchor; Hamilton-product literals; batch==scalar; scipy cross-checks |
+| `physics/atmosphere.py` ISA | PHY-UAV-002 envelope | high | USSA-1976 table values at 0/1/11 km; > 11 km and non-finite altitude ValueError |
+| `physics/dryden.py` MIL-F-8785C | PHY-UAV-002 wind/turbulence (upgrade of `sim/weather.py` displacement) | high | Welch PSD == analytic spectrum; variance; spec param table vs independent literals (Beard-McLain Table 4.1 cross-check); 10/1000 ft clamps; coeffs == scipy.signal.bilinear; per-vehicle child RNG streams (fleet-size invariant); stationary cold start; `gusts_to_world` body->world rotation pins |
+| `physics/motor.py` + `physics/battery.py` | PHY-UAV-013 energy truth, SIM-SIL motor/battery faults | representative | tau in 15-50 ms band; w ceiling tracks sag; sag = I*R0; recovery exp(tau1); coulomb exact; throttle clip + SOC charge-side clamp. Standalone only — bus coupling is an unstable algebraic loop, wire through `powertrain.py` |
+| `physics/powertrain.py` implicit motor+battery DC-bus coupling | PHY-UAV-013 energy truth (P4-4 wiring), battery-sag faults | representative | bus fixed point satisfies both component equations; explicit lagged loop diverges where Powertrain stays bounded; 10 s closed loop finite + SOC monotone; spin-up inrush clamped at `i_bus_max_a` (YAML sizing pinned); bus voltage in [3.0, 4.2] V/cell; batch==scalar |
+| `physics/multirotor.py` + `interceptor_quad.yaml` / `fpv_quad.yaml` | PHY-UAV-001 Tier-P plant; FPV multirotor threat (P6) | representative (invented-but-self-consistent params) | hover trim 0.1%; Cheeseman-Bennett curve exact + max-gain clip in the singular band; 80 m/s terminal at 65 deg pin; rho-scaling of parasitic drag; drag dissipation; allocation signs + literal moment magnitudes; fpv_quad hover headroom 0.3-0.8 and T/W 2.0-4.5; RotorPy oracle gate 0.005 m / 0.01 deg over 10 s x 6 flights (measured <= 1.9e-4 m / <= 8.9e-5 deg) |
+| `physics/fixedwing.py` + `shahed_fw/jet_owa_fw.yaml` | 6DOF threat classes (P6) | representative | cruise trim residual < 1e-3 mg; Cm_alpha < 0; stall bounded; damping/weathervane signs; literal q/r rate-term pins (c/2V vs b/2V); prop washout; 5 s closed-loop trim hold; Jxz aileron roll-yaw coupling |
+| `physics/collision.py` | wreck/impact events for sitl/sixdof modes | high | analytic wall/roof/terrain hits; malformed-prism ValueError in every entry point; one `ground_z` datum shared by terrain + prisms (nonzero-datum pins); batch==scalar 1e-12 |
+
+Perf: plant RK4 at 800 Hz is gated at 0.25 s CPU/sim-s for **both** N=20
+and N=30 (`pytest -m perf`); the tighter ~0.2 s/sim-s N=30 budget-table
+figure is informational only (printed by the test, never asserted).
+Measured 2026-06-11: 0.19-0.22 s/sim-s, machine-dependent.
+
 ## Coverage summary
 
 - **high:** 19 — the interlock chain, middleware shape, sensing layer,

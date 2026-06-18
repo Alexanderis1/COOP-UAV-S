@@ -97,3 +97,43 @@ pipeline order or stop asserting on them.
 3. Per-consumer RNG streams (already executor-safe).
 4. The routed/unrouted split: unrouted topics assume same-tick synchronous
    delivery (the clearance interlock and inline adjudication depend on it).
+5. The §6 micro-tick order once the SITL engine lands (P4).
+
+## 6. SITL micro-tick contract (P1 models staged; engine lands in P4)
+
+Referenced normatively by the physics docstrings (`physics/motor.py`,
+`physics/__init__.py`); the frozen order is the PLAN_PROBLEM1 "Time —
+two-level clock" contract, extended here with where the Dryden gust draw
+and the powertrain bus solve sit. Inside one §1 item-6 macro seam, each of
+the K micro-ticks (BASE_HZ, plan: 800 Hz) runs, in this frozen order:
+
+1. **Devices sample truth** (hw models; per-device RNG streams).
+2. **Per-vehicle software scheduler** runs due tasks: drivers → estimator →
+   controllers → mixer → PWM → CBIT → link.
+3. **MC tick** if due.
+4. **Latch actuators** — throttle/surface commands frozen for the rest of
+   the micro-tick.
+5. **Dryden gust draw** — one `DrydenGusts.step()` per fleet bank
+   (per-vehicle child streams, §4-conformant: a fleet-size change leaves
+   every other vehicle's gust history identical). The body-FLU gusts are
+   rotated through each vehicle's pre-step attitude with
+   `dryden.gusts_to_world` and composed into `wind_world`, which is then
+   held (ZOH) across the plant RK4 stages.
+6. **Powertrain bus solve + electrical advance** — `Powertrain.step()` at
+   the latched throttle: closed-form implicit solve of the motor/battery
+   algebraic bus loop at pre-step omega/SOC/V1, bus current and
+   cell-voltage limits, then motor RK2 micro-step and battery SOC/V1
+   update. The resulting rotor speeds are **latched** as plant inputs.
+   Never wire `i_bus` → `battery.step` → `v_bus` explicitly one step late:
+   that composition diverges at any dt (`physics/powertrain.py`).
+7. **ONE batched fleet RK4** — `rigid_body.rk4_step` over all vehicles at
+   the latched rotor speeds/wind; state-dependent wrench terms re-evaluate
+   at every RK4 stage, latched inputs do not.
+8. **Threat batch** (P6 6DOF threats, own streams).
+
+Steps 5 and 6 have no data flow between them and draw from separate
+streams, but the order is frozen anyway — determinism pins replay whole
+ticks. Status: P1 ships the models and their unit pins; the tick order
+itself gets pinned by the P4 SitlEngine tests
+(`tests/test_sitl_end_to_end.py` determinism pins) when the micro-loop
+lands.

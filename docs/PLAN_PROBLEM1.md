@@ -17,6 +17,37 @@ per task — gates are never loosened silently.*
   per cadence decision; next: P1 (physics core, standalone).
 - 2026-06-11 — PR [#7](https://github.com/Alexanderis1/COOP-UAV-S/pull/7) opened
   (`feature/problem1-p0-foundations`, stacked on #6 / `feature/urban-environment`).
+- 2026-06-11 — **P1 COMPLETE, GATE PASSED**: physics core standalone, 287 default +
+  1 slow + 5 `@oracle` + 1 `@perf` green, ruff clean. Perf 0.188 s CPU/sim-s at
+  N=20/N=30 (gate 0.25; first measure 0.406 → numpy hot-path work, no numba).
+  RotorPy oracle ≤0.0002 m / ≤1e-4° over 10 s. 41-agent adversarial review (3-lens
+  refutation per finding): 12 raw → 8 upheld → 6 distinct, all fixed same day
+  (3 mutation-killing test pins for quat_rotate_inv / body-frame Faessler drag /
+  control-surface polarity; Dryden v≤0 ValueError; collision closed hi-face bounds;
+  oracle exporter t=0 init + sanctioned trace re-record). Stopped for user review
+  per cadence; next: P2 (hw device models) or P6 lane B (both unblocked by P1).
+- 2026-06-11 — **P1 gate review 2** (45-agent deep inspection of PR #8: confirmed
+  findings incl. 1 critical motor↔battery algebraic-loop instability). Fixed in 9
+  WPs, all done: **WP1** `physics/powertrain.py` implicit DC-bus solve + `i_bus_max_a`
+  current clamp (350 A / 125 A new YAML `powertrain:` blocks) + [3.0, 4.2] V/cell
+  bounds, closed-loop pins (explicit lagged loop pinned divergent). **WP2** dryden
+  NaN-airspeed/dt ValueError, per-vehicle spawned RNG streams (fleet-size invariant),
+  stationary cold start (closed-form discrete Lyapunov), MIL-8785C independent
+  literals + 1000 ft upper-clamp pin, ISA non-finite/>11 km pins, `gusts_to_world`
+  body→world converter. **WP3** rigid-body pins: frozen-wrench killer (linear-drag
+  exponential decay), Hamilton-product literals, Jxz tumble invariants + solve_ivp
+  cross-check. **WP4** fixed-wing pins: FRD r channel, c/2V-vs-b/2V + CL_q literals,
+  washout threshold, 5 s closed-loop trim hold, Jxz aileron coupling; windmill-drag
+  docstring note. **WP5** multirotor pins: GE max-gain clip in singular band, literal
+  moment magnitudes, rho scaling. **WP6** collision: sign-preserving eps (negative-t
+  fix), malformed-prism ValueError, `ground_z` threaded as one terrain+prism datum.
+  **WP7** N=30 perf now gated at 0.25 s/sim-s (0.2 stays informational). **WP8** 6th
+  oracle flight `roll_mix_pulse` (gyroscopic coupling), gates tightened 0.5 m/3° →
+  0.005 m/0.01° (measured ≤1.9e-4 m / ≤8.9e-5°). **WP9** docs: TRACEABILITY staged
+  table re-stated (gate-vs-margin, fpv_quad under multirotor, powertrain row, perf
+  wording), ORDERING.md §6 micro-tick contract (gust draw + bus solve placement),
+  RESEARCH.md powertrain equation + windmill/tip-Mach known limitations, this entry.
+  No existing pins re-baselined; param values unchanged (comments/keys only).
 
 ## Context
 
@@ -163,20 +194,28 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       Awaiting user review before P1.
 
 ### P1 — Physics core, standalone (L) — vectorized `(N,·)` from day one
-- [ ] P1-1 `physics/rigid_body.py` batched quat RK4: free-fall/quat-rotation analytic, energy drift
-      <1e-9/60 s vacuum, RK4 order slope test
-- [ ] P1-2 `atmosphere.py` ISA + `dryden.py` MIL-F-8785C (PSD matches analytic spectrum via Welch)
-- [ ] P1-3 `motor.py` (step τ in 15-50 ms band, ω ceiling tracks sagging V) + `battery.py` ECM
-      (instant sag = I·R0, recovery τ1, coulomb integral exact)
-- [ ] P1-4 `multirotor.py`: hover trim Σkfω²=mg ±0.1%, ground-effect curve at z/R∈{0.6,1,2},
-      terminal speed 80±5 m/s at 65° tilt (pins airframe params), Faessler drag signs
-- [ ] P1-5 `fixedwing.py` Beard-McLain: trim at cruise (residual <1e-3·mg), C_mα<0, stall bounded;
-      shahed_fw/jet_owa_fw/fpv_quad param files
-- [ ] P1-6 `collision.py` prism/terrain + batch==scalar equivalence (1e-12) + perf microbench
-      (`@perf`: 20-vehicle RK4 @800 Hz ≤0.25 s CPU/sim-s)
-- [ ] P1-7 oracle traces: `scripts/oracle/export_rotorpy.py` → committed CSVs; `@oracle` tests
-      pos RMSE <0.5 m / att <3° over 10 s matched-param flights
-- [ ] P1-8 TRACEABILITY + RESEARCH.md citations per equation (TRC-001 same commit)
+- [x] P1-1 `physics/rigid_body.py` batched quat RK4: free-fall/quat-rotation analytic, energy drift
+      <1e-9/60 s vacuum, RK4 order slope test. 13 tests `tests/test_rigid_body.py` (2026-06-11)
+- [x] P1-2 `atmosphere.py` ISA + `dryden.py` MIL-F-8785C (PSD matches analytic spectrum via Welch).
+      13 tests `tests/test_atmosphere_dryden.py` (2026-06-11)
+- [x] P1-3 `motor.py` (step τ in 15-50 ms band, ω ceiling tracks sagging V) + `battery.py` ECM
+      (instant sag = I·R0, recovery τ1, coulomb integral exact — exact-ZOH discretization).
+      12 tests `tests/test_motor_battery.py` (2026-06-11)
+- [x] P1-4 `multirotor.py`: hover trim Σkfω²=mg ±0.1%, ground-effect curve at z/R∈{0.6,1,2},
+      terminal speed 80±5 m/s at 65° tilt (cdA tuned → 80.0, pins airframe params), Faessler
+      drag signs. `params/interceptor_quad.yaml`. 12 tests `tests/test_multirotor.py` (2026-06-11)
+- [x] P1-5 `fixedwing.py` Beard-McLain: trim at cruise (residual <1e-3·mg; shahed α 7.1° δt 0.74,
+      jet α 3.0° δt 0.23), C_mα<0, stall bounded; shahed_fw/jet_owa_fw/fpv_quad param files.
+      FRD↔FLU flip M=diag(1,-1,-1) doc'd+tested. 11 tests `tests/test_fixedwing.py` (2026-06-11)
+- [x] P1-6 `collision.py` prism/terrain + batch==scalar equivalence (1e-12) + perf microbench
+      (`@perf`: 20-vehicle RK4 @800 Hz ≤0.25 s CPU/sim-s) — gate first measured 0.406, numpy
+      hot-path optimization (no numba) → **0.188 s/sim-s at N=20 and N=30**. 10 tests (2026-06-11)
+- [x] P1-7 oracle traces: `scripts/oracle/export_rotorpy.py` → 5 committed CSVs; `@oracle` tests
+      pos RMSE <0.5 m / att <3° over 10 s matched-param drag-free flights — measured ≤0.0002 m /
+      ≤1e-4°. rotorpy 2.1.2 offline-only. pitch flight = doublet (one-sided pulse tumbled through
+      ground plane: our GE clamp vs RotorPy no-GE; flight-design fix) (2026-06-11)
+- [x] P1-8 TRACEABILITY (staged-models table) + RESEARCH.md "P1 physics core" citations per
+      equation (TRC-001 same commit) (2026-06-11)
 
 ### P2 — Hardware device models (M)
 - [ ] P2-1 `hw/imu.py`: Allan-variance slope test recovers configured N/B/K ±10% (`@slow`);
