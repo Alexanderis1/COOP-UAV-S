@@ -1,9 +1,11 @@
-# COOP-UAV-S — Runtime Interface Contract (ICD-RUNTIME)
+# COOP-UAV-S — Runtime Interface Contract (ICD-RUNTIME) — v0.4
 
 > Implements SRS §6 for the current stage. This is the **binding wire
 > contract** between Element 2 (simulator backend) and Element 3 (web
 > interface + ORC). Both sides are built against this document; change it
-> only deliberately and in one commit with both sides.
+> only deliberately and in one commit with both sides. v0.4 adds the
+> optional sitl `uavs[]` fields (`att`/`nav_q`/`health`, §2.2) —
+> strictly additive over v0.3.
 
 ## 1. Topology
 
@@ -63,7 +65,8 @@ civilians certainly present. `homes` is kept for backward compatibility;
              "impact":[x,y,0]|null,"tti":s|null}],
   "uavs":[{"id":s,"pos":[..],"vel":[..],"mode":s,"ammo":i,
            "battery":f,"task_id":i|null,"link":f,
-           "kind":"interceptor|sentinel","effector":"net|projectile"|null}],
+           "kind":"interceptor|sentinel","effector":"net|projectile"|null,
+           "att":[w,x,y,z]?,"nav_q":f?,"health":{..}?}],
   "turrets":[{"id":s,"az":deg,"el":deg,"ammo":i,
               "state":"idle|slewing|tracking|firing|empty","target":i|null}],
   "wrecks":[{"pos":[..],"zone":"SAFE|DANGEROUS|CRITICAL","mechanism":"net|projectile"}],
@@ -88,6 +91,16 @@ occupancy counts. Attribution fields on engagement events
 "pk":f,"target_kind":"track|debris"}`; new event kinds
 `debris_spawn`, `debris_impact`, `debris_neutralized` (with
 `saved_zone`), `fire_blocked_los`.
+
+v0.4 (P4-7, additive): in `fidelity.fleet=sitl` runs `uavs[]` entries
+MAY carry `att` ([w,x,y,z] EKF attitude estimate), `nav_q`
+(`sigma_pos_h`, m — the navigation solution's own horizontal 1-sigma)
+and `health` (UavHealth summary, populated from P5 on). The keys are
+present exactly when the platform reports them; pointmass recordings
+contain none of them and remain byte-compatible with v0.3 parsers.
+Note `pos`/`vel` in sitl runs are the platform's EKF **estimates** (the
+operational picture — nav error is visible by design); ground truth
+stays on `/eval`.
 
 ### 2.3 Authorisation flow (SRS HMI-AUT, ORC-002)
 

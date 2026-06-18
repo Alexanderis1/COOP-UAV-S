@@ -43,6 +43,17 @@ class VelParams(NamedTuple):
     u_hover: float = 0.463             # normalized hover command
     u_min: float = 0.05                # keep rotors spinning
     u_max: float = 0.95                # headroom for the rate loop
+    # Attitude-setpoint slew, rad/s per tilt axis. During a hard vertical
+    # brake fz is small, so the tilt cone lets a cone-saturating
+    # horizontal demand command ±tilt_max — and a sign-flipping error
+    # then steps the setpoint ±45° at the loop rate. The rate loop slams
+    # torque chasing steps no airframe can follow and the mixer's
+    # rp-priority desat drags average collective back to hover: the
+    # vertical brake is lost (P4 gate-review finding, user decision
+    # 2026-06-12). Slewing the setpoint keeps it followable; 6 rad/s
+    # (~344°/s) is far above every P3 maneuver spec (30° step in
+    # ~90 ms) and only engages on pathological steps.
+    tilt_slew: float = 6.0
 
 
 class VelCtl:
@@ -51,9 +62,11 @@ class VelCtl:
     def __init__(self, params: VelParams = VelParams()):
         self.params = params
         self.i = [0.0, 0.0, 0.0]
+        self._rp = [0.0, 0.0]          # last slewed (roll, pitch) setpoint
 
     def reset(self) -> None:
         self.i = [0.0, 0.0, 0.0]
+        self._rp = [0.0, 0.0]
 
     def update(self, v_sp: vec.Vec3, v: vec.Vec3, yaw_sp: float, dt: float
                ) -> tuple[vec.Quat, float]:
@@ -98,6 +111,11 @@ class VelCtl:
               sy * fhat[0] + cy * fhat[1], fhat[2])
         roll = -math.asin(vec.clip(fl[1], -1.0, 1.0))
         pitch = math.atan2(fl[0], fl[2])
+        # Followable-setpoint slew (see tilt_slew in VelParams).
+        step = p.tilt_slew * dt
+        roll = vec.clip(roll, self._rp[0] - step, self._rp[0] + step)
+        pitch = vec.clip(pitch, self._rp[1] - step, self._rp[1] + step)
+        self._rp = [roll, pitch]
         q_sp = vec.quat_from_euler(roll, pitch, yaw_sp)
 
         u = p.u_hover * math.sqrt(max(f_n, 0.0) / GRAVITY)

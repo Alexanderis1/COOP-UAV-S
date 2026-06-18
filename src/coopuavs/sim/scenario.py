@@ -31,8 +31,9 @@ from ..c2.roe import RoeConfig
 from ..core.comms import CommsModel
 from ..core.messages import ThreatClass
 from ..interceptors.effectors import EFFECTOR_FACTORIES
-from ..interceptors.sentinel import SentinelUav
-from ..interceptors.uav import InterceptorUav
+from ..interceptors.sentinel import SentinelUav, SitlShellSentinel
+from ..interceptors.uav import InterceptorUav, SitlShellUav
+from ..mc.fcu_client import FcuClient
 from ..perception.fusion import FusionNode
 from ..sensors.acoustic import AcousticSensor
 from ..sensors.base import mounted
@@ -40,6 +41,8 @@ from ..sensors.eo_ir import EoIrSensor
 from ..sensors.radar import Radar
 from ..sensors.rf import RfSensor
 from ..sensors.seeker import OnboardSeeker
+from ..sil.fleet import SitlEngine
+from ..sil.vehicle import FriendlyVehicle
 from ..threats.enemy_drone import THREAT_PROFILES, EnemyDrone
 from ..viz.recorder import Recorder
 from .adjudicator import EngagementAdjudicator
@@ -108,12 +111,29 @@ def _parse_fidelity(raw) -> dict:
         if out[key] not in allowed:
             raise ValueError(
                 f"fidelity.{key} must be one of {list(allowed)}, got {out[key]!r}")
-    if out["fleet"] == "sitl":
-        raise NotImplementedError(
-            "fidelity.fleet=sitl lands with the SITL engine (PLAN_PROBLEM1 P4)")
     if out["threats"] == "sixdof":
         raise NotImplementedError(
             "fidelity.threats=sixdof lands with the 6DOF threat batch (PLAN_PROBLEM1 P6)")
+    return out
+
+
+# SITL engine knobs (`sitl:` block; only legal with fidelity.fleet=sitl).
+_SITL_LINK_KEYS = {"latency_s", "bandwidth_bps", "queue_max_bytes"}
+
+
+def _parse_sitl(raw) -> dict:
+    cfg = dict(raw or {})
+    out = {
+        "base_hz": int(cfg.pop("base_hz", 800)),
+        "mc_hz": int(cfg.pop("mc_hz", 10)),
+        "link": dict(cfg.pop("link", None) or {}),
+        "fcu": dict(cfg.pop("fcu", None) or {}) or None,
+    }
+    if cfg:
+        raise ValueError(f"unknown sitl keys: {sorted(cfg)}")
+    unknown = set(out["link"]) - _SITL_LINK_KEYS
+    if unknown:
+        raise ValueError(f"unknown sitl.link keys: {sorted(unknown)}")
     return out
 
 
@@ -129,48 +149,123 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
 
     # Node order fixes the within-step pipeline: sense -> fuse -> decide ->
     # act -> adjudicate -> evaluate -> record.
-    uavs: dict[str, InterceptorUav] = {}
+    icfgs = []
     for u in cfg.get("interceptors", []):
         u = dict(u)
-        uav = InterceptorUav(
-            uav_id=u.pop("id"),
-            bus=world.bus,
-            home=_resolve_home(u, env),
-            effector=EFFECTOR_FACTORIES[u.pop("effector")](),
-            **u,
-        )
-        uavs[uav.uav_id] = uav
-        world.friendlies[uav.uav_id] = uav
-
-    # Unarmed sentinel patrol UAVs (PHY-SNT-*): airframes plus their
-    # mounted EO/IR + RF payloads feeding the common detections stream.
-    sentinels: dict[str, SentinelUav] = {}
+        icfgs.append((u.pop("id"), _resolve_home(u, env),
+                      u.pop("effector"), u))
+    scfgs = []
     for s in cfg.get("sentinels", []):
         s = dict(s)
-        sent = SentinelUav(
-            uav_id=s.pop("id"),
-            bus=world.bus,
-            home=_resolve_home(s, env),
-            orbit=s.pop("orbit"),
-            **s,
-        )
-        sentinels[sent.uav_id] = sent
-        world.friendlies[sent.uav_id] = sent
+        scfgs.append((s.pop("id"), _resolve_home(s, env),
+                      s.pop("orbit"), s))
+
+    # Fleet fidelity (PLAN_PROBLEM1 P4-3 stage 2): in sitl mode the
+    # tactical stack runs as mc/interceptor_app.py on a VirtualMCU inside
+    # the engine micro-loop, flying a SitlEngine vehicle over the
+    # coop-link on EKF estimates; the world-side SitlShellUav node only
+    # ferries bus traffic across the mailbox boundary, and every sim-side
+    # consumer (adjudicator, comms radio, seekers, evasion, recorder)
+    # sees the FriendlyVehicle TRUTH adapter. P4-5: sentinels ride the
+    # same engine (shared fleet airframe, documented approximation) with
+    # mc/sentinel_app.py on their own VirtualMCU; the mounted sensor
+    # payload mounts on the truth adapter.
+    uavs: dict[str, InterceptorUav] = {}
+    sentinels: dict[str, SentinelUav] = {}
+    platforms: dict[str, object] = uavs
+    sent_platforms: dict[str, object] = sentinels
+    if fidelity["fleet"] == "sitl" and (icfgs or scfgs):
+        from ..mc.interceptor_app import InterceptorApp
+        from ..mc.sentinel_app import SentinelApp
+        from ..sil.host import VirtualMCU
+
+        sitl_cfg = _parse_sitl(cfg.get("sitl"))
+        # Airframe classes (P4 gate-review resolution 2): interceptors fly
+        # the engine-default racer quad, sentinels the endurance-pack
+        # variant — one batched plant per class inside the one engine.
+        engine = SitlEngine(
+            [(uid, tuple(home)) for uid, home, _, _ in icfgs]
+            + [(uid, tuple(home), "sentinel_quad")
+               for uid, home, _, _ in scfgs],
+            world.rng_registry, weather=world.weather, world_dt=world.dt,
+            base_hz=sitl_cfg["base_hz"], fcu_overlay=sitl_cfg["fcu"],
+            heartbeat_hz=0.0)
+        world.micro = engine
+
+        def _host(uid, home, extra, make_app):
+            up, down = engine.attach_link(uid, **sitl_cfg["link"])
+            client = FcuClient(up, down)
+            app_kw = {k: v for k, v in extra.items() if k != "rate_hz"}
+
+            def factory(clock, rng, ports):
+                return make_app(clock, rng, ports, client, app_kw)
+
+            mcu = VirtualMCU(f"mc/{uid}", tick_hz=sitl_cfg["mc_hz"],
+                             base_hz=sitl_cfg["base_hz"], app_factory=factory,
+                             rng=world.rng_registry.stream(f"mc/{uid}"))
+            engine.attach_mc(uid, mcu)
+            # Pad charger (P4-4): the recharge matches the MC turnaround.
+            engine.set_pad(uid, home,
+                           recharge_s=extra.get("turnaround_s", 90.0))
+            return mcu
+
+        platforms = {}
+        sent_platforms = {}
+        for uid, home, eff_name, extra in icfgs:
+            effector = EFFECTOR_FACTORIES[eff_name]()
+            mcu = _host(uid, home, extra,
+                        lambda c, r, p, cl, kw, _u=uid, _h=home, _e=effector:
+                        InterceptorApp(c, r, p, uav_id=_u, home=_h,
+                                       effector=_e, fcu_client=cl, **kw))
+            shell = SitlShellUav(uid, world.bus, home, effector, mcu=mcu,
+                                 **extra)
+            uavs[uid] = shell
+            platforms[uid] = FriendlyVehicle(engine, uid, home,
+                                             tactical=shell)
+        for uid, home, orbit, extra in scfgs:
+            mcu = _host(uid, home, extra,
+                        lambda c, r, p, cl, kw, _u=uid, _h=home, _o=orbit:
+                        SentinelApp(c, r, p, uav_id=_u, home=_h, orbit=_o,
+                                    fcu_client=cl, **kw))
+            shell = SitlShellSentinel(uid, world.bus, home, orbit, mcu=mcu,
+                                      **extra)
+            sentinels[uid] = shell
+            sent_platforms[uid] = FriendlyVehicle(engine, uid, home,
+                                                  tactical=shell)
+    else:
+        if cfg.get("sitl"):
+            raise ValueError("a `sitl:` block requires fidelity.fleet=sitl")
+        for uid, home, eff_name, extra in icfgs:
+            uavs[uid] = InterceptorUav(
+                uav_id=uid, bus=world.bus, home=home,
+                effector=EFFECTOR_FACTORIES[eff_name](), **extra)
+        for uid, home, orbit, extra in scfgs:
+            sentinels[uid] = SentinelUav(
+                uav_id=uid, bus=world.bus, home=home, orbit=orbit, **extra)
+    for uid, platform in platforms.items():
+        world.friendlies[uid] = platform
+    for uid, platform in sent_platforms.items():
+        world.friendlies[uid] = platform
 
     # Simulated network layer (SIM-COM-001/002): every C2<->UAV and UAV<->UAV
     # topic rides it. The default config is a near-perfect link, preserving
     # the v0.1 verified baseline; scenarios may degrade it (`comms:` block).
     comms = CommsModel(world, **dict(cfg.get("comms") or {}))
-    for uav in uavs.values():
-        comms.register_endpoint(uav.uav_id, uav)
-    for sent in sentinels.values():
-        comms.register_endpoint(sent.uav_id, sent)
+    for uid, platform in platforms.items():
+        # The radio rides the airframe: truth adapter in sitl mode (it
+        # forwards link_quality to the tactical node's telemetry).
+        comms.register_endpoint(uid, platform)
+    for uid, platform in sent_platforms.items():
+        comms.register_endpoint(uid, platform)
 
-    for sent in sentinels.values():
+    # Mounted sentinel payloads (PHY-SNT-*) ride the airframe truth —
+    # the adapter in sitl mode, the legacy body otherwise.
+    for uid, platform in sent_platforms.items():
         world.add_node(mounted(EoIrSensor)(
-            f"eo-{sent.uav_id}", world, sent, max_range=3000.0, full_id_range=1000.0))
+            f"eo-{uid}", world, platform, max_range=3000.0,
+            full_id_range=1000.0))
         world.add_node(mounted(RfSensor)(
-            f"rf-{sent.uav_id}", world, sent, max_range=8000.0))
+            f"rf-{uid}", world, platform, max_range=8000.0))
 
     for s in cfg.get("sensors", []):
         s = dict(s)
@@ -179,8 +274,10 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         position = np.array(s.pop("position"), dtype=float)
         world.add_node(cls(name, world, position, **s))
     if cfg.get("seekers", True):
-        for uav in uavs.values():
-            world.add_node(OnboardSeeker(f"seeker-{uav.uav_id}", world, uav))
+        for uid, platform in platforms.items():
+            # Seekers mount on the truth airframe; the cue stays the
+            # tactical node's estimate-only picture (seeker_cue forward).
+            world.add_node(OnboardSeeker(f"seeker-{uid}", world, platform))
 
     world.add_node(FusionNode(world.bus, **cfg.get("fusion", {})))
     # Debris-tracking picture (SIM-DEB-002): published before the C2 plans,
@@ -227,7 +324,8 @@ def build(cfg: dict, seed: int | None = None) -> Scenario:
         world.add_node(uav)
     for sent in sentinels.values():
         world.add_node(sent)
-    world.add_node(EngagementAdjudicator(world, uavs, turrets))
+    # The referee costs true geometry: truth adapters in sitl mode.
+    world.add_node(EngagementAdjudicator(world, platforms, turrets))
 
     tracker = EvalTracker(world)
     world.add_node(tracker)

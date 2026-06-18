@@ -30,10 +30,8 @@ from ..core.bus import MessageBus
 from ..core.messages import (
     DebrisArray,
     DebrisState,
-    EngagementDecision,
     EngagementTask,
     FireClearance,
-    FireRequest,
     Header,
     Track,
     TrackArray,
@@ -41,29 +39,22 @@ from ..core.messages import (
     UavMode,
     UavState,
 )
-from . import cooperation, guidance
+from ..mc import cooperation, guidance
+from ..mc.fire_control import (  # noqa: F401 — re-exported, tests import here
+    ABORT_TASK,
+    CLEARANCE_TIMEOUT_S,
+    CLEARANCE_VALID_S,
+    MIN_PK_TO_RELEASE,
+    MIN_PK_TO_REQUEST,
+    PURSUING,
+    STALE_TRACK_FIRE_S,
+    TERMINAL_RANGE_FACTOR,
+    FireControl,
+)
 from .airframe import LOW_BATTERY_RTB, UavAirframe
 from .effectors import Effector
 
 FIRE_TOPIC = "engagement/fire"
-MIN_PK_TO_RELEASE = 0.30   # abort if geometry collapsed while clearing
-# Never below the release floor: a request the release gate would refuse
-# consumes the clearance token, aborts, and re-requests every cycle —
-# operator auth-spam under human_confirm with no shot ever fired.
-MIN_PK_TO_REQUEST = MIN_PK_TO_RELEASE
-# Inside this multiple of effector range, guidance switches from PIP lead
-# pursuit to terminal pure pursuit so own velocity aligns with the sight
-# line — the off-axis Pk gate measures exactly that angle.
-TERMINAL_RANGE_FACTOR = 1.5
-# No release on a track nobody has measured for this long: a coasted
-# prediction is how rounds end up adjudicated as fire_no_target.
-STALE_TRACK_FIRE_S = 2.0
-# A clearance token lost in transit must not deadlock the interlock
-# (SIM-COM-003): if no answer arrives within this window, re-request.
-CLEARANCE_TIMEOUT_S = 3.0
-# An AUTHORIZED token authorises the geometry the ROE costed *now*, not a
-# shot at an arbitrary later time: stale tokens are discarded unconsumed.
-CLEARANCE_VALID_S = 3.0
 
 
 class InterceptorUav(UavAirframe):
@@ -94,11 +85,10 @@ class InterceptorUav(UavAirframe):
         self._tracks: dict[int, Track] = {}
         self._debris: dict[str, DebrisState] = {}
         self._peers: dict[str, UavState] = {}
-        self._clearance: FireClearance | None = None
-        self._await_clearance = False
-        self._await_until = 0.0
-        self._next_fire_ok = 0.0
-        self._hold_until = 0.0
+        # Release authority lives in the shared interlock (mc/fire_control,
+        # P4-3): one state machine for both fidelity modes, same effector
+        # object so ammo bookkeeping cannot fork.
+        self._fc = FireControl(uav_id, effector)
         self._rtb_ordered = False              # operator RTB (HMI-AUT-005)
 
         self._state_pub = self.create_publisher("uav/state")
@@ -110,6 +100,15 @@ class InterceptorUav(UavAirframe):
         self.create_subscription("uav/state", self._on_peer_state)
         self.create_subscription("engagement/clearance", self._on_clearance)
         self.create_subscription("uav/command", self._on_command)
+
+    # Interlock state views (tests and tooling peek at these).
+    @property
+    def _clearance(self) -> FireClearance | None:
+        return self._fc.clearance
+
+    @property
+    def _await_clearance(self) -> bool:
+        return self._fc.await_clearance
 
     # -- subscriptions -----------------------------------------------------------
 
@@ -127,8 +126,7 @@ class InterceptorUav(UavAirframe):
         # belongs to the old engagement — the ROE never costed the new one.
         new_track = self._task.track_id if self._task else None
         if new_track != previous_track:
-            self._clearance = None
-            self._await_clearance = False
+            self._fc.reset_engagement()
 
     def _on_tracks(self, msg: TrackArray) -> None:
         self._tracks = {trk.track_id: trk for trk in msg.tracks}
@@ -141,15 +139,11 @@ class InterceptorUav(UavAirframe):
             self._peers[msg.uav_id] = msg
 
     def _on_clearance(self, msg: FireClearance) -> None:
-        """Accept only tokens correlated to the *current* engagement: a
-        clearance answered after a retask authorises a shot whose debris
-        footprint was costed for a different track — drop it."""
+        """Tokens for this platform go to the interlock, which accepts
+        only ones correlated to the *current* engagement (mc/fire_control)."""
         if msg.uav_id != self.uav_id:
             return
-        if self._task is None or msg.track_id != self._task.track_id:
-            return
-        self._clearance = msg
-        self._await_clearance = False
+        self._fc.accept_clearance(msg, self._task)
 
     def _on_command(self, msg: UavCommand) -> None:
         if msg.uav_id != self.uav_id:
@@ -231,85 +225,15 @@ class InterceptorUav(UavAirframe):
             )
         self.body.command_velocity(v_cmd)
 
-        pk = self.effector.p_kill(rel, self.body.velocity, track.velocity)
-        if pk < MIN_PK_TO_REQUEST or t < max(self._next_fire_ok, self._hold_until):
+        action = self._fc.engage(
+            t, self._task, track, tgt_pos,
+            self.body.position, self.body.velocity,
+            self._request_pub.publish, self._fire_pub.publish)
+        if action == PURSUING:
             return
-        if track.time_since_update > STALE_TRACK_FIRE_S:
-            # Coasted estimate: keep pursuing, but a munition released at a
-            # prediction nobody has confirmed for seconds is a wasted round
-            # (the onboard seeker refreshes the track through the endgame).
-            return
-
         self.mode = UavMode.ENGAGE
-        if self._clearance is not None:
-            clearance = self._clearance
-            self._clearance = None
-            # Belt-and-braces re-check of the correlation _on_clearance
-            # already enforced, plus freshness: a token consumed long after
-            # it was issued authorises geometry that no longer exists.
-            if (clearance.track_id != track.track_id
-                    or t - clearance.header.stamp > CLEARANCE_VALID_S):
-                return
-            if clearance.decision == EngagementDecision.AUTHORIZED:
-                self._fire(track, pk, t)
-            elif clearance.decision == EngagementDecision.HOLD:
-                self._hold_until = t + 1.5   # geometry unsafe — re-ask shortly
-            else:  # DENIED — C2 will re-task us; stop asking for this track
-                self._task = None
-            return
-        if not self.effector.quality_window(rel, self.body.velocity):
-            # In envelope but not in the high-quality core: another beat of
-            # closure buys more Pk than this shot is worth — don't request
-            # release from degraded geometry. (Tokens already in hand were
-            # consumed or discarded above; this only delays new requests.)
-            return
-        if self._await_clearance and t >= self._await_until:
-            # Request or token lost in transit (SIM-COM-003): the interlock
-            # held fire the whole time — re-request release authority.
-            self._await_clearance = False
-        if not self._await_clearance:
-            self._await_clearance = True
-            self._await_until = t + CLEARANCE_TIMEOUT_S
-            # ROE must cost the kill where it will actually happen: the
-            # extrapolated target position, not the (stale) track fix.
-            self._request_pub.publish(
-                FireRequest(
-                    header=Header(stamp=t),
-                    task_id=self._task.task_id,
-                    uav_id=self.uav_id,
-                    track_id=track.track_id,
-                    effector=self.effector.type,
-                    predicted_intercept=tgt_pos + track.velocity * 0.5,
-                    p_kill=pk,
-                    target_kind=self._task.target_kind,
-                    debris_id=self._task.debris_id,
-                )
-            )
-
-    def _fire(self, track: Track, pk: float, t: float) -> None:
-        # Clearance took a beat — re-check the envelope before releasing.
-        tgt_pos = track.position + track.velocity * max(0.0, t - track.header.stamp)
-        rel = tgt_pos - self.body.position
-        pk = self.effector.p_kill(rel, self.body.velocity, track.velocity)
-        if pk < MIN_PK_TO_RELEASE:
-            return
-        self.effector.ammo -= 1
-        self._next_fire_ok = t + self.effector.reload_time
-        self._fire_pub.publish(
-            FireRequest(
-                header=Header(stamp=t),
-                task_id=self._task.task_id,
-                uav_id=self.uav_id,
-                track_id=track.track_id,
-                effector=self.effector.type,
-                # The munition flies at the geometry the Pk was just costed
-                # on — the extrapolated fix, not the stale track position.
-                predicted_intercept=tgt_pos.copy(),
-                p_kill=pk,
-                target_kind=self._task.target_kind,
-                debris_id=self._task.debris_id,
-            )
-        )
+        if action == ABORT_TASK:
+            self._task = None
 
     def _support_behaviour(self, track: Track) -> None:
         """Cooperative wingman: cutoff post if the target outruns the
@@ -411,3 +335,84 @@ class InterceptorUav(UavAirframe):
                 effector=self.effector.type.value,
             )
         )
+
+
+class SitlShellUav(InterceptorUav):
+    """Thin world-side shell for the P4-3 stage-2 MC split.
+
+    In sitl fidelity the tactical stack runs in
+    ``mc/interceptor_app.py`` on a VirtualMCU inside the micro-loop;
+    this node only ferries bus traffic across the mailbox boundary —
+    subscriptions APPEND to the MCU inboxes (nothing more), and
+    ``update`` drains the outboxes onto the bus at node cadence — and
+    mirrors ``mode``/``battery`` from the app's telemetry for the
+    world-side duck-type. ``body`` and ``effector`` are the app's own
+    objects, read-only by convention on this side.
+
+    A crashed MCU (exception fence, SIM-SIL-003) goes silent here: no
+    telemetry, no fire traffic — the FCU flies its own link-loss
+    failsafe home. ``mc_crashed`` exposes the latch.
+    """
+
+    def __init__(self, uav_id, bus, home, effector, mcu, **kwargs):
+        super().__init__(uav_id, bus, home, effector, **kwargs)
+        self._mcu = mcu
+        self.body = mcu.app.body            # estimate view (read-only)
+        self._cue: Track | None = None
+        box = mcu.ports.box
+        self._to_tasks = box("tasks")
+        self._to_tracks = box("tracks")
+        self._to_debris = box("debris")
+        self._to_peers = box("uav_state_in")
+        self._to_clearance = box("clearance")
+        self._to_command = box("command")
+        self._to_link = box("link_quality")
+        self._from_state = box("uav_state")
+        self._from_request = box("fire_request")
+        self._from_fire = box("fire")
+        self._from_cue = box("cue")
+
+    @property
+    def mc_crashed(self) -> bool:
+        return self._mcu.crashed
+
+    # -- bus -> inboxes (append only, drained at the MC tick) ---------------
+
+    def _on_tasks(self, tasks) -> None:
+        self._to_tasks.post(tasks)
+
+    def _on_tracks(self, msg) -> None:
+        self._to_tracks.post(msg)
+
+    def _on_debris(self, msg) -> None:
+        self._to_debris.post(msg)
+
+    def _on_peer_state(self, msg) -> None:
+        if msg.uav_id != self.uav_id:
+            self._to_peers.post(msg)
+
+    def _on_clearance(self, msg) -> None:
+        if msg.uav_id == self.uav_id:
+            self._to_clearance.post(msg)
+
+    def _on_command(self, msg) -> None:
+        if msg.uav_id == self.uav_id:
+            self._to_command.post(msg)
+
+    # -- outboxes -> bus, telemetry mirror -----------------------------------
+
+    def update(self, t: float, dt: float) -> None:
+        self._to_link.post(self.link_quality)
+        for msg in self._from_state.drain():
+            self.mode = msg.mode
+            self.battery = msg.battery
+            self._state_pub.publish(msg)
+        for msg in self._from_request.drain():
+            self._request_pub.publish(msg)
+        for msg in self._from_fire.drain():
+            self._fire_pub.publish(msg)
+        for cue in self._from_cue.drain():
+            self._cue = cue
+
+    def seeker_cue(self) -> Track | None:
+        return self._cue

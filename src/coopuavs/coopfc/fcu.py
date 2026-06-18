@@ -35,6 +35,7 @@ touchdown mid-air and cut the motors).
 
 from __future__ import annotations
 
+import math
 from typing import NamedTuple
 
 from coopuavs.coopfc.battery_monitor import (
@@ -267,6 +268,15 @@ class Fcu:
     def on_heartbeat(self) -> None:
         self._last_hb = self.sched.now
 
+    def cmd_batt_reset(self) -> tuple[bool, str]:
+        """Battery swapped/recharged on the pad (P4-4 rearm cycle):
+        clear the upward-latched monitor. Refused while armed — an
+        in-flight 'reset' would defeat the sag-latch failsafe doctrine."""
+        if self.state == ARMED:
+            return False, "armed: battery reset is a ground operation"
+        self.batt.reset()
+        return True, ""
+
     # ------------------------------------------------------------ alignment
 
     def _new_aligner(self) -> Aligner:
@@ -407,7 +417,17 @@ class Fcu:
         p = self.params.get
         yaw_sp = self._sp_yaw if self.mode == OFFBOARD else 0.0
         if self.mode == OFFBOARD:
-            v_sp = self._sp_vel
+            # PX4 convention (P4-4): offboard setpoints obey the same
+            # velocity limits as the internal modes — an MC cannot
+            # command the airframe past its envelope params.
+            vx, vy, vz = self._sp_vel
+            h = math.hypot(vx, vy)
+            max_h = p("fcu.vel_max_h")
+            if h > max_h:
+                vx *= max_h / h
+                vy *= max_h / h
+            vz = min(max(vz, -p("fcu.vel_max_down")), p("fcu.vel_max_up"))
+            v_sp = (vx, vy, vz)
         elif self.mode == POS_HOLD:
             v_sp = self.pos_ctl.update(self._hold_pos, nav.pos)
         elif self.mode == RTL:
@@ -424,6 +444,17 @@ class Fcu:
             if nav.pos[2] <= self._land_datum + p("fcu.touchdown_alt"):
                 self.touchdown = True
                 self.cmd_disarm()
+                # Ground recalibration (P4-4): touchdown stops the
+                # airframe faster than the IMU stream can express
+                # (contact dynamics are not modeled), leaving the EKF
+                # with a velocity belief its chi-gates then defend
+                # against every GPS/baro correction — free-running
+                # drift on the pad. Re-run the static alignment from
+                # scratch (the BOOT machinery, ~2 s on the stand,
+                # GPS-seeded): PBIT holds re-arming until it is green.
+                self.ekf = None
+                self.align_result = None
+                self._aligner = self._new_aligner()
                 return
         self._q_sp, self._thrust = self.vel_ctl.update(
             v_sp, nav.vel, yaw_sp, 1.0 / 50.0)

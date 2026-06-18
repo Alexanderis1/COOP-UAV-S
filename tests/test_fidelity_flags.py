@@ -39,9 +39,23 @@ def test_partial_block_fills_defaults():
     assert sc.meta["fidelity"]["threats"] == "pointmass"
 
 
-def test_fleet_sitl_refuses_loudly_for_now():
-    with pytest.raises(NotImplementedError, match="sitl"):
-        scenario_mod.build(_cfg({"fleet": "sitl"}))
+def test_fleet_sitl_builds_with_engine():
+    """P4-2: the sitl build path is live — the engine installs behind
+    World.micro and the agents fly SitlBody link proxies."""
+    from coopuavs.mc.fcu_client import SitlBody
+    from coopuavs.sil.fleet import SitlEngine
+
+    sc = scenario_mod.build(_cfg({"fleet": "sitl"}))
+    assert sc.meta["fidelity"]["fleet"] == "sitl"
+    assert isinstance(sc.world.micro, SitlEngine)
+    assert all(isinstance(u.body, SitlBody) for u in sc.uavs.values())
+
+
+def test_sitl_block_requires_sitl_fleet():
+    cfg = _cfg()
+    cfg["sitl"] = {"base_hz": 800}
+    with pytest.raises(ValueError, match="sitl"):
+        scenario_mod.build(cfg)
 
 
 def test_threats_sixdof_refuses_loudly_for_now():

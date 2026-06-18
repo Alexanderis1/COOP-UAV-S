@@ -314,6 +314,10 @@ class UavState:
     max_speed: float = 0.0              # platform capability, m/s (0 = unknown)
     kind: str = "interceptor"           # "interceptor" | "sentinel" (PHY-SNT)
     effector: str = ""                  # effector type value; "" = unarmed
+    # Sitl-mode telemetry (P4-7, additive — None in pointmass mode):
+    attitude_q: tuple | None = None     # (w, x, y, z) EKF attitude estimate
+    nav_quality: float | None = None    # sigma_pos_h, m (FCU STATUS)
+    health: dict | None = None          # UavHealth summary (arrives P5)
 
 
 @dataclass

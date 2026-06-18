@@ -70,13 +70,18 @@ Each step, in this frozen order:
 Every consumer draws from its own named stream
 (`core/rng.py RngRegistry`, pure function of `(run_seed, name)`):
 `weather`, `comms`, `sensor/<name>`, `adjudicator`, `debris`,
-`threat/<id>`. The staged P2 hw device banks (P4 wiring) follow the same
-rule with one parent stream per device type — `sensor/imu`, `sensor/gps`,
-`sensor/baro`, `sensor/mag`, `sensor/esc_telem` — from which each bank
-spawns one child per vehicle (the Dryden pattern: a fleet-size change
-leaves existing vehicles' draw histories identical; suite:
+`threat/<id>`. The P2 hw device banks (wired by the P4-1 SitlEngine)
+follow the same rule with one parent stream per device type —
+`sensor/imu`, `sensor/gps`, `sensor/baro`, `sensor/mag`,
+`sensor/esc_telem`, plus `dryden` for the fleet gust bank — from which
+each bank spawns one child per vehicle (the Dryden pattern: a fleet-size
+change leaves existing vehicles' draw histories identical; suites:
 `tests/test_hw_determinism.py`, including the pin that spawning twice from
-ONE parent is *not* an independent copy — names must be unique).
+ONE parent is *not* an independent copy — names must be unique, and
+`tests/test_sil_fleet.py` through the engine wiring. Note the contract is
+*draw histories*: batched einsum/matmul kernels differ at the last ULP
+across batch sizes, so trajectories agree to ~1e-14 relative, not
+bitwise — RESEARCH.md "P4-1 fleet-size invariance").
 Consequences:
 
 - Execution order between consumers **no longer touches randomness** — an
@@ -106,7 +111,7 @@ pipeline order or stop asserting on them.
    delivery (the clearance interlock and inline adjudication depend on it).
 5. The §6 micro-tick order once the SITL engine lands (P4).
 
-## 6. SITL micro-tick contract (P1 models staged; engine lands in P4)
+## 6. SITL micro-tick contract (engine landed P4-1: `sil/fleet.py`)
 
 Referenced normatively by the physics docstrings (`physics/motor.py`,
 `physics/__init__.py`); the frozen order is the PLAN_PROBLEM1 "Time —
@@ -137,15 +142,39 @@ the K micro-ticks (BASE_HZ, plan: 800 Hz) runs, in this frozen order:
    update. The resulting rotor speeds are **latched** as plant inputs.
    Never wire `i_bus` → `battery.step` → `v_bus` explicitly one step late:
    that composition diverges at any dt (`physics/powertrain.py`).
-7. **ONE batched fleet RK4** — `rigid_body.rk4_step` over all vehicles at
-   the latched rotor speeds/wind; state-dependent wrench terms re-evaluate
-   at every RK4 stage, latched inputs do not.
+7. **ONE batched fleet RK4 per airframe class** — `rigid_body.rk4_step`
+   over each class's rows at the latched rotor speeds/wind (P4
+   gate-review resolution 2: the fleet may mix airframe classes — e.g.
+   sentinel endurance packs — each with its own batched plant/powertrain;
+   a single-class fleet keeps exactly the one batched call);
+   state-dependent wrench terms re-evaluate at every RK4 stage, latched
+   inputs do not. Device banks stay fleet-wide (one suite), so classes
+   must share the rotor count.
 8. **Threat batch** (P6 6DOF threats, own streams).
 
 Steps 5 and 6 have no data flow between them and draw from separate
 streams, but the order is frozen anyway — determinism pins replay whole
 ticks. Status: P1 ships the physics models and their unit pins; P2 ships
 the step-1 device models (imu/gps/baro/mag/seeker_gimbal/esc_telem) and
-their unit/determinism pins; the tick order itself gets pinned by the P4
-SitlEngine tests (`tests/test_sitl_end_to_end.py` determinism pins) when
-the micro-loop lands.
+their unit/determinism pins; P4-1 lands the fleet micro-loop
+(`sil/fleet.py SitlEngine`) — the tick order is pinned structurally by
+`tests/test_sil_fleet.py` (first-tick call-sequence pin plus run-twice
+determinism), step 8 (threat batch) is a seam until P6. P4-2 wires the
+coop-link into the step-2 pipeline tail (50 Hz drain/dispatch using the
+wire enum tables, NAV 25 Hz / STATUS 10 Hz down). P4-3 fills step 3:
+each vehicle's `mc/interceptor_app.py` runs on a `sil/host.py`
+VirtualMCU (default 10 Hz on the micro clock, behind the exception
+fence — a crashed MC is a silent processor, SIM-SIL-003), draining its
+world-side mailboxes and driving the FCU over its own coop-link
+endpoint. The world-side `SitlShellUav` node (§1 item 7) only ferries
+bus traffic across the mailbox boundary: inbound topics posted at node
+time t are consumed by MC ticks in the NEXT macro step's micro window,
+outbound telemetry/fire traffic publishes at the following node phase —
+the compute/transport split is honestly one macro step each way. Two P4-1 wiring notes, both user decisions 2026-06-12:
+the IMU samples the exact wrench `force_world / m` at the latched inputs
+(the P3 dv/dt bench placeholder is closed in the engine; the
+single-vehicle bench keeps its pinned form), and ground contact stays
+deferred — a non-ARMED row is frozen truth ("stand convention") with
+zeroed velocity/rates, devices keep sampling it with real noise, and the
+world's truth-side wind displacement skips SITL friendlies
+(`FriendlyVehicle.wind_displaced = False`; wind is a plant force here).

@@ -424,22 +424,125 @@ debris) anytime after P0; P7 flyout last. Cadence: stop at each phase GATE for u
       deterministic 0.138 s; RESEARCH.md "P3-5 yaw rate gate"). Suites re-run green.
 
 ### P4 — Fleet integration (XL — riskiest; staged strangler)
-- [ ] P4-1 `sil/vehicle.py` FriendlyVehicle protocol-conformance test (pins full duck-type contract)
-      + `sil/fleet.py` SitlEngine into `world.step` (wind becomes force, not displacement)
-- [ ] P4-2 Stage 1 velocity passthrough: InterceptorUav keeps FSM, `command_velocity` routes over
-      link to FCU OFFBOARD; sitl twin of guidance intercept test; 1-interceptor kill in
-      SITL_SMALL_SCENARIO
-- [ ] P4-3 Stage 2 MC split: tactical logic → `mc/` apps on own VirtualMCU (PHY-UAV-010/011);
-      `interceptors/uav.py` thin shell in sitl mode; clearance-interlock sitl twins byte-equivalent
-- [ ] P4-4 energy/telemetry rewire: ECM battery via FCU telemetry; UavState from MC estimates only
-      (truth quarantine holds); import-boundary test
-- [ ] P4-5 sentinels as MC app + sitl twin of test_sentinel
-- [ ] P4-6 `tests/test_sitl_end_to_end.py`: ≥1 kill, 0 CRITICAL wrecks, determinism pin; sitl gets
-      OWN re-baselined floors (3-seed CI + 10-seed `@slow`), never reuses pointmass pins
-- [ ] P4-7 recorder/ICD additive fields + ICD_RUNTIME v0.4 same commit + legacy-recording parse test
-- [ ] P4-8 perf gate `@perf`: residential_raid sitl RTF ≥0.5× headless + committed profile; miss →
-      pull fallback levers before proceeding
-- GATE: all sitl twins + e2e + determinism + perf; legacy suite untouched and green
+- [x] P4-1 `sil/vehicle.py` FriendlyVehicle truth adapter + protocol-conformance test pinning the
+      full world.friendlies duck-type (consumer map in test_sil_vehicle.py: adjudicator/evasion/
+      comms/recorder/seeker accesses; legacy InterceptorUav + SentinelUav held to the same
+      contract) + `sil/fleet.py` SitlEngine behind World.micro: N×(P2 device banks w/ registry
+      `sensor/*` parents + `dryden`) + N FCUs, frozen ORDERING §6 order pinned structurally;
+      wind = plant force (WeatherState.mean_wind_at + per-vehicle Dryden, OU excluded;
+      world.step skips wind_displaced=False friendlies). User decisions 2026-06-12: Dryden over
+      OU; IMU accel = exact wrench force_world/m (dv/dt placeholder closed in the engine);
+      ground contact deferred (stand convention: frozen non-ARMED rows, pre-spin at arm).
+      Pins: §6 first-tick order, run-twice bit-identical (wind+gusts), fleet-size invariance
+      (bitwise gust draws + 1e-9 trajectory — ULP kernel finding, RESEARCH.md), exact-wrench
+      IMU, stand freeze w/ live devices, ekf.late_meas==0 through fleet timing, world-clock
+      lockstep + wind-skip seam. 20 tests test_sil_{vehicle,fleet}.py (2026-06-12)
+- [x] P4-2 Stage 1 velocity passthrough: `mc/fcu_client.py` FcuClient (HEARTBEAT/VEL_SP/
+      autonomous ARM→OFFBOARD flow off STATUS; wire enum tables, never literals) + SitlBody
+      (PointMass duck: command_velocity→VEL_SP, position/velocity = NAV ESTIMATE — agent never
+      reads truth); engine hosts FCU side in the §6 pipeline tail (drain 50 Hz, NAV 25 / STATUS
+      10 down; bench heartbeat placeholder now unlinked-only); scenario sitl build path live
+      (`sitl: {base_hz, link, fcu}` validated; SitlBody swap + FriendlyVehicle into friendlies/
+      adjudicator/seekers/comms, link_quality forwarded to tactical telemetry; sentinels legacy
+      until P4-5). Pins: arm→OFFBOARD over the wire, velocity passthrough closes <1 m/s, link
+      silence → OFFBOARD_TIMEOUT latched first + RTL escalation (P3 priority contract), pursuit
+      twin of test_guidance closest TRUTH approach <10 m through the full stack, build wiring,
+      2-interceptor FPV kill in SITL_SMALL_SCENARIO (kill t≈49 s, SAFE-zone debris, truth
+      quarantine visibly held: est≠truth bounded <10 m). 8 tests test_sitl_stage1.py +
+      fidelity-flag flip (2026-06-12)
+- [x] P4-3 Stage 2 MC split (PHY-UAV-010/011): `core/ports.py` bounded Mailbox/Ports +
+      `sil/host.py` VirtualMCU ((clock,rng,ports) ctor, exception fence latches processor crash,
+      clock freezes — SIM-SIL-003 fault mode free) [P4-3a]; guidance/cooperation moved to `mc/`
+      (re-export shims keep legacy imports); clearance interlock moved VERBATIM to
+      `mc/fire_control.py` FireControl — ONE state machine driven by BOTH the legacy node and
+      `mc/interceptor_app.py` (same effector object, ammo cannot fork; uav.py keeps `_clearance`
+      property views for tests); InterceptorApp = near line-for-line FSM port on mailbox I/O
+      (tasks/tracks/debris/peers/clearance/command/link_quality in; uav_state/fire_request/fire/
+      cue out); `SitlShellUav` thin shell ferries bus↔mailboxes + mirrors mode/battery, body =
+      app's estimate body; engine hosts MCU in the §6 step-3 slot; scenario sitl path builds
+      shell+MCU per interceptor (`sitl.mc_hz` default 10). Pins: 4 byte-equivalent clearance
+      twins (same script → field-equal FireRequests both hosts), MC arms+flies from inside the
+      loop on mailbox tasking, crash fence end-to-end (dead MC → silent → FCU failsafes home,
+      sim never sees the exception), e2e kill re-validated through the MCU path. 7+6 tests
+      test_sil_host.py + test_sitl_stage2.py; suite 591 fast green, ruff clean (2026-06-12)
+- [x] P4-4 energy/telemetry rewire (user decisions 2026-06-12: voltage-proxy + full land-dock):
+      STATUS wire msg += batt_frac f32 (BatteryMonitor.fraction(): loaded v_cell mapped
+      crit→0..4.20→1, conservative under sag; real SOC = P5 CELL_IMBALANCE); app battery =
+      telemetry property (synthetic drain model deleted); MC floor debounced 2 s (one-sample
+      spool-up sag read 0.11); FCU failsafe leads, app follows it home (post-mortem latched
+      reason ignored while disarmed). Rearm = physical cycle: RTB→LAND→touchdown+disarm on pad
+      → engine pad charger (set_pad, SOC ramp over recharge_s=turnaround) → BATT_RESET wire msg
+      (pack-swap semantics, ground-only, clears the upward latch) → re-arm → climb-out. Two
+      FCU fixes shaken out: (1) touchdown drops the EKF for ground re-alignment (the stand-stop
+      is IMU-unobservable; chi-gates locked out GPS/baro → 8 m/s free-running pad drift);
+      (2) OFFBOARD setpoints clamped to vel_max_h/up/down (PX4 convention — fleet overlays size
+      the envelope per airframe). MC loiter altitude 15 m (no ground contact: only FCU LAND
+      approaches the surface; legacy point-mass keeps z=0). mc/ import fence joined the coopfc
+      AST walk (allowed: mc.*, core.messages, core.ports, coopfc.link). KNOWN FINDING (out of
+      P4-4 scope, converges): vertical brake from fast climbs holds near-hover thrust for
+      seconds (~90 m overshoot at 20 m/s climb authority) — P3 velocity-controller envelope,
+      flagged for review. 6+2 tests test_sitl_energy.py + fence; 598 fast + @slow/@perf
+      coopfc flights re-run green, ruff clean (2026-06-12)
+- [x] P4-5 sentinels as MC app: `mc/sentinel_app.py` (verbatim orbit guidance on NAV estimates;
+      shared P4-4 land-dock/batt-telemetry machinery) + `SitlShellSentinel` ferry shell;
+      sentinels join the SAME SitlEngine (shared fleet airframe — documented approximation;
+      ops envelope = MC max_speed/orbit speed, which is what PHY-SNT pins); mounted EO/RF
+      payloads ride the FriendlyVehicle TRUTH adapter in sitl mode (scenario passes platforms,
+      not shells). Twins: orbit annulus on TRUTH + PATROL + sentinel telemetry (estimate,
+      0.001<|est−truth|<15 m) + airborne-only track formation; drained pack breaks the orbit
+      off home through the FCU failsafe. 2 tests test_sitl_sentinel.py; legacy test_sentinel
+      untouched green; suite 600 fast, ruff clean (2026-06-12)
+- [x] P4-6 `tests/test_sitl_end_to_end.py` over SITL_SMALL_SCENARIO (full stack: devices→EKF→
+      MC VirtualMCUs→coop_link→FCU→batched plant + unchanged C2/ROE/adjudication). Baseline
+      measured 2026-06-12 seeds 0..9: 10/10 kills, 0 leakers, 0 CRITICAL wrecks, t_end 32-66 s.
+      OWN floors (tripped floor = stop-and-replan): 3-seed CI kills≥1 each + CRITICAL==0 +
+      event-kind chain + in-flight truth-quarantine band (1e-3 < |est−truth| < 10 m); run-twice
+      determinism (events + summary equal); 10-seed @slow total kills ≥9/10 + CRITICAL==0.
+      Stage-1 kill smoke superseded into this suite. 4 tests; 601 fast + @slow e2e green,
+      ruff clean (2026-06-12)
+- [x] P4-7 recorder/ICD additive: UavState += attitude_q/nav_quality/health (None in pointmass;
+      apps fill att+nav_q from NAV/STATUS telemetry — estimate-domain; health lands P5);
+      recorder `_uav_entry` emits att/nav_q/health ONLY when present; ICD_RUNTIME bumped v0.4
+      same commit (additive §2.2 note + sitl pos/vel=estimate clarification). Parse pins:
+      pointmass recording keeps the EXACT v0.3 uav key set; sitl recording carries unit-quat
+      att + nav_q in (0,10) m, no health yet, json round-trips. 2 tests test_sitl_recorder.py
+      (2026-06-12)
+- [x] P4-8 perf gate `@perf` test_sitl_perf.py: residential_raid sitl (8 FCU+MC pairs, full
+      pipeline) **RTF 0.80-0.81× headless** (1.24 s CPU/sim-s, gate ≥0.5×, 60% headroom) over a
+      20 sim-s boot+raid slice; committed profile docs/PERF_P4_SITL.md (FCUs 46% — EKF dominant;
+      batched plant 29%; macro pipeline ~0.4 s/sim-s; consistent with the P3-8 C20 projection).
+      Fallback levers untouched (2026-06-12)
+- GATE: sitl twins ✓ (guidance pursuit, clearance×4 byte-equivalent, sentinel, energy cycle) +
+  e2e ✓ (3-seed CI + 10-seed @slow, own floors, 0-CRITICAL invariant) + determinism ✓ (engine
+  run-twice bitwise; e2e events+summary) + perf ✓ (RTF 0.80× vs 0.5 gate) + legacy suite
+  untouched and green (601 fast incl. all 31 legacy files) + mc/ import fence. STOPPED for
+  user gate review per cadence (2026-06-12).
+- [x] P4-R gate-review resolutions (user delegated to fidelity/determinism-optimal, 2026-06-12):
+      **(1) vertical-brake loss FIXED** — root cause: low-fz tilt cone + 50 Hz sign-flipping
+      saturated horizontal demand → ±45° attitude-setpoint steps → rate-loop torque slam →
+      mixer rp-priority desat pins average collective at hover (vertical priority lost in the
+      actuator chain; EKF verified healthy). Fix: `VelParams.tilt_slew` 6 rad/s followable-
+      setpoint limit (engages only on pathological steps; all P3 maneuver specs unchanged) +
+      `mc/guidance.approach_velocity` braking-aware waypoint capture (MC apps only; legacy
+      keeps goto_velocity). Deterministic reproducer pinned (pre-fix vz +3.4, post-fix < −5);
+      fleet climb-out <30 m (pre-fix >90). E2e RE-BASELINED post-fix: 9/10 seed kills (seed-0
+      5-shot pk≈0.5 miss streak, vehicles healthy), CI seeds 1-3, @slow floor 8/10 — documented
+      in test docstring + RESEARCH.md. Residual honest behavior: sustained full-power climbs
+      sag the 12S pack into the voltage-only monitor's band → FCU protects/lands/retries (P5
+      CELL_IMBALANCE owns SOC estimation). 604 fast + @slow bench/fcu/e2e + @perf (re-read
+      1.59×, machine-state sensitive per the documented caveat) green, ruff clean.
+      **(2) per-class airframe banks SHIPPED** — with real energy, a sentinel on the racer pack
+      hits BATT_LOW mid-raid (artifact distorting reference scenarios). `physics/params/
+      sentinel_quad.yaml`: 24 Ah endurance pack (~42 min hover, the PHY-SNT 40-min class),
+      flight dynamics IDENTICAL by design (pack-mass idealization documented+pinned, so
+      trim/controllers carry over). SitlEngine vehicles may name an airframe per entry; one
+      batched plant/powertrain + ONE RK4 per class (ORDERING §6 amended); device banks stay
+      fleet-wide (classes must share rotor count); single-airframe `eng.plant/pt/motor/cfg`
+      conveniences preserved. Scenario: sentinels fly sentinel_quad. Pins: params endurance
+      delta + dynamics equality, mixed-fleet groups/hover, mixed run-twice bitwise, solo-vs-
+      mixed 1e-9 draw-history invariance, SOC-drain ratio 1.5±, scenario group wiring.
+      5 tests test_sitl_airframes.py; 609 fast + @slow e2e/bench + @perf 1.55× green
+      (2026-06-12).
 
 ### P5 — CBIT + fault injection (M)
 - [ ] P5-1 `cbit/` dictionary+engine+monitors: table-driven test per fault (detection latency,

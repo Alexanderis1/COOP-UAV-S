@@ -184,7 +184,7 @@ def test_enum_tables_cover_fcu_vocabulary_and_round_trip():
     # a real FCU STATUS encodes -> decodes back to the same strings
     frame = encode_msg("STATUS", 1.5, STATE_CODES[fcu.ARMED],
                        MODE_CODES[fcu.RTL], FAILSAFE_CODES["LINK_LOSS"],
-                       BATT_CODES[bm.LOW], 0.8)
+                       BATT_CODES[bm.LOW], 0.8, 0.42)
     ((mid, payload),) = FrameDecoder().feed(frame)
     name, f = decode_msg(mid, payload)
     assert name == "STATUS"
@@ -192,6 +192,7 @@ def test_enum_tables_cover_fcu_vocabulary_and_round_trip():
     assert MODE_NAMES[f["mode"]] == fcu.RTL
     assert FAILSAFE_NAMES[f["failsafe"]] == "LINK_LOSS"
     assert BATT_NAMES[f["batt"]] == bm.LOW
+    assert abs(f["batt_frac"] - 0.42) < 1e-6     # P4-4 voltage-proxy field
 
 
 def test_bad_msg_id_and_length_guard():

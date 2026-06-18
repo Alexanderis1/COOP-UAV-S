@@ -1170,3 +1170,119 @@ enough to pass a tripled settle time. Re-stamped per the
 fidelity/determinism goal as a REGRESSION gate: **settle < 0.20 s**
 (+45% headroom, same style as the GNSS-denied drift gate), overshoot
 gate < 20% unchanged.
+
+## P4 fleet integration - engine wiring decisions (added 2026-06-12)
+
+### P4-1 SITL wind coupling (user decision 2026-06-12)
+
+Legacy weather applies an Ornstein-Uhlenbeck gust on the mean wind as a
+truth-side *displacement*. A SITL vehicle must feel wind as a *force*
+through the plant wrench, so the engine feeds per-vehicle
+`WeatherState.mean_wind_at(z)` (the same power-law shear as `wind_at`,
+gust-free) plus a MIL-F-8785C Dryden bank (the validated P1 machinery,
+per-vehicle child streams) whenever scenario wind is nonzero. The OU
+gust term is deliberately excluded for SITL vehicles — Dryden replaces
+it; applying both would double-count turbulence. Mapping note: the
+Dryden severity knob w20 is the mean wind at 20 ft (6.1 m); the
+scenario `wind_speed` is referenced at 10 m. The 10 m figure is used
+as w20 directly (≤6% shear-law difference, well inside the turbulence
+model's class accuracy). Turbulence sigma/length scales are frozen at
+each vehicle's spawn altitude (the bench convention).
+
+### P4-1 IMU acceleration = exact wrench (user decision 2026-06-12)
+
+The P3 bench fed the IMU a dv/dt finite difference (documented
+placeholder). The fleet engine threads the exact truth CoM acceleration
+`force_world / m` — the plant wrench at the latched rotor speeds and
+ZOH wind, gravity included, matching the `hw.Imu.sample` contract —
+evaluated at the pre-step state the devices sample. Stand rows read
+zero (the unmodeled ground reaction balances them). Real ground
+contact stays deferred (same decision): non-ARMED rows are frozen with
+zeroed velocity/rates, motors pre-spin to hover at arming.
+
+### P4-4 energy telemetry: voltage-proxy fraction (user decision 2026-06-12)
+
+`UavState.battery` in sitl mode is the FCU's voltage-proxy fraction
+(`BatteryMonitor.fraction()`): loaded per-cell voltage mapped linearly
+`crit_v_cell (3.30) → 0 .. full_v_cell (4.20) → 1`, shipped in STATUS as
+`batt_frac` f32. Deliberately conservative — sag under load reads as less
+remaining energy exactly when the MC should break off earlier. The proxy
+is noisy under transient load (arming spool-up reads ~0.1 for one
+sample), so the MC floor carries a 2 s debounce mirroring the FCU
+monitor's. Real SOC estimation (coulomb counting, per-cell) is P5
+CELL_IMBALANCE scope. The rearm cycle is physical (land-dock decision):
+the pad charger drives ECM SOC directly (boundary condition; the charger
+circuit is out of scope) and BATT_RESET carries pack-swap semantics —
+ground-only, clears the upward-latched monitor.
+
+### P4-4 touchdown ground recalibration
+
+The stand convention stops the airframe in one micro-tick at touchdown —
+a velocity step the IMU stream never expresses (contact dynamics are not
+modeled). The EKF's chi-square gates then *defend* the stale velocity
+belief against every GPS/baro correction (gate lockout: an 8 m/s
+free-running pad drift was measured, `div=False`, `late_meas=0`). The
+realistic remedy at our fidelity is the recalibrate-before-flight
+doctrine: touchdown drops the EKF and re-runs the static ground
+alignment from scratch (the existing BOOT machinery, ~2 s, GPS-seeded);
+PBIT holds re-arming until it is green. PX4's equivalent is its
+on-ground EKF handling (zero-velocity updates / state resets on land).
+
+### P4-4 OFFBOARD setpoint clamp (PX4 convention)
+
+`cmd_velocity` setpoints are now clamped in the FCU to the same
+`fcu.vel_max_h/up/down` envelope params the internal modes obey — an MC
+cannot command the airframe past its declared envelope. Scenario
+overlays size the envelope per airframe (the racer flies
+h=80/up=20/down=20).
+
+### P4 gate-review: vertical-brake loss — root cause + fix (user
+### decision 2026-06-12, fidelity-first)
+
+Symptom: braking a fast climb held near-hover average thrust for
+seconds (~90 m overshoot). Root cause (instrumented in the fleet
+engine): the brake demand is healthy (az clamps to −a_max_down, thrust
+≈ 0.2), but the LOW specific force (fz = g − a_down ≈ 1.8 m/s²)
+shrinks the tilt cone's lever — any cone-saturating horizontal error
+then commands ±tilt_max, and a sign-flipping error steps the attitude
+setpoint ±45° at the 50 Hz loop rate. The rate loop slams torque
+chasing steps no airframe can follow, and the mixer's rp-priority
+desaturation drags average collective back to ~hover: vertical
+priority, honored in the demand chain, was lost in the actuator chain.
+EKF estimates and gyro-bias were verified healthy throughout.
+
+Fix, two layers, both physical:
+1. `VelParams.tilt_slew` (6 rad/s ≈ 344°/s) — the attitude setpoint is
+   slew-limited to what the airframe can follow (standard autopilot
+   practice; PX4 rate-limits via its attitude-loop time constants). It
+   only engages on pathological steps: every P3 maneuver spec passes
+   unchanged (30° step in ~90 ms needs ~5.8 rad/s peak).
+2. `mc/guidance.approach_velocity` — braking-aware waypoint capture
+   (v ≤ √(2·a_brake·d), a_brake 5 m/s² vs the 8 demanded) for posts,
+   pads and loiter points in the MC apps. `goto_velocity`'s linear
+   taper assumed point-mass 20 m/s² braking; legacy agents keep it.
+
+Verified: deterministic reproducer pinned in `test_coopfc_control.py`
+(climbing +15 m/s, −20 commanded, cone-saturating ±3 m/s horizontal
+chatter → must reach vz < −5 in 3 s; pre-fix it stays +3.4), fleet
+climb-out bounded <30 m in the energy cycle (pre-fix >90), all P3
+control/bench acceptance and @slow flights green. The e2e suite was
+RE-BASELINED (engagement timing shifted → different adjudicator draw
+realizations): 9/10 seed kills (was 10/10; the lost seed is a 5-shot
+pk≈0.5 miss streak with healthy vehicles), CI pins killing seeds 1-3,
+@slow floor 8/10. Residual honest behavior: sustained full-power
+climbs sag the 12S pack toward the (voltage-only, P5 CELL_IMBALANCE
+scope) monitor's LOW/CRIT band — the FCU protects, lands, tops up and
+retries; the rearm cycle test tolerates one such retry.
+
+### P4-1 fleet-size invariance is a draw-history contract
+
+ORDERING §4 promises that adding a vehicle leaves existing vehicles'
+*draw histories* identical — pinned bit-exact at bank level
+(test_hw_determinism) and through the engine's Dryden wiring
+(test_sil_fleet). Full-trajectory bitwise invariance across batch
+sizes does NOT hold: numpy einsum/matmul kernels differ at the last
+ULP between n=1 and n=2 shapes (measured 1.6e-14 relative over a
+1.5 s hover). The trajectory pin is therefore 1e-9 — any
+stream-wiring fault diverges at device-noise scale, five-plus orders
+louder. Run-twice determinism at fixed fleet size remains bitwise.

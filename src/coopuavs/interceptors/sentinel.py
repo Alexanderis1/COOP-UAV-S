@@ -135,3 +135,36 @@ class SentinelUav(UavAirframe):
                 effector="",
             )
         )
+
+
+class SitlShellSentinel(SentinelUav):
+    """Thin world-side shell for the sitl sentinel (P4-5): the patrol
+    stack runs in ``mc/sentinel_app.py`` on a VirtualMCU inside the
+    micro-loop; this node ferries bus traffic across the mailbox
+    boundary and mirrors ``mode``/``battery`` from the app's telemetry.
+    ``body`` is the app's link-backed estimate body (read-only here);
+    the mounted sensor payload rides the FriendlyVehicle TRUTH adapter,
+    not this shell."""
+
+    def __init__(self, uav_id, bus, home, orbit, mcu, **kwargs):
+        super().__init__(uav_id, bus, home, orbit, **kwargs)
+        self._mcu = mcu
+        self.body = mcu.app.body
+        self._to_command = mcu.ports.box("command")
+        self._to_link = mcu.ports.box("link_quality")
+        self._from_state = mcu.ports.box("uav_state")
+
+    @property
+    def mc_crashed(self) -> bool:
+        return self._mcu.crashed
+
+    def _on_command(self, msg: UavCommand) -> None:
+        if msg.uav_id == self.uav_id:
+            self._to_command.post(msg)
+
+    def update(self, t: float, dt: float) -> None:
+        self._to_link.post(self.link_quality)
+        for msg in self._from_state.drain():
+            self.mode = msg.mode
+            self.battery = msg.battery
+            self._state_pub.publish(msg)

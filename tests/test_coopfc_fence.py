@@ -96,3 +96,47 @@ def test_numpy_only_under_estimation():
                 "numpy/scipy are allowed only in coopfc/estimation (50 Hz); "
                 "hot paths are plain-float"
             )
+
+
+# -- mc/ joins the walk (P4-4 import-boundary test) -----------------------------
+#
+# Mission-computer software runs on a VirtualMCU behind the mailbox seam:
+# it may import its own package, the shared message vocabulary and port
+# primitives (core.messages / core.ports) and the wire protocol
+# (coopfc.link) — never the simulator, the world bus, devices or physics
+# (truth quarantine: an mc/ module that can import sim/ can read truth).
+
+MC_ALLOWED_PREFIXES = ("coopuavs.mc", "coopuavs.core.messages",
+                       "coopuavs.core.ports", "coopuavs.coopfc.link")
+
+
+def _mc_modules() -> list[Path]:
+    import coopuavs.mc as mc_pkg
+    return sorted(Path(mc_pkg.__file__).parent.rglob("*.py"))
+
+
+def test_mc_walker_sees_the_package():
+    assert len(_mc_modules()) >= 5
+
+
+def test_no_simulator_import_escapes_mc():
+    import coopuavs.mc as mc_pkg
+    mc_root = Path(mc_pkg.__file__).parent
+
+    global COOPFC_ROOT, PKG_PREFIX
+    saved = COOPFC_ROOT, PKG_PREFIX
+    COOPFC_ROOT, PKG_PREFIX = mc_root, "coopuavs.mc"   # reuse the resolver
+    try:
+        for py in _mc_modules():
+            for name in _resolve_imports(py):
+                if name.split(".")[0] != BANNED_PREFIX:
+                    continue
+                ok = any(name == p or name.startswith(p + ".")
+                         for p in MC_ALLOWED_PREFIXES)
+                assert ok, (
+                    f"{py.relative_to(mc_root.parent)} imports {name!r}: "
+                    "MC software may only reach coopuavs.mc, core.messages, "
+                    "core.ports and coopfc.link — never the simulator"
+                )
+    finally:
+        COOPFC_ROOT, PKG_PREFIX = saved
